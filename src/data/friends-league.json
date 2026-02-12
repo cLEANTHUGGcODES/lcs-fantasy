@@ -1,0 +1,29 @@
+{
+  "leagueName": "Close Friends LCS Fantasy",
+  "sourcePage": "LCS/2026_Season/Lock-In/Scoreboards/Swiss_Round_3_and_Last_Chance",
+  "scoring": {
+    "kill": 3,
+    "death": -1,
+    "assist": 2,
+    "win": 2,
+    "csPer100": 1
+  },
+  "rosters": [
+    {
+      "friend": "James",
+      "players": ["Impact", "HamBak", "DARKWINGS", "Rahel", "huhi"]
+    },
+    {
+      "friend": "Alex",
+      "players": ["Morgan", "Josedeodo", "Quid", "Yeon", "CoreJJ"]
+    },
+    {
+      "friend": "Sam",
+      "players": ["Thanatos", "Blaber", "APA", "Massu", "Vulcan"]
+    },
+    {
+      "friend": "Chris",
+      "players": ["Fudge", "Inspired", "Palafox", "FBI", "Ignar"]
+    }
+  ]
+}

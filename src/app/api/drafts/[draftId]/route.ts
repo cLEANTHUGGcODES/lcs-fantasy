@@ -1,0 +1,79 @@
+import { requireAuthUser } from "@/lib/draft-auth";
+import { isGlobalAdminUser } from "@/lib/admin-access";
+import { processDueDrafts } from "@/lib/draft-automation";
+import { getDraftDetail } from "@/lib/draft-data";
+import { getSupabaseServerClient } from "@/lib/supabase-server";
+
+const parseDraftId = (raw: string): number => {
+  const value = Number.parseInt(raw, 10);
+  if (!Number.isFinite(value) || value < 1) {
+    throw new Error("Invalid draft id.");
+  }
+  return value;
+};
+
+export async function GET(
+  _request: Request,
+  { params }: { params: Promise<{ draftId: string }> },
+) {
+  try {
+    const user = await requireAuthUser();
+    const draftId = parseDraftId((await params).draftId);
+    await processDueDrafts({ draftId });
+    const draft = await getDraftDetail({
+      draftId,
+      currentUserId: user.id,
+    });
+    return Response.json({ draft }, { status: 200 });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unable to load draft.";
+    const status = message === "UNAUTHORIZED" ? 401 : message === "Draft not found." ? 404 : 500;
+    return Response.json({ error: message }, { status });
+  }
+}
+
+export async function DELETE(
+  _request: Request,
+  { params }: { params: Promise<{ draftId: string }> },
+) {
+  try {
+    const user = await requireAuthUser();
+    const canManageAllDrafts = await isGlobalAdminUser({ userId: user.id });
+    const draftId = parseDraftId((await params).draftId);
+    const supabase = getSupabaseServerClient();
+
+    const { data: draft, error: draftError } = await supabase
+      .from("fantasy_drafts")
+      .select("id,created_by_user_id")
+      .eq("id", draftId)
+      .maybeSingle<{ id: number; created_by_user_id: string }>();
+
+    if (draftError) {
+      throw new Error(`Unable to load draft: ${draftError.message}`);
+    }
+    if (!draft) {
+      return Response.json({ error: "Draft not found." }, { status: 404 });
+    }
+    if (draft.created_by_user_id !== user.id && !canManageAllDrafts) {
+      return Response.json(
+        { error: "Only the draft commissioner can delete this draft." },
+        { status: 403 },
+      );
+    }
+
+    const { error: deleteError } = await supabase
+      .from("fantasy_drafts")
+      .delete()
+      .eq("id", draftId);
+
+    if (deleteError) {
+      throw new Error(`Unable to delete draft: ${deleteError.message}`);
+    }
+
+    return Response.json({ ok: true, draftId }, { status: 200 });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unable to delete draft.";
+    const status = message === "UNAUTHORIZED" ? 401 : 500;
+    return Response.json({ error: message }, { status });
+  }
+}

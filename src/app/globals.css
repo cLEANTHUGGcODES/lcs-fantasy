@@ -1,0 +1,33 @@
+@import "tailwindcss";
+@plugin "../../hero.mjs";
+@source "../../node_modules/@heroui/theme/dist/**/*.{js,ts,jsx,tsx}";
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  --font-body: var(--font-league-spartan);
+  --font-display: var(--font-league-spartan);
+  --font-code: var(--font-league-spartan);
+}
+
+html,
+body {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-body), sans-serif;
+  background:
+    radial-gradient(circle at 5% 5%, rgba(57, 131, 250, 0.22), transparent 30%),
+    radial-gradient(circle at 95% 4%, rgba(41, 194, 160, 0.18), transparent 32%),
+    linear-gradient(145deg, #0a111f 0%, #101a2b 50%, #132035 100%);
+}
+
+.fantasy-title {
+  font-family: var(--font-display), sans-serif;
+  letter-spacing: 0.03em;
+}
+
+.mono-points {
+  font-family: var(--font-code), sans-serif;
+}
