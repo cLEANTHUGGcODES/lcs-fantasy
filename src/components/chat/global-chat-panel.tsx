@@ -18,6 +18,13 @@ type GlobalChatResponse = {
 const MAX_GLOBAL_CHAT_MESSAGE_LENGTH = 320;
 const CHAT_POLL_INTERVAL_MS = 2500;
 
+const toMessageId = (value: unknown): number => {
+  const normalized = typeof value === "number"
+    ? value
+    : Number.parseInt(`${value ?? ""}`, 10);
+  return Number.isFinite(normalized) ? normalized : 0;
+};
+
 const formatTime = (value: string): string =>
   new Date(value).toLocaleTimeString(undefined, {
     hour: "numeric",
@@ -169,15 +176,20 @@ export const GlobalChatPanel = ({
 
   useEffect(() => {
     const latestMessageId = sortedMessages[sortedMessages.length - 1]?.id ?? 0;
+    const latestMessageIdNumber = toMessageId(latestMessageId);
     if (!hasInitializedUnreadState) {
+      if (loading) {
+        return;
+      }
       setHasInitializedUnreadState(true);
-      setLastSeenMessageId(latestMessageId);
+      setLastSeenMessageId(latestMessageIdNumber);
+      setUnreadCount(0);
       return;
     }
 
     if (isOpen) {
-      if (lastSeenMessageId !== latestMessageId) {
-        setLastSeenMessageId(latestMessageId);
+      if (lastSeenMessageId !== latestMessageIdNumber) {
+        setLastSeenMessageId(latestMessageIdNumber);
       }
       if (unreadCount !== 0) {
         setUnreadCount(0);
@@ -185,12 +197,12 @@ export const GlobalChatPanel = ({
       return;
     }
 
-    if (latestMessageId <= lastSeenMessageId) {
+    if (latestMessageIdNumber <= lastSeenMessageId) {
       return;
     }
 
     const nextUnreadCount = sortedMessages.filter(
-      (entry) => entry.id > lastSeenMessageId && entry.userId !== currentUserId,
+      (entry) => toMessageId(entry.id) > lastSeenMessageId && entry.userId !== currentUserId,
     ).length;
     setUnreadCount(nextUnreadCount);
   }, [
@@ -198,13 +210,14 @@ export const GlobalChatPanel = ({
     hasInitializedUnreadState,
     isOpen,
     lastSeenMessageId,
+    loading,
     sortedMessages,
     unreadCount,
   ]);
 
   const openChat = () => {
     setIsOpen(true);
-    const latestMessageId = sortedMessages[sortedMessages.length - 1]?.id ?? 0;
+    const latestMessageId = toMessageId(sortedMessages[sortedMessages.length - 1]?.id ?? 0);
     setLastSeenMessageId(latestMessageId);
     setUnreadCount(0);
     window.requestAnimationFrame(() => {
