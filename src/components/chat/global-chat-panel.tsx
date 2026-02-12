@@ -16,6 +16,7 @@ type GlobalChatResponse = {
 };
 
 const MAX_GLOBAL_CHAT_MESSAGE_LENGTH = 320;
+const CHAT_POLL_INTERVAL_MS = 2500;
 
 const formatTime = (value: string): string =>
   new Date(value).toLocaleTimeString(undefined, {
@@ -40,10 +41,21 @@ export const GlobalChatPanel = ({
   const [lastSeenMessageId, setLastSeenMessageId] = useState(0);
   const [unreadCount, setUnreadCount] = useState(0);
   const messageListRef = useRef<HTMLDivElement | null>(null);
+  const inputContainerRef = useRef<HTMLDivElement | null>(null);
   const sortedMessages = useMemo(
     () => [...messages].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()),
     [messages],
   );
+
+  const focusChatInput = useCallback(() => {
+    const input = inputContainerRef.current?.querySelector("input");
+    if (!(input instanceof HTMLInputElement)) {
+      return;
+    }
+    input.focus();
+    const end = input.value.length;
+    input.setSelectionRange(end, end);
+  }, []);
 
   const loadMessages = useCallback(async () => {
     const response = await fetch("/api/chat", {
@@ -104,6 +116,13 @@ export const GlobalChatPanel = ({
   }, [loadMessages]);
 
   useEffect(() => {
+    const id = window.setInterval(() => {
+      void loadMessages().catch(() => undefined);
+    }, CHAT_POLL_INTERVAL_MS);
+    return () => window.clearInterval(id);
+  }, [loadMessages]);
+
+  useEffect(() => {
     if (!isOpen) {
       return;
     }
@@ -138,12 +157,15 @@ export const GlobalChatPanel = ({
       }
       setMessageInput("");
       await loadMessages();
+      window.requestAnimationFrame(() => {
+        focusChatInput();
+      });
     } catch (sendError) {
       setError(sendError instanceof Error ? sendError.message : "Unable to send chat message.");
     } finally {
       setPendingSend(false);
     }
-  }, [loadMessages, messageInput]);
+  }, [focusChatInput, loadMessages, messageInput]);
 
   useEffect(() => {
     const latestMessageId = sortedMessages[sortedMessages.length - 1]?.id ?? 0;
@@ -185,6 +207,9 @@ export const GlobalChatPanel = ({
     const latestMessageId = sortedMessages[sortedMessages.length - 1]?.id ?? 0;
     setLastSeenMessageId(latestMessageId);
     setUnreadCount(0);
+    window.requestAnimationFrame(() => {
+      focusChatInput();
+    });
   };
 
   const closeChat = () => {
@@ -281,15 +306,17 @@ export const GlobalChatPanel = ({
                 void submitMessage();
               }}
             >
-              <Input
-                aria-label="Chat message"
-                isDisabled={pendingSend}
-                maxLength={MAX_GLOBAL_CHAT_MESSAGE_LENGTH}
-                placeholder="Type your message..."
-                value={messageInput}
-                variant="bordered"
-                onValueChange={setMessageInput}
-              />
+              <div className="flex-1" ref={inputContainerRef}>
+                <Input
+                  aria-label="Chat message"
+                  isDisabled={pendingSend}
+                  maxLength={MAX_GLOBAL_CHAT_MESSAGE_LENGTH}
+                  placeholder="Type your message..."
+                  value={messageInput}
+                  variant="bordered"
+                  onValueChange={setMessageInput}
+                />
+              </div>
               <Button
                 color="primary"
                 isDisabled={messageInput.trim().length === 0}
