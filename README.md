@@ -1,4 +1,4 @@
-# LCS Friends Fantasy
+# INSIGHT LoL Fantasy
 
 Lightweight Next.js app that pulls Leaguepedia scoreboard data and turns it into:
 

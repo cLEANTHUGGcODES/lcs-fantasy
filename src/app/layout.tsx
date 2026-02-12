@@ -9,9 +9,8 @@ const leagueSpartan = League_Spartan({
 });
 
 export const metadata: Metadata = {
-  title: "LCS Friends Fantasy",
-  description:
-    "Lightweight fantasy dashboard powered by Leaguepedia scoreboard data.",
+  title: "INSIGHT LoL Fantasy",
+  description: "We couldn't find a one that we liked, so we fuckin' built one.",
 };
 
 export default function RootLayout({
