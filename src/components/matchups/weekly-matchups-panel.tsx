@@ -29,6 +29,7 @@ const formatDateKeyShort = (value: string | null): string => {
   return parsed.toLocaleDateString("en-US", {
     month: "short",
     day: "numeric",
+    timeZone: "UTC",
   });
 };
 

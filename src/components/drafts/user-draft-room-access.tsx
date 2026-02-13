@@ -51,14 +51,21 @@ const getCountdownParts = (
   };
 };
 
-const formatScheduledAt = (value: string): string =>
-  new Date(value).toLocaleString(undefined, {
+const formatScheduledAt = (value: string): string => {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return "Unknown time";
+  }
+
+  return parsed.toLocaleString("en-US", {
     month: "short",
     day: "numeric",
     year: "numeric",
     hour: "numeric",
     minute: "2-digit",
+    timeZone: "UTC",
   });
+};
 
 const draftStatusLabel = (status: DraftStatus): string =>
   status === "scheduled"
@@ -74,7 +81,7 @@ export const UserDraftRoomAccess = ({
 }: {
   drafts: DraftSummary[];
 }) => {
-  const [nowMs, setNowMs] = useState(() => Date.now());
+  const [nowMs, setNowMs] = useState(0);
 
   useEffect(() => {
     const interval = window.setInterval(() => {
@@ -99,7 +106,9 @@ export const UserDraftRoomAccess = ({
       </CardHeader>
       <CardBody className="space-y-3">
         {drafts.map((draft) => {
-          const countdown = getCountdownParts(draft.scheduledAt, nowMs);
+          const countdown = nowMs === 0
+            ? { days: "--", hours: "--", minutes: "--", seconds: "--" }
+            : getCountdownParts(draft.scheduledAt, nowMs);
 
           return (
             <div
