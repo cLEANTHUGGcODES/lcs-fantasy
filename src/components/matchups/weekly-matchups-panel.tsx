@@ -302,7 +302,7 @@ export const WeeklyMatchupsPanel = ({
           {weekForHeader ? statusLabel(weekForHeader.status) : "Offseason"}
         </Chip>
       </CardHeader>
-      <CardBody className="space-y-2 overflow-x-hidden">
+      <CardBody className="space-y-2 overflow-x-hidden pb-0">
         {headToHead.weeks.length > 1 ? (
           <div className="flex w-full items-center justify-between">
             <Button

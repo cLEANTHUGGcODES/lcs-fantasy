@@ -8,6 +8,14 @@ import {
   DrawerFooter,
   DrawerHeader,
 } from "@heroui/drawer";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableColumn,
+  TableHeader,
+  TableRow,
+} from "@heroui/table";
 import { Tooltip } from "@heroui/tooltip";
 import { BookOpenText, CalendarDays, NotebookText, Sigma, Swords, Trophy } from "lucide-react";
 import { useMemo, useState } from "react";
@@ -18,6 +26,16 @@ const scoreWithSign = (value: number): string => {
     return `+${value}`;
   }
   return `${value}`;
+};
+
+const weightToneClass = (value: number): string => {
+  if (value > 0) {
+    return "text-success-200";
+  }
+  if (value < 0) {
+    return "text-danger-200";
+  }
+  return "text-default-100";
 };
 
 export const ScoringMethodologyDrawer = ({
@@ -32,6 +50,48 @@ export const ScoringMethodologyDrawer = ({
       `${scoring.kill}×K + ${scoring.death}×D + ${scoring.assist}×A + ${
         scoring.win
       }×Win + (${scoring.csPer100}×CS/100) + (${scoring.goldPer1000}×Gold/1000)`,
+    [scoring],
+  );
+
+  const scoringRows = useMemo(
+    () => [
+      {
+        metric: "Kill",
+        value: scoring.kill,
+        weight: scoreWithSign(scoring.kill),
+        detail: "Applied per kill.",
+      },
+      {
+        metric: "Death",
+        value: scoring.death,
+        weight: scoreWithSign(scoring.death),
+        detail: "Applied per death.",
+      },
+      {
+        metric: "Assist",
+        value: scoring.assist,
+        weight: scoreWithSign(scoring.assist),
+        detail: "Applied per assist.",
+      },
+      {
+        metric: "Win Bonus",
+        value: scoring.win,
+        weight: scoreWithSign(scoring.win),
+        detail: "Added for map wins only.",
+      },
+      {
+        metric: "CS Bonus",
+        value: scoring.csPer100,
+        weight: `${scoreWithSign(scoring.csPer100)} / 100 CS`,
+        detail: "Scaled by creep score.",
+      },
+      {
+        metric: "Gold Bonus",
+        value: scoring.goldPer1000,
+        weight: `${scoreWithSign(scoring.goldPer1000)} / 1000 Gold`,
+        detail: "Scaled by gold earned.",
+      },
+    ],
     [scoring],
   );
 
@@ -92,26 +152,43 @@ export const ScoringMethodologyDrawer = ({
                     <Sigma className="h-4 w-4 text-primary-300" />
                     1) Player Scoring Weights
                   </h3>
-                  <div className="grid grid-cols-2 gap-2 rounded-large border border-[#365173]/80 bg-[#12233d]/75 p-3 text-xs text-[#e3ecfb] sm:grid-cols-3">
-                    <p>
-                      Kill: <span className="mono-points text-[#f8fbff]">{scoreWithSign(scoring.kill)}</span>
-                    </p>
-                    <p>
-                      Death: <span className="mono-points text-[#f8fbff]">{scoreWithSign(scoring.death)}</span>
-                    </p>
-                    <p>
-                      Assist: <span className="mono-points text-[#f8fbff]">{scoreWithSign(scoring.assist)}</span>
-                    </p>
-                    <p>
-                      Win Bonus: <span className="mono-points text-[#f8fbff]">{scoreWithSign(scoring.win)}</span>
-                    </p>
-                    <p>
-                      CS Bonus: <span className="mono-points text-[#f8fbff]">{scoreWithSign(scoring.csPer100)}/100 CS</span>
-                    </p>
-                    <p>
-                      Gold Bonus:{" "}
-                      <span className="mono-points text-[#f8fbff]">{scoreWithSign(scoring.goldPer1000)}/1000 Gold</span>
-                    </p>
+                  <div className="overflow-hidden rounded-large border border-[#365173]/80 bg-[#12233d]/75 shadow-[0_10px_26px_rgba(3,8,18,0.45)]">
+                    <Table
+                      isStriped
+                      removeWrapper
+                      aria-label="Player scoring weights table"
+                      classNames={{
+                        base: "w-full",
+                        table: "min-w-full table-fixed",
+                        thead: "[&>tr]:bg-[#173050]/85",
+                        th: "h-10 border-b border-[#3a5881]/80 px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.09em] text-[#bfd1ee]",
+                        td: "h-12 border-b border-[#2a4567]/65 px-3 py-2 align-middle text-xs text-[#e3ecfb]",
+                        tr: "last:[&>td]:border-b-0 odd:bg-[#10223a]/70 even:bg-[#142b47]/52 data-[hover=true]:bg-[#1d3960]/72",
+                      }}
+                    >
+                      <TableHeader>
+                        <TableColumn key="metric" className="w-[34%]">Metric</TableColumn>
+                        <TableColumn key="weight" className="w-[30%]">Weight</TableColumn>
+                        <TableColumn key="detail" className="w-[36%]">How It Applies</TableColumn>
+                      </TableHeader>
+                      <TableBody>
+                        {scoringRows.map((row) => (
+                          <TableRow key={row.metric}>
+                            <TableCell className="font-medium text-[#f0f5ff]">{row.metric}</TableCell>
+                            <TableCell>
+                              <span
+                                className={`mono-points text-[12px] font-semibold ${weightToneClass(
+                                  row.value,
+                                )}`}
+                              >
+                                {row.weight}
+                              </span>
+                            </TableCell>
+                            <TableCell className="text-[#cddbf2]">{row.detail}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
                   </div>
                   <p className="text-xs text-[#adc2e2]">
                     Per-game points are rounded to two decimals.
