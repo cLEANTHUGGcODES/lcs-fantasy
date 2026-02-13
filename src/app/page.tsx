@@ -4,7 +4,6 @@ import { Code } from "@heroui/code";
 import { Divider } from "@heroui/divider";
 import { Link } from "@heroui/link";
 import { Navbar, NavbarBrand, NavbarContent, NavbarItem } from "@heroui/navbar";
-import { Progress } from "@heroui/progress";
 import { stat } from "node:fs/promises";
 import path from "node:path";
 import { Crown } from "lucide-react";
@@ -12,8 +11,10 @@ import Image from "next/image";
 import { redirect } from "next/navigation";
 import { AccountWidget } from "@/components/auth/account-widget";
 import { GlobalChatPanel } from "@/components/chat/global-chat-panel";
+import { CroppedTeamLogo } from "@/components/cropped-team-logo";
 import { UserDraftRoomAccess } from "@/components/drafts/user-draft-room-access";
 import { WeeklyMatchupsPanel } from "@/components/matchups/weekly-matchups-panel";
+import { RosterBreakdownStack } from "@/components/standings/roster-breakdown-stack";
 import { isGlobalAdminUser } from "@/lib/admin-access";
 import { getDashboardStandings } from "@/lib/dashboard-standings";
 import { listDraftSummariesForUser } from "@/lib/draft-data";
@@ -73,6 +74,8 @@ const formatHeadToHeadRecord = (
 const formatWinPct = (value: number): string => value.toFixed(3);
 
 const teamKey = (team: string): string => team.trim().toLowerCase();
+const TABLE_BAND_CLASS =
+  "[&>tbody>tr:nth-child(odd)]:bg-content2/[0.14] [&>tbody>tr:nth-child(even)]:bg-content2/[0.06]";
 
 const initialsForName = (value: string): string =>
   value
@@ -106,12 +109,13 @@ const TeamIcon = ({
 }) => {
   if (iconUrl) {
     return (
-      <Image
-        src={iconUrl}
+      <CroppedTeamLogo
         alt={`${team} logo`}
-        width={48}
+        frameClassName="h-5 w-7"
         height={20}
-        className="h-5 w-auto shrink-0 object-contain"
+        imageClassName="h-5"
+        src={iconUrl}
+        width={48}
       />
     );
   }
@@ -267,7 +271,6 @@ export default async function Home() {
   const hasCompletedDraft = dashboardStandings.completedDraftId !== null;
   const headToHead = dashboardStandings.headToHead;
   const draftedRows = dashboardStandings.rows.filter((row) => row.drafted);
-  const standingsLeaderPoints = draftedRows[0]?.totalPoints ?? 1;
 
   return (
     <main className="mx-auto min-h-screen w-full max-w-7xl px-3 py-5 pb-28 md:px-6 md:py-8 md:pb-24">
@@ -374,7 +377,9 @@ export default async function Home() {
               </div>
 
               <div className="hidden overflow-x-auto md:block">
-                <table className="w-full min-w-[420px] border-collapse text-left text-sm">
+                <table
+                  className={`w-full min-w-[420px] border-collapse text-left text-sm ${TABLE_BAND_CLASS}`}
+                >
                   <thead>
                     <tr className="text-default-500">
                       <th className="px-2 py-2 font-medium">#</th>
@@ -451,9 +456,6 @@ export default async function Home() {
               </p>
             ) : (
               dashboardStandings.rows.map((entry, index) => {
-                const leaderRatio = entry.drafted
-                  ? (entry.totalPoints / standingsLeaderPoints) * 100
-                  : 0;
                 const isLeader =
                   hasCompletedDraft &&
                   draftedRows.length > 0 &&
@@ -472,7 +474,16 @@ export default async function Home() {
                       <div className="flex min-w-0 items-center gap-2">
                         <span className="text-xs text-default-500">#{index + 1}</span>
                         <UserAvatar avatarUrl={entry.avatarUrl} displayName={entry.displayName} />
-                        <p className="truncate text-sm font-medium">{entry.displayName}</p>
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-semibold">
+                            {entry.teamName ?? entry.displayName}
+                          </p>
+                          {entry.teamName ? (
+                            <p className="truncate text-[11px] text-default-500">
+                              {entry.displayName}
+                            </p>
+                          ) : null}
+                        </div>
                       </div>
                       {isLeader ? (
                         <span aria-label="Leader" className="inline-flex items-center" title="Leader">
@@ -507,16 +518,9 @@ export default async function Home() {
                               </span>
                             </p>
                           </div>
-                          <p className="text-xs text-default-500">
-                            {entry.breakdown
-                              .map((pick) => `${pick.playerName} (${formatPoints(pick.points)})`)
-                              .join(" • ")}
-                          </p>
-                          <Progress
-                            aria-label={`${entry.displayName} total points`}
-                            color="primary"
-                            size="sm"
-                            value={Math.min(100, leaderRatio)}
+                          <RosterBreakdownStack
+                            ariaLabel={`${entry.displayName} roster breakdown`}
+                            breakdown={entry.breakdown}
                           />
                         </div>
                       ) : (
@@ -535,7 +539,7 @@ export default async function Home() {
             <table
               className={`w-full border-collapse text-left text-sm ${
                 hasCompletedDraft ? "min-w-[980px]" : "min-w-[560px]"
-              }`}
+              } ${TABLE_BAND_CLASS}`}
             >
               <thead>
                 <tr className="text-default-500">
@@ -564,9 +568,6 @@ export default async function Home() {
                   </tr>
                 ) : (
                   dashboardStandings.rows.map((entry, index) => {
-                    const leaderRatio = entry.drafted
-                      ? (entry.totalPoints / standingsLeaderPoints) * 100
-                      : 0;
                     const isLeader =
                       hasCompletedDraft &&
                       draftedRows.length > 0 &&
@@ -586,7 +587,14 @@ export default async function Home() {
                           <div className="flex items-center gap-2">
                             <UserAvatar avatarUrl={entry.avatarUrl} displayName={entry.displayName} />
                             <div className="min-w-0">
-                              <p className="truncate">{entry.displayName}</p>
+                              <p className="truncate font-semibold">
+                                {entry.teamName ?? entry.displayName}
+                              </p>
+                              {entry.teamName ? (
+                                <p className="truncate text-xs text-default-500">
+                                  {entry.displayName}
+                                </p>
+                              ) : null}
                             </div>
                             {isLeader ? (
                               <span
@@ -611,25 +619,18 @@ export default async function Home() {
                         </td>
                         {hasCompletedDraft ? (
                           <>
-                            <td className="mono-points px-2 py-2">
+                            <td className="mono-points px-2 py-2 align-middle">
                               {entry.drafted ? formatPoints(entry.totalPoints) : "—"}
                             </td>
-                            <td className="px-2 py-2">
+                            <td className="px-2 py-2 align-middle">
                               {entry.drafted ? formatPoints(entry.averagePerPick) : "—"}
                             </td>
                             <td className="px-2 py-2">
                               {entry.drafted ? (
                                 <div className="min-w-[320px] space-y-2">
-                                  <p className="text-xs text-default-500">
-                                    {entry.breakdown
-                                      .map((pick) => `${pick.playerName} (${formatPoints(pick.points)})`)
-                                      .join(" • ")}
-                                  </p>
-                                  <Progress
-                                    aria-label={`${entry.displayName} total points`}
-                                    color="primary"
-                                    size="sm"
-                                    value={Math.min(100, leaderRatio)}
+                                  <RosterBreakdownStack
+                                    ariaLabel={`${entry.displayName} roster breakdown`}
+                                    breakdown={entry.breakdown}
                                   />
                                 </div>
                               ) : (
@@ -695,7 +696,9 @@ export default async function Home() {
               ))}
             </div>
             <div className="hidden overflow-x-auto md:block">
-              <table className="w-full min-w-[720px] border-collapse text-left text-sm">
+              <table
+                className={`w-full min-w-[720px] border-collapse text-left text-sm ${TABLE_BAND_CLASS}`}
+              >
                 <thead>
                   <tr className="text-default-500">
                     <th className="px-2 py-2 font-medium">#</th>
@@ -777,7 +780,9 @@ export default async function Home() {
               ))}
             </div>
             <div className="hidden overflow-x-auto md:block">
-              <table className="w-full min-w-[700px] border-collapse text-left text-sm">
+              <table
+                className={`w-full min-w-[700px] border-collapse text-left text-sm ${TABLE_BAND_CLASS}`}
+              >
                 <thead>
                   <tr className="text-default-500">
                     <th className="px-2 py-2 font-medium">Player</th>

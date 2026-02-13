@@ -31,6 +31,7 @@ import {
 } from "lucide-react";
 import Image from "next/image";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { CroppedTeamLogo } from "@/components/cropped-team-logo";
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 import type { DraftDetail, DraftParticipant, DraftStatus } from "@/types/draft";
 
@@ -1080,10 +1081,11 @@ export const DraftRoom = ({
                           </span>
                         </Chip>
                         {player.teamIconUrl ? (
-                          <Image
+                          <CroppedTeamLogo
                             alt={`${player.playerName} team logo`}
-                            className="h-5 w-auto object-contain"
+                            frameClassName="h-5 w-7"
                             height={20}
+                            imageClassName="h-5"
                             src={player.teamIconUrl}
                             width={48}
                           />
@@ -1134,10 +1136,11 @@ export const DraftRoom = ({
                             <td className="px-3 py-3">
                               <div className="flex items-center gap-2">
                                 {player.teamIconUrl ? (
-                                  <Image
+                                  <CroppedTeamLogo
                                     alt={`${player.playerName} team logo`}
-                                    className="h-5 w-auto object-contain"
+                                    frameClassName="h-5 w-7"
                                     height={20}
+                                    imageClassName="h-5"
                                     src={player.teamIconUrl}
                                     width={48}
                                   />

@@ -2,7 +2,7 @@ import type { User } from "@supabase/supabase-js";
 import { aggregatePlayerTotals } from "@/lib/fantasy";
 import { getSupabaseAuthEnv } from "@/lib/supabase-auth-env";
 import { getSupabaseServerClient } from "@/lib/supabase-server";
-import { getUserAvatarUrl, getUserDisplayName } from "@/lib/user-profile";
+import { getUserAvatarUrl, getUserDisplayName, getUserTeamName } from "@/lib/user-profile";
 import type { ParsedGame, PlayerTotal } from "@/types/fantasy";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -20,6 +20,7 @@ type DraftPickRow = {
   team_name: string;
   player_team: string | null;
   player_role: string | null;
+  team_icon_url: string | null;
 };
 
 type DraftParticipantRow = {
@@ -33,6 +34,7 @@ type RegisteredUserProfile = {
   userId: string;
   email: string | null;
   displayName: string;
+  teamName: string | null;
   avatarUrl: string | null;
 };
 
@@ -69,6 +71,7 @@ export type DashboardStandingBreakdown = {
   playerName: string;
   playerTeam: string | null;
   playerRole: string | null;
+  playerTeamIconUrl: string | null;
   points: number;
   games: number;
 };
@@ -76,6 +79,7 @@ export type DashboardStandingBreakdown = {
 export type DashboardStandingRow = {
   userId: string;
   displayName: string;
+  teamName: string | null;
   email: string | null;
   avatarUrl: string | null;
   drafted: boolean;
@@ -430,6 +434,7 @@ const listRegisteredUserProfiles = async (): Promise<RegisteredUserProfile[]> =>
       userId: user.id,
       email: user.email ?? null,
       displayName: getUserDisplayName(user) ?? user.id,
+      teamName: getUserTeamName(user),
       avatarUrl: getUserAvatarUrl({ user, supabaseUrl }),
     }))
     .sort((a, b) => a.displayName.localeCompare(b.displayName));
@@ -458,7 +463,7 @@ const loadDraftPicks = async (draftId: number): Promise<DraftPickRow[]> => {
   const supabase = getSupabaseServerClient();
   const { data, error } = await supabase
     .from("fantasy_draft_picks")
-    .select("participant_user_id,team_name,player_team,player_role")
+    .select("participant_user_id,team_name,player_team,player_role,team_icon_url")
     .eq("draft_id", draftId)
     .order("overall_pick", { ascending: true });
 
@@ -907,6 +912,7 @@ export const getDashboardStandings = async ({
       rows: users.map((user) => ({
         userId: user.userId,
         displayName: user.displayName,
+        teamName: user.teamName,
         email: user.email,
         avatarUrl: user.avatarUrl,
         drafted: false,
@@ -922,6 +928,12 @@ export const getDashboardStandings = async ({
     loadDraftPicks(latestCompletedDraft.id),
     loadDraftParticipants(latestCompletedDraft.id),
   ]);
+  const participantTeamNameByUserId = new Map(
+    participants.map((participant) => [
+      participant.user_id,
+      participant.team_name?.trim() || null,
+    ]),
+  );
 
   const picksByUserId = new Map<string, DraftPickRow[]>();
   for (const pick of picks) {
@@ -938,8 +950,9 @@ export const getDashboardStandings = async ({
       const resolved = resolvePlayerTotal({ pick, byName, byNameAndTeam });
       return {
         playerName: pick.team_name,
-        playerTeam: pick.player_team,
+        playerTeam: resolved?.team ?? pick.player_team,
         playerRole: pick.player_role,
+        playerTeamIconUrl: pick.team_icon_url,
         points: resolved?.fantasyPoints ?? 0,
         games: resolved?.games ?? 0,
       };
@@ -951,6 +964,7 @@ export const getDashboardStandings = async ({
     return {
       userId: user.userId,
       displayName: user.displayName,
+      teamName: participantTeamNameByUserId.get(user.userId) ?? user.teamName,
       email: user.email,
       avatarUrl: user.avatarUrl,
       drafted: breakdown.length > 0,
