@@ -47,9 +47,12 @@ export const GlobalChatPanel = ({
   const [hasInitializedUnreadState, setHasInitializedUnreadState] = useState(false);
   const [lastSeenMessageId, setLastSeenMessageId] = useState(0);
   const [unreadCount, setUnreadCount] = useState(0);
+  const [chatFieldToken] = useState(() => Math.random().toString(36).slice(2, 11));
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const chatInputRef = useRef<HTMLTextAreaElement | null>(null);
-  const chatInputId = `global-chat-message-${currentUserId}`;
+  const chatInputId = `global-chat-message-${chatFieldToken}`;
+  const chatFieldName = `chat_message_${chatFieldToken}`;
+  const chatAutocompleteValue = `section-chat-${chatFieldToken} chat-input`;
   const sortedMessages = useMemo(
     () => [...messages].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()),
     [messages],
@@ -406,14 +409,7 @@ export const GlobalChatPanel = ({
               className="-mx-2.5 mt-auto border-t border-slate-500/35 bg-[#091426]/95 px-2.5 pt-1.5 sm:mx-0 sm:mt-0 sm:border-0 sm:bg-transparent sm:px-0 sm:pt-0"
               style={{ paddingBottom: "calc(env(safe-area-inset-bottom) + 0.35rem)" }}
             >
-              <form
-                autoComplete="off"
-                className="flex items-end gap-2 rounded-large border border-slate-500/35 bg-slate-900/55 p-2"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  void submitMessage();
-                }}
-              >
+              <div className="flex items-end gap-2 rounded-large border border-slate-500/35 bg-slate-900/55 p-2">
                 <div className="flex-1">
                   <label className="sr-only" htmlFor={chatInputId}>
                     Chat message
@@ -422,9 +418,12 @@ export const GlobalChatPanel = ({
                     ref={chatInputRef}
                     aria-label="Chat message"
                     autoCapitalize="sentences"
-                    autoComplete="off"
+                    autoComplete={chatAutocompleteValue}
                     autoCorrect="on"
+                    autoSave="off"
                     className="w-full min-h-[40px] max-h-[120px] resize-none rounded-xl border border-slate-500/45 bg-[#08111f] px-3 py-2 text-[13px] leading-5 text-slate-100 outline-none transition focus:border-primary-400/70 focus:ring-2 focus:ring-primary-400/30 sm:text-sm"
+                    data-1p-ignore="true"
+                    data-bwignore="true"
                     data-form-type="other"
                     data-lpignore="true"
                     disabled={pendingSend}
@@ -432,7 +431,7 @@ export const GlobalChatPanel = ({
                     id={chatInputId}
                     inputMode="text"
                     maxLength={MAX_GLOBAL_CHAT_MESSAGE_LENGTH}
-                    name="chat_message"
+                    name={chatFieldName}
                     placeholder="Message"
                     rows={1}
                     spellCheck
@@ -453,15 +452,17 @@ export const GlobalChatPanel = ({
                   color="primary"
                   isDisabled={messageInput.trim().length === 0}
                   isLoading={pendingSend}
-                  type="submit"
                   variant="flat"
+                  onPress={() => {
+                    void submitMessage();
+                  }}
                 >
                   <span className="inline-flex items-center gap-1">
                     <Send className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
                     <span className="hidden sm:inline">Send</span>
                   </span>
                 </Button>
-              </form>
+              </div>
               <div className="mt-1 hidden items-center justify-end text-[11px] text-slate-300 sm:flex">
                 {messageInput.trim().length}/{MAX_GLOBAL_CHAT_MESSAGE_LENGTH}
               </div>
