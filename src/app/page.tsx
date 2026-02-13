@@ -305,6 +305,7 @@ export default async function Home() {
               avatarUrl={avatarUrl}
               canAccessSettings={canAccessSettings}
               firstName={firstName}
+              initialScoring={snapshot.scoring}
               lastName={lastName}
               layout="navbar"
               teamName={teamName}

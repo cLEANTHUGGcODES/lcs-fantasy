@@ -1,5 +1,11 @@
 import leagueConfigData from "@/data/friends-league.json";
-import { resolveScoringConfig } from "@/lib/fantasy";
+import {
+  aggregatePlayerTotals,
+  applyScoringToGames,
+  buildLeagueStandings,
+  topSingleGamePerformances,
+} from "@/lib/fantasy";
+import { getActiveScoringSettings } from "@/lib/scoring-settings";
 import { getLatestSnapshotFromSupabase } from "@/lib/supabase-match-store";
 import type { FantasySnapshot, LeagueConfig } from "@/types/fantasy";
 
@@ -29,17 +35,23 @@ export const getFantasySnapshot = async (): Promise<FantasySnapshot> => {
     );
   }
 
+  const { scoring } = await getActiveScoringSettings();
+  const games = applyScoringToGames(payload.games, scoring);
+  const playerTotals = aggregatePlayerTotals(games);
+  const standings = buildLeagueStandings(playerTotals, payload.rosters);
+  const topPerformances = topSingleGamePerformances(games, 15);
+
   return {
     generatedAt: payload.generatedAt ?? storedAt,
     sourcePage: payload.sourcePage,
     leagueName: payload.leagueName,
-    scoring: resolveScoringConfig(payload.scoring),
+    scoring,
     rosters: payload.rosters,
-    matchCount: payload.matchCount,
-    playerCount: payload.playerCount,
-    games: payload.games,
-    playerTotals: payload.playerTotals,
-    standings: payload.standings,
-    topPerformances: payload.topPerformances,
+    matchCount: games.length,
+    playerCount: playerTotals.length,
+    games,
+    playerTotals,
+    standings,
+    topPerformances,
   };
 };

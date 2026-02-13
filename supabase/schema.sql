@@ -15,6 +15,13 @@ create table if not exists public.fantasy_app_admin (
   updated_at timestamptz not null default timezone('utc', now())
 );
 
+create table if not exists public.fantasy_scoring_settings (
+  id integer primary key check (id = 1),
+  scoring jsonb not null,
+  updated_at timestamptz not null default timezone('utc', now()),
+  updated_by_user_id uuid null
+);
+
 create table if not exists public.fantasy_global_chat_messages (
   id bigint generated always as identity primary key,
   user_id uuid not null,

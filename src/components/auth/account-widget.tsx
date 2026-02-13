@@ -1,12 +1,15 @@
 "use client";
 
+import { Drawer, DrawerBody, DrawerContent, DrawerFooter, DrawerHeader } from "@heroui/drawer";
 import { Settings, X } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { DisplayNameForm } from "@/components/auth/display-name-form";
 import { ProfileImageForm } from "@/components/auth/profile-image-form";
+import { ScoringSettingsModal } from "@/components/auth/scoring-settings-modal";
 import { SignOutButton } from "@/components/auth/sign-out-button";
+import type { FantasyScoring } from "@/types/fantasy";
 
 const initialsForName = (value: string): string =>
   value
@@ -26,6 +29,7 @@ export const AccountWidget = ({
   avatarPath,
   avatarUrl,
   canAccessSettings,
+  initialScoring,
   layout = "card",
 }: {
   userLabel: string;
@@ -35,10 +39,12 @@ export const AccountWidget = ({
   avatarPath: string | null;
   avatarUrl: string | null;
   canAccessSettings: boolean;
+  initialScoring: FantasyScoring;
   layout?: AccountWidgetLayout;
 }) => {
   const [isOpen, setIsOpen] = useState(false);
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isSettingsDrawerOpen, setIsSettingsDrawerOpen] = useState(false);
+  const [isScoringSettingsOpen, setIsScoringSettingsOpen] = useState(false);
   const [activeLabel, setActiveLabel] = useState(userLabel);
   const [activeFirstName, setActiveFirstName] = useState(firstName);
   const [activeLastName, setActiveLastName] = useState(lastName);
@@ -75,7 +81,8 @@ export const AccountWidget = ({
 
   const toggleProfileModal = () => {
     setIsOpen((open) => !open);
-    setIsSettingsOpen(false);
+    setIsSettingsDrawerOpen(false);
+    setIsScoringSettingsOpen(false);
   };
 
   const avatarNode = activeAvatarUrl ? (
@@ -194,6 +201,72 @@ export const AccountWidget = ({
     </div>
   ) : null;
 
+  const settingsDrawer = canAccessSettings ? (
+    <Drawer
+      classNames={{
+        wrapper: "z-[240]",
+      }}
+      isOpen={isSettingsDrawerOpen}
+      placement="right"
+      scrollBehavior="inside"
+      size="xs"
+      onOpenChange={(open) => setIsSettingsDrawerOpen(open)}
+    >
+      <DrawerContent>
+        {(onClose) => (
+          <>
+            <DrawerHeader className="border-b border-default-200/40 pb-3">
+              <div>
+                <p className="text-xs uppercase tracking-wide text-default-500">Settings</p>
+                <p className="text-sm font-semibold text-default-200">Quick Links</p>
+              </div>
+            </DrawerHeader>
+            <DrawerBody className="py-4">
+              <Link
+                className="block rounded-medium border border-default-200/30 bg-content2/35 px-3 py-2 text-sm font-medium text-[#C79B3B] transition hover:border-default-200/60 hover:bg-content2/60"
+                href="/drafts"
+                onClick={() => {
+                  setIsSettingsDrawerOpen(false);
+                  onClose();
+                }}
+              >
+                Drafts
+              </Link>
+              <button
+                className="mt-2 block w-full rounded-medium border border-default-200/30 bg-content2/35 px-3 py-2 text-left text-sm font-medium text-[#C79B3B] transition hover:border-default-200/60 hover:bg-content2/60"
+                type="button"
+                onClick={() => {
+                  setIsSettingsDrawerOpen(false);
+                  setIsScoringSettingsOpen(true);
+                  onClose();
+                }}
+              >
+                Scoring Settings
+              </button>
+            </DrawerBody>
+            <DrawerFooter className="border-t border-default-200/40 pt-3">
+              <button
+                className="inline-flex h-9 items-center justify-center rounded-medium border border-default-300/40 bg-content2/60 px-3 text-sm font-medium text-default-200 transition hover:border-default-200/70 hover:bg-content2/80"
+                type="button"
+                onClick={onClose}
+              >
+                Close
+              </button>
+            </DrawerFooter>
+          </>
+        )}
+      </DrawerContent>
+    </Drawer>
+  ) : null;
+
+  const scoringSettingsModal = canAccessSettings ? (
+    <ScoringSettingsModal
+      initialScoring={initialScoring}
+      isOpen={isScoringSettingsOpen}
+      onOpenChange={(open) => setIsScoringSettingsOpen(open)}
+    />
+  ) : null;
+
   if (layout === "navbar") {
     return (
       <>
@@ -203,27 +276,14 @@ export const AccountWidget = ({
             className="inline-flex h-9 w-9 min-h-0 min-w-0 items-center justify-center rounded-medium border border-default-300/40 bg-content2/60 p-0 text-white transition data-[hover=true]:border-default-200/70 data-[hover=true]:bg-content2/80 data-[hover=true]:text-white"
           />
           {canAccessSettings ? (
-            <div className="relative">
-              <button
-                aria-label="Settings"
-                className="inline-flex h-9 w-9 cursor-pointer items-center justify-center rounded-medium border border-default-300/40 bg-content2/60 p-0 text-white transition hover:border-default-200/70 hover:bg-content2/80 hover:text-white"
-                type="button"
-                onClick={() => setIsSettingsOpen((open) => !open)}
-              >
-                <Settings size={16} strokeWidth={2} />
-              </button>
-              {isSettingsOpen ? (
-                <div className="absolute right-0 top-[calc(100%+0.45rem)] z-20 w-[180px] rounded-large border border-default-200/40 bg-content1/95 p-2 shadow-large backdrop-blur-md">
-                  <Link
-                    className="block rounded-medium px-2 py-1 text-sm text-default-300 hover:bg-default-100/10"
-                    href="/drafts"
-                    onClick={() => setIsSettingsOpen(false)}
-                  >
-                    Drafts
-                  </Link>
-                </div>
-              ) : null}
-            </div>
+            <button
+              aria-label="Settings"
+              className="inline-flex h-9 w-9 cursor-pointer items-center justify-center rounded-medium border border-default-300/40 bg-content2/60 p-0 text-white transition hover:border-default-200/70 hover:bg-content2/80 hover:text-white"
+              type="button"
+              onClick={() => setIsSettingsDrawerOpen(true)}
+            >
+              <Settings size={16} strokeWidth={2} />
+            </button>
           ) : null}
 
           <button
@@ -236,6 +296,8 @@ export const AccountWidget = ({
           </button>
         </div>
         {profileModal}
+        {settingsDrawer}
+        {scoringSettingsModal}
       </>
     );
   }
@@ -280,25 +342,16 @@ export const AccountWidget = ({
               aria-label="Settings"
               className="inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded-medium border border-transparent bg-transparent p-0 text-default-400 transition hover:border-default-200/40 hover:bg-content2/45 hover:text-default-200"
               type="button"
-              onClick={() => setIsSettingsOpen((open) => !open)}
+              onClick={() => setIsSettingsDrawerOpen(true)}
             >
               <Settings size={16} strokeWidth={2} />
             </button>
-            {isSettingsOpen ? (
-              <div className="absolute bottom-full right-0 z-20 mb-2 w-[180px] rounded-large border border-default-200/40 bg-content1/95 p-2 shadow-large backdrop-blur-md">
-                <Link
-                  className="block rounded-medium px-2 py-1 text-sm text-default-300 hover:bg-default-100/10"
-                  href="/drafts"
-                  onClick={() => setIsSettingsOpen(false)}
-                >
-                  Drafts
-                </Link>
-              </div>
-            ) : null}
           </div>
         ) : null}
       </div>
       {profileModal}
+      {settingsDrawer}
+      {scoringSettingsModal}
     </>
   );
 };

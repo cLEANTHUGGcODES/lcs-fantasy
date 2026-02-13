@@ -3,10 +3,10 @@ import {
   aggregatePlayerTotals,
   applyScoringToGames,
   buildLeagueStandings,
-  resolveScoringConfig,
   topSingleGamePerformances,
 } from "@/lib/fantasy";
 import { fetchLeaguepediaSnapshot } from "@/lib/leaguepedia";
+import { getActiveScoringSettings } from "@/lib/scoring-settings";
 import {
   storeSnapshotInSupabase,
   tryGetLatestSnapshotFromSupabase,
@@ -102,7 +102,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const scoring = resolveScoringConfig(leagueConfig.scoring);
+    const { scoring } = await getActiveScoringSettings();
     const games = applyScoringToGames(sourceSnapshot.games, scoring);
     const playerTotals = aggregatePlayerTotals(games);
     const standings = buildLeagueStandings(playerTotals, leagueConfig.rosters);

@@ -55,6 +55,7 @@ If you see a Windows `lightningcss.win32-x64-msvc.node` or `../pkg` error, run `
    - `SUPABASE_URL`
    - `SUPABASE_SERVICE_ROLE_KEY`
    - `SUPABASE_MATCH_SNAPSHOTS_TABLE` (default is `fantasy_match_snapshots`)
+   - `SUPABASE_SCORING_SETTINGS_TABLE` (default is `fantasy_scoring_settings`)
    - `SYNC_API_TOKEN` (recommended)
    - `SNAPSHOT_STALE_MINUTES` (default `30`)
    - `DRAFT_AUTOMATION_TOKEN` (recommended for cron endpoint protection)
@@ -161,7 +162,7 @@ Edit `src/data/friends-league.json`:
 
 - `leagueName`
 - `sourcePage`
-- `scoring`
+- `scoring` (default/fallback values; live overrides can be managed in the Settings -> Scoring Settings modal)
 - `rosters` (friends + picked players)
 
 Example player format:
