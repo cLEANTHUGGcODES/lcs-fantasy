@@ -375,7 +375,7 @@ export const DraftRoom = ({
     Boolean(draft?.status === "live") &&
     Boolean(draft?.nextPick) &&
     onClockUserId === currentUserId;
-  const canEditPickQueue = canCurrentUserPick;
+  const canEditPickQueue = isCurrentUserParticipant && draft?.status !== "completed";
   const effectiveNowMs = clientNowMs + serverOffsetMs;
   const currentPresence = presenceByUserId.get(currentUserId) ?? null;
   const participantsByPosition = useMemo(
@@ -964,8 +964,7 @@ export const DraftRoom = ({
                   Available Players
                 </h2>
                 <p className="text-xs text-default-500">
-                  Use filters to narrow the board, then add players to your queue when you are on
-                  the clock.
+                  Use filters to narrow the board and build your queue anytime.
                 </p>
               </div>
               <Chip variant="flat">
@@ -1300,7 +1299,7 @@ export const DraftRoom = ({
             </Button>
             {!canCurrentUserPick ? (
               <p className="text-xs text-default-500">
-                Queue and pick controls unlock only when you are on the clock.
+                You can manage your queue anytime, but picks submit only when you are on the clock.
               </p>
             ) : null}
           </CardBody>
