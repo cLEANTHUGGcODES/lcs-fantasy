@@ -4,7 +4,7 @@ import { Button } from "@heroui/button";
 import { Card, CardBody, CardHeader } from "@heroui/card";
 import { Input } from "@heroui/input";
 import { Spinner } from "@heroui/spinner";
-import { ChevronDown, MessageCircle, Send } from "lucide-react";
+import { ChevronDown, ChevronLeft, MessageCircle, Send } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 import type { GlobalChatMessage } from "@/types/chat";
@@ -140,6 +140,19 @@ export const GlobalChatPanel = ({
     el.scrollTop = el.scrollHeight;
   }, [isOpen, sortedMessages]);
 
+  useEffect(() => {
+    if (!isOpen) {
+      return;
+    }
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [isOpen]);
+
   const submitMessage = useCallback(async () => {
     const trimmed = messageInput.replace(/\s+/g, " ").trim();
     if (!trimmed) {
@@ -242,7 +255,7 @@ export const GlobalChatPanel = ({
       {isOpen ? (
         <button
           aria-label="Close chat"
-          className="pointer-events-auto fixed inset-0 cursor-default bg-transparent"
+          className="pointer-events-auto fixed inset-0 hidden cursor-default bg-black/25 sm:block"
           type="button"
           onClick={closeChat}
         />
@@ -250,12 +263,15 @@ export const GlobalChatPanel = ({
 
       {isOpen ? (
         <Card
-          className={`pointer-events-auto relative z-10 max-h-[calc(100dvh-6.25rem)] w-full border border-slate-400/45 bg-gradient-to-b from-[#0a1220]/95 to-[#111d33]/95 text-slate-100 shadow-2xl backdrop-blur-md sm:max-h-[min(700px,86dvh)] sm:w-[380px] ${className ?? ""}`}
+          className={`pointer-events-auto fixed inset-0 z-10 flex h-[100dvh] w-screen flex-col overflow-hidden rounded-none bg-gradient-to-b from-[#081120] via-[#0d1a30] to-[#111d33] text-slate-100 sm:relative sm:h-auto sm:max-h-[min(700px,86dvh)] sm:w-[380px] sm:rounded-2xl sm:border sm:border-slate-400/45 sm:shadow-2xl sm:backdrop-blur-md ${className ?? ""}`}
         >
-          <CardHeader className="flex items-center justify-between border-b border-slate-500/35 pb-2 pt-3">
+          <CardHeader
+            className="flex items-center justify-between border-b border-slate-500/35 px-3 pb-2 pt-3"
+            style={{ paddingTop: "calc(env(safe-area-inset-top) + 0.75rem)" }}
+          >
             <div>
               <h2 className="text-base font-semibold text-white">Global Chat</h2>
-              <p className="text-[11px] text-slate-300">Shared across dashboard and draft rooms.</p>
+              <p className="text-[11px] text-slate-300">Shared across dashboard and draft rooms</p>
             </div>
             <Button
               isIconOnly
@@ -264,18 +280,19 @@ export const GlobalChatPanel = ({
               variant="light"
               onPress={closeChat}
             >
-              <ChevronDown className="h-4 w-4" />
+              <ChevronLeft className="h-4 w-4 sm:hidden" />
+              <ChevronDown className="hidden h-4 w-4 sm:block" />
             </Button>
           </CardHeader>
-          <CardBody className="space-y-3 p-3">
+          <CardBody className="flex min-h-0 flex-1 flex-col gap-3 p-3">
             {loading ? (
-              <div className="flex h-[280px] items-center justify-center">
+              <div className="flex min-h-0 flex-1 items-center justify-center">
                 <Spinner label="Loading chat..." />
               </div>
             ) : (
               <div
                 ref={messageListRef}
-                className="h-[42dvh] min-h-[220px] max-h-[50dvh] space-y-2 overflow-y-auto rounded-large border border-slate-500/35 bg-[#070f1f]/75 p-3 sm:h-[280px] sm:max-h-[58vh]"
+                className="flex-1 min-h-0 space-y-2 overflow-y-auto px-1 pb-1 sm:rounded-large sm:border sm:border-slate-500/35 sm:bg-[#070f1f]/75 sm:p-3"
               >
                 {sortedMessages.length === 0 ? (
                   <p className="text-sm text-slate-300">No messages yet. Start the banter.</p>
@@ -312,47 +329,54 @@ export const GlobalChatPanel = ({
               </div>
             )}
 
-            <form
-              className="flex items-center gap-2 rounded-large border border-slate-500/35 bg-slate-900/45 p-2"
-              onSubmit={(event) => {
-                event.preventDefault();
-                void submitMessage();
-              }}
+            <div
+              className="-mx-3 mt-auto border-t border-slate-500/35 bg-[#091426]/95 px-3 pt-2 sm:mx-0 sm:mt-0 sm:border-0 sm:bg-transparent sm:px-0 sm:pt-0"
+              style={{ paddingBottom: "calc(env(safe-area-inset-bottom) + 0.5rem)" }}
             >
-              <div className="flex-1" ref={inputContainerRef}>
-                <Input
-                  aria-label="Chat message"
-                  isDisabled={pendingSend}
-                  maxLength={MAX_GLOBAL_CHAT_MESSAGE_LENGTH}
-                  placeholder="Type your message..."
-                  value={messageInput}
-                  variant="bordered"
-                  onValueChange={setMessageInput}
-                />
-              </div>
-              <Button
-                color="primary"
-                isDisabled={messageInput.trim().length === 0}
-                isLoading={pendingSend}
-                type="submit"
-                variant="flat"
+              <form
+                className="flex items-center gap-2 rounded-large border border-slate-500/35 bg-slate-900/55 p-2"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void submitMessage();
+                }}
               >
-                <span className="inline-flex items-center gap-1">
-                  <Send className="h-4 w-4" />
-                  Send
-                </span>
-              </Button>
-            </form>
-            <div className="flex items-center justify-end text-[11px] text-slate-300">
-              {messageInput.trim().length}/{MAX_GLOBAL_CHAT_MESSAGE_LENGTH}
+                <div className="flex-1" ref={inputContainerRef}>
+                  <Input
+                    aria-label="Chat message"
+                    isDisabled={pendingSend}
+                    maxLength={MAX_GLOBAL_CHAT_MESSAGE_LENGTH}
+                    placeholder="Type your message..."
+                    value={messageInput}
+                    variant="bordered"
+                    onValueChange={setMessageInput}
+                  />
+                </div>
+                <Button
+                  color="primary"
+                  isDisabled={messageInput.trim().length === 0}
+                  isLoading={pendingSend}
+                  type="submit"
+                  variant="flat"
+                >
+                  <span className="inline-flex items-center gap-1">
+                    <Send className="h-4 w-4" />
+                    <span className="hidden sm:inline">Send</span>
+                  </span>
+                </Button>
+              </form>
+              <div className="mt-1 flex items-center justify-end text-[11px] text-slate-300">
+                {messageInput.trim().length}/{MAX_GLOBAL_CHAT_MESSAGE_LENGTH}
+              </div>
+              {error ? <p className="mt-1 text-sm text-danger-400">{error}</p> : null}
             </div>
-            {error ? <p className="text-sm text-danger-400">{error}</p> : null}
           </CardBody>
         </Card>
       ) : null}
 
       <Button
-        className="pointer-events-auto relative z-10 rounded-full border border-default-200/35 shadow-lg"
+        className={`pointer-events-auto relative z-10 rounded-full border border-default-200/35 shadow-lg ${
+          isOpen ? "hidden sm:inline-flex" : ""
+        }`}
         color="primary"
         radius="full"
         variant="shadow"
