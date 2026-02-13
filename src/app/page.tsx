@@ -182,8 +182,8 @@ const UserAvatar = ({
 };
 
 const resolveInsightLogoSrc = async (): Promise<string> => {
-  const relativeSrc = "/img/insight_new.png";
-  const filePath = path.join(process.cwd(), "public", "img", "insight_new.png");
+  const relativeSrc = "/img/insight-lol-fantasy-logo.png";
+  const filePath = path.join(process.cwd(), "public", "img", "insight-lol-fantasy-logo.png");
 
   try {
     const fileStat = await stat(filePath);
