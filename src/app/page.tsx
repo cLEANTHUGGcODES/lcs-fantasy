@@ -293,7 +293,7 @@ export default async function Home() {
           alt="Insight"
           width={1110}
           height={210}
-          className="h-auto w-full max-w-[760px]"
+          className="h-auto w-full max-w-[380px]"
         />
       </section>
 
