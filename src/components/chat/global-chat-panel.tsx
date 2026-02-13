@@ -38,6 +38,7 @@ export const GlobalChatPanel = ({
   className?: string;
 }) => {
   const [isOpen, setIsOpen] = useState(false);
+  const [isMobileViewport, setIsMobileViewport] = useState(false);
   const [messages, setMessages] = useState<GlobalChatMessage[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -137,6 +138,26 @@ export const GlobalChatPanel = ({
   }, [loadMessages]);
 
   useEffect(() => {
+    const media = window.matchMedia("(max-width: 639px)");
+    const syncViewport = () => {
+      setIsMobileViewport(media.matches);
+    };
+
+    syncViewport();
+    if (typeof media.addEventListener === "function") {
+      media.addEventListener("change", syncViewport);
+      return () => {
+        media.removeEventListener("change", syncViewport);
+      };
+    }
+
+    media.addListener(syncViewport);
+    return () => {
+      media.removeListener(syncViewport);
+    };
+  }, []);
+
+  useEffect(() => {
     if (!isOpen) {
       return;
     }
@@ -148,17 +169,52 @@ export const GlobalChatPanel = ({
   }, [isOpen, sortedMessages]);
 
   useEffect(() => {
-    if (!isOpen) {
+    if (!isOpen || !isMobileViewport) {
       return;
     }
 
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
+    const html = document.documentElement;
+    const body = document.body;
+    const scrollY = window.scrollY;
+
+    const previous = {
+      htmlOverflow: html.style.overflow,
+      htmlHeight: html.style.height,
+      htmlOverscrollBehaviorY: html.style.overscrollBehaviorY,
+      bodyOverflow: body.style.overflow,
+      bodyPosition: body.style.position,
+      bodyTop: body.style.top,
+      bodyLeft: body.style.left,
+      bodyRight: body.style.right,
+      bodyWidth: body.style.width,
+      bodyOverscrollBehaviorY: body.style.overscrollBehaviorY,
+    };
+
+    html.style.overflow = "hidden";
+    html.style.height = "100%";
+    html.style.overscrollBehaviorY = "none";
+    body.style.overflow = "hidden";
+    body.style.position = "fixed";
+    body.style.top = `-${scrollY}px`;
+    body.style.left = "0";
+    body.style.right = "0";
+    body.style.width = "100%";
+    body.style.overscrollBehaviorY = "none";
 
     return () => {
-      document.body.style.overflow = previousOverflow;
+      html.style.overflow = previous.htmlOverflow;
+      html.style.height = previous.htmlHeight;
+      html.style.overscrollBehaviorY = previous.htmlOverscrollBehaviorY;
+      body.style.overflow = previous.bodyOverflow;
+      body.style.position = previous.bodyPosition;
+      body.style.top = previous.bodyTop;
+      body.style.left = previous.bodyLeft;
+      body.style.right = previous.bodyRight;
+      body.style.width = previous.bodyWidth;
+      body.style.overscrollBehaviorY = previous.bodyOverscrollBehaviorY;
+      window.scrollTo(0, scrollY);
     };
-  }, [isOpen]);
+  }, [isOpen, isMobileViewport]);
 
   const submitMessage = useCallback(async () => {
     const trimmed = messageInput.trim();
@@ -273,7 +329,7 @@ export const GlobalChatPanel = ({
 
       {isOpen ? (
         <Card
-          className={`pointer-events-auto fixed inset-0 z-10 flex h-[100dvh] w-screen flex-col overflow-hidden rounded-none bg-gradient-to-b from-[#081120] via-[#0d1a30] to-[#111d33] text-slate-100 sm:relative sm:h-auto sm:max-h-[min(700px,86dvh)] sm:w-[380px] sm:rounded-2xl sm:border sm:border-slate-400/45 sm:shadow-2xl sm:backdrop-blur-md ${className ?? ""}`}
+          className={`pointer-events-auto fixed inset-0 z-10 flex h-[100svh] min-h-[100svh] w-screen flex-col overflow-hidden overscroll-none rounded-none bg-gradient-to-b from-[#081120] via-[#0d1a30] to-[#111d33] text-slate-100 sm:relative sm:h-auto sm:min-h-0 sm:max-h-[min(700px,86dvh)] sm:w-[380px] sm:rounded-2xl sm:border sm:border-slate-400/45 sm:shadow-2xl sm:backdrop-blur-md ${className ?? ""}`}
         >
           <CardHeader
             className="flex items-center justify-between border-b border-slate-500/35 px-3 pb-1.5 pt-2"
@@ -304,7 +360,8 @@ export const GlobalChatPanel = ({
             ) : (
               <div
                 ref={messageListRef}
-                className="flex-1 min-h-0 space-y-1.5 overflow-y-auto px-1 pb-1 sm:space-y-2 sm:rounded-large sm:border sm:border-slate-500/35 sm:bg-[#070f1f]/75 sm:p-3"
+                className="flex-1 min-h-0 space-y-1.5 overflow-y-auto overscroll-contain px-1 pb-1 touch-pan-y sm:space-y-2 sm:rounded-large sm:border sm:border-slate-500/35 sm:bg-[#070f1f]/75 sm:p-3"
+                style={{ WebkitOverflowScrolling: "touch" }}
               >
                 {sortedMessages.length === 0 ? (
                   <p className="text-sm text-slate-300">No messages yet. Start the banter.</p>
