@@ -31,6 +31,24 @@ export async function POST(
     }
 
     await processDueDrafts({ draftId });
+    const draftBeforePick = await getDraftDetail({
+      draftId,
+      currentUserId: user.id,
+    });
+
+    if (draftBeforePick.status !== "live" || !draftBeforePick.nextPick) {
+      return Response.json({ error: "Draft is not currently accepting manual picks." }, { status: 400 });
+    }
+
+    if (draftBeforePick.nextPick.participantUserId !== user.id) {
+      return Response.json(
+        {
+          error: `It is currently ${draftBeforePick.nextPick.participantDisplayName}'s turn to pick.`,
+        },
+        { status: 403 },
+      );
+    }
+
     const pickedByLabel = getUserDisplayName(user) ?? user.id;
     const submission = await submitDraftPickAtomic({
       draftId,

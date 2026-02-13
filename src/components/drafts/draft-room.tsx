@@ -374,7 +374,8 @@ export const DraftRoom = ({
   const canCurrentUserPick =
     Boolean(draft?.status === "live") &&
     Boolean(draft?.nextPick) &&
-    (onClockUserId === currentUserId || draft?.isCommissioner);
+    onClockUserId === currentUserId;
+  const canEditPickQueue = canCurrentUserPick;
   const effectiveNowMs = clientNowMs + serverOffsetMs;
   const currentPresence = presenceByUserId.get(currentUserId) ?? null;
   const participantsByPosition = useMemo(
@@ -448,7 +449,7 @@ export const DraftRoom = ({
   };
 
   const submitPick = async () => {
-    if (!draft || !nextQueuedPlayerName) {
+    if (!draft || !nextQueuedPlayerName || !canCurrentUserPick) {
       return;
     }
     setPickPending(true);
@@ -476,6 +477,9 @@ export const DraftRoom = ({
   };
 
   const addPlayerToQueue = (playerName: string) => {
+    if (!canEditPickQueue) {
+      return;
+    }
     setPickQueue((prevQueue) => {
       if (prevQueue.includes(playerName)) {
         return prevQueue;
@@ -485,14 +489,23 @@ export const DraftRoom = ({
   };
 
   const removePlayerFromQueue = (playerName: string) => {
+    if (!canEditPickQueue) {
+      return;
+    }
     setPickQueue((prevQueue) => prevQueue.filter((queuedName) => queuedName !== playerName));
   };
 
   const clearQueue = () => {
+    if (!canEditPickQueue) {
+      return;
+    }
     setPickQueue([]);
   };
 
   const moveQueueItem = (fromIndex: number, toIndex: number) => {
+    if (!canEditPickQueue) {
+      return;
+    }
     setPickQueue((prevQueue) => {
       if (
         fromIndex < 0 ||
@@ -951,7 +964,8 @@ export const DraftRoom = ({
                   Available Players
                 </h2>
                 <p className="text-xs text-default-500">
-                  Use filters to narrow the board, then add players to your queue.
+                  Use filters to narrow the board, then add players to your queue when you are on
+                  the clock.
                 </p>
               </div>
               <Chip variant="flat">
@@ -1033,7 +1047,7 @@ export const DraftRoom = ({
                               : `Add ${player.playerName} to queue`
                           }
                           color={isQueued ? "primary" : "default"}
-                          isDisabled={isQueued}
+                          isDisabled={isQueued || !canEditPickQueue}
                           isIconOnly
                           size="sm"
                           variant="flat"
@@ -1161,11 +1175,11 @@ export const DraftRoom = ({
                                     ? `${player.playerName} already in queue`
                                     : `Add ${player.playerName} to queue`
                                 }
-                                color={isQueued ? "primary" : "default"}
-                                isDisabled={isQueued}
-                                isIconOnly
-                                size="sm"
-                                variant="flat"
+                              color={isQueued ? "primary" : "default"}
+                              isDisabled={isQueued || !canEditPickQueue}
+                              isIconOnly
+                              size="sm"
+                              variant="flat"
                                 onPress={() => addPlayerToQueue(player.playerName)}
                               >
                                 {isQueued ? (
@@ -1193,7 +1207,7 @@ export const DraftRoom = ({
               <p className="text-xs text-default-500">Drag to reorder. Top player submits first.</p>
             </div>
             <Button
-              isDisabled={pickQueue.length === 0}
+              isDisabled={pickQueue.length === 0 || !canEditPickQueue}
               size="sm"
               variant="light"
               onPress={clearQueue}
@@ -1217,14 +1231,25 @@ export const DraftRoom = ({
                       className={`flex items-center gap-2 px-3 py-2 ${
                         index === 0 ? "bg-primary-500/10" : ""
                       }`}
-                      draggable
+                      draggable={canEditPickQueue}
                       onDragEnd={() => setDraggedQueueIndex(null)}
                       onDragOver={(event) => {
+                        if (!canEditPickQueue) {
+                          return;
+                        }
                         event.preventDefault();
                         event.dataTransfer.dropEffect = "move";
                       }}
-                      onDragStart={() => setDraggedQueueIndex(index)}
+                      onDragStart={() => {
+                        if (!canEditPickQueue) {
+                          return;
+                        }
+                        setDraggedQueueIndex(index);
+                      }}
                       onDrop={() => {
+                        if (!canEditPickQueue) {
+                          return;
+                        }
                         if (draggedQueueIndex === null) {
                           return;
                         }
@@ -1247,6 +1272,7 @@ export const DraftRoom = ({
                       <Button
                         aria-label={`Remove ${player.playerName} from queue`}
                         isIconOnly
+                        isDisabled={!canEditPickQueue}
                         size="sm"
                         variant="light"
                         onPress={() => removePlayerFromQueue(player.playerName)}
@@ -1274,7 +1300,7 @@ export const DraftRoom = ({
             </Button>
             {!canCurrentUserPick ? (
               <p className="text-xs text-default-500">
-                You can queue players now, but only submit when you are on the clock.
+                Queue and pick controls unlock only when you are on the clock.
               </p>
             ) : null}
           </CardBody>
