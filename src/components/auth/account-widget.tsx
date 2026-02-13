@@ -116,11 +116,11 @@ export const AccountWidget = ({
 
       {isOpen ? (
         <div
-          className="fixed inset-0 z-[90] flex items-center justify-center bg-black/55 px-4 py-6 backdrop-blur-[2px]"
+          className="fixed inset-0 z-[90] flex items-start justify-center overflow-y-auto bg-black/55 px-4 py-5 backdrop-blur-[2px] sm:items-center sm:py-6"
           onClick={() => setIsOpen(false)}
         >
           <div
-            className="w-full max-w-2xl rounded-[20px] border border-default-200/40 bg-content1/95 p-5 shadow-2xl backdrop-blur-md md:p-6"
+            className="w-full max-w-2xl overflow-hidden rounded-[20px] border border-default-200/40 bg-content1/95 p-5 shadow-2xl backdrop-blur-md md:p-6"
             onClick={(event) => event.stopPropagation()}
           >
             <div className="mb-5 flex items-start justify-between gap-3">
@@ -137,58 +137,60 @@ export const AccountWidget = ({
               </button>
             </div>
 
-            <div className="grid grid-cols-1 gap-5 md:grid-cols-[220px_1fr]">
-              <div className="rounded-large border border-default-200/30 bg-default-100/5 p-4">
-                <div className="mb-3 flex justify-center">
-                  {activeAvatarUrl ? (
-                    <span className="relative inline-flex h-28 w-28 overflow-hidden rounded-full border border-default-300/40 bg-default-200/30">
-                      <Image
-                        src={activeAvatarUrl}
-                        alt={`${activeLabel} profile image`}
-                        fill
-                        sizes="112px"
-                        quality={100}
-                        unoptimized
-                        className="object-contain object-center"
-                      />
-                    </span>
-                  ) : (
-                    <span className="inline-flex h-28 w-28 items-center justify-center rounded-full border border-default-300/40 bg-default-200/40 text-xl font-semibold text-default-600">
-                      {initialsForName(activeLabel)}
-                    </span>
-                  )}
+            <div className="max-h-[calc(100dvh-10rem)] overflow-y-auto pr-1">
+              <div className="grid grid-cols-1 gap-5 md:grid-cols-[220px_1fr]">
+                <div className="rounded-large border border-default-200/30 bg-default-100/5 p-4">
+                  <div className="mb-3 flex justify-center">
+                    {activeAvatarUrl ? (
+                      <span className="relative inline-flex h-28 w-28 overflow-hidden rounded-full border border-default-300/40 bg-default-200/30">
+                        <Image
+                          src={activeAvatarUrl}
+                          alt={`${activeLabel} profile image`}
+                          fill
+                          sizes="112px"
+                          quality={100}
+                          unoptimized
+                          className="object-contain object-center"
+                        />
+                      </span>
+                    ) : (
+                      <span className="inline-flex h-28 w-28 items-center justify-center rounded-full border border-default-300/40 bg-default-200/40 text-xl font-semibold text-default-600">
+                        {initialsForName(activeLabel)}
+                      </span>
+                    )}
+                  </div>
+                  <p className="mb-2 text-center text-xs text-default-500">Profile image</p>
+                  <ProfileImageForm
+                    currentAvatarPath={activeAvatarPath}
+                    onSaved={({ avatarPath: nextPath, avatarUrl: nextUrl }) => {
+                      setActiveAvatarPath(nextPath);
+                      setActiveAvatarUrl(nextUrl);
+                    }}
+                  />
                 </div>
-                <p className="mb-2 text-center text-xs text-default-500">Profile image</p>
-                <ProfileImageForm
-                  currentAvatarPath={activeAvatarPath}
-                  onSaved={({ avatarPath: nextPath, avatarUrl: nextUrl }) => {
-                    setActiveAvatarPath(nextPath);
-                    setActiveAvatarUrl(nextUrl);
-                  }}
-                />
-              </div>
 
-              <div className="rounded-large border border-default-200/30 bg-default-100/5 p-4">
-                <p className="mb-2 text-xs text-default-500">Update name and team</p>
-                <DisplayNameForm
-                  initialFirstName={activeFirstName ?? ""}
-                  initialLastName={activeLastName ?? ""}
-                  initialTeamName={activeTeamName ?? ""}
-                  saveLabel="Update Name"
-                  showSavedMessage={false}
-                  onSaved={({
-                    firstName: nextFirstName,
-                    lastName: nextLastName,
-                    teamName: nextTeamName,
-                    displayLabel,
-                  }) => {
-                    setActiveFirstName(nextFirstName);
-                    setActiveLastName(nextLastName);
-                    setActiveTeamName(nextTeamName);
-                    setActiveLabel(displayLabel);
-                    setIsOpen(false);
-                  }}
-                />
+                <div className="rounded-large border border-default-200/30 bg-default-100/5 p-4">
+                  <p className="mb-2 text-xs text-default-500">Update name and team</p>
+                  <DisplayNameForm
+                    initialFirstName={activeFirstName ?? ""}
+                    initialLastName={activeLastName ?? ""}
+                    initialTeamName={activeTeamName ?? ""}
+                    saveLabel="Update Name"
+                    showSavedMessage={false}
+                    onSaved={({
+                      firstName: nextFirstName,
+                      lastName: nextLastName,
+                      teamName: nextTeamName,
+                      displayLabel,
+                    }) => {
+                      setActiveFirstName(nextFirstName);
+                      setActiveLastName(nextLastName);
+                      setActiveTeamName(nextTeamName);
+                      setActiveLabel(displayLabel);
+                      setIsOpen(false);
+                    }}
+                  />
+                </div>
               </div>
             </div>
           </div>

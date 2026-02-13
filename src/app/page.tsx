@@ -259,7 +259,7 @@ export default async function Home() {
   const standingsLeaderPoints = draftedRows[0]?.totalPoints ?? 1;
 
   return (
-    <main className="mx-auto min-h-screen w-full max-w-7xl px-3 py-5 md:px-6 md:py-8">
+    <main className="mx-auto min-h-screen w-full max-w-7xl px-3 py-5 pb-28 md:px-6 md:py-8 md:pb-24">
       <section className="mt-2 flex items-center justify-center py-6">
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
@@ -352,39 +352,14 @@ export default async function Home() {
             </p>
           </div>
         </CardHeader>
-        <CardBody className="overflow-x-auto">
-          <table
-            className={`w-full border-collapse text-left text-sm ${
-              hasCompletedDraft ? "min-w-[980px]" : "min-w-[560px]"
-            }`}
-          >
-            <thead>
-              <tr className="text-default-500">
-                <th className="px-2 py-2 font-medium">#</th>
-                <th className="px-2 py-2 font-medium">User</th>
-                {hasCompletedDraft ? (
-                  <>
-                    <th className="px-2 py-2 font-medium">Total</th>
-                    <th className="px-2 py-2 font-medium">Avg / Pick</th>
-                    <th className="px-2 py-2 font-medium">Roster Breakdown</th>
-                  </>
-                ) : (
-                  <th className="px-2 py-2 font-medium">Draft Status</th>
-                )}
-              </tr>
-            </thead>
-            <tbody>
-              {dashboardStandings.rows.length === 0 ? (
-                <tr className="border-t border-default-200/30">
-                  <td
-                    className="px-2 py-3 text-sm text-default-500"
-                    colSpan={hasCompletedDraft ? 5 : 3}
-                  >
-                    No registered users found.
-                  </td>
-                </tr>
-              ) : (
-                dashboardStandings.rows.map((entry, index) => {
+        <CardBody className="space-y-3">
+          <div className="space-y-2 md:hidden">
+            {dashboardStandings.rows.length === 0 ? (
+              <p className="rounded-large border border-default-200/30 bg-content2/35 px-3 py-3 text-sm text-default-500">
+                No registered users found.
+              </p>
+            ) : (
+              dashboardStandings.rows.map((entry, index) => {
                 const leaderRatio = entry.drafted
                   ? (entry.totalPoints / standingsLeaderPoints) * 100
                   : 0;
@@ -395,61 +370,162 @@ export default async function Home() {
                   entry.drafted;
 
                 return (
-                  <tr
+                  <div
                     key={entry.userId}
-                    className="border-t border-default-200/30 align-top hover:bg-default-100/20"
+                    className="rounded-large border border-default-200/30 bg-content2/35 p-3"
                   >
-                    <td className="px-2 py-2">{index + 1}</td>
-                    <td className="px-2 py-2">
-                      <div className="flex items-center gap-2">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex min-w-0 items-center gap-2">
+                        <span className="text-xs text-default-500">#{index + 1}</span>
                         <UserAvatar avatarUrl={entry.avatarUrl} displayName={entry.displayName} />
-                        <div className="min-w-0">
-                          <p className="truncate">{entry.displayName}</p>
-                        </div>
-                        {isLeader ? (
-                          <Chip size="sm" color="warning" variant="flat">
-                            Leader
-                          </Chip>
-                        ) : null}
+                        <p className="truncate text-sm font-medium">{entry.displayName}</p>
                       </div>
-                    </td>
+                      {isLeader ? (
+                        <Chip color="warning" size="sm" variant="flat">
+                          Leader
+                        </Chip>
+                      ) : null}
+                    </div>
                     {hasCompletedDraft ? (
-                      <>
-                        <td className="mono-points px-2 py-2">
-                          {entry.drafted ? formatPoints(entry.totalPoints) : "—"}
-                        </td>
-                        <td className="px-2 py-2">
-                          {entry.drafted ? formatPoints(entry.averagePerPick) : "—"}
-                        </td>
-                        <td className="px-2 py-2">
-                          {entry.drafted ? (
-                            <div className="min-w-[320px] space-y-2">
-                              <p className="text-xs text-default-500">
-                                {entry.breakdown
-                                  .map((pick) => `${pick.playerName} (${formatPoints(pick.points)})`)
-                                  .join(" • ")}
-                              </p>
-                              <Progress
-                                aria-label={`${entry.displayName} total points`}
-                                color="primary"
-                                size="sm"
-                                value={Math.min(100, leaderRatio)}
-                              />
-                            </div>
-                          ) : (
-                            <p className="text-xs text-default-500">Not drafted yet.</p>
-                          )}
-                        </td>
-                      </>
+                      entry.drafted ? (
+                        <div className="mt-2 space-y-2">
+                          <div className="grid grid-cols-2 gap-2 text-xs text-default-500">
+                            <p>
+                              Total:{" "}
+                              <span className="mono-points font-semibold text-default-200">
+                                {formatPoints(entry.totalPoints)}
+                              </span>
+                            </p>
+                            <p>
+                              Avg/Pick:{" "}
+                              <span className="mono-points font-semibold text-default-200">
+                                {formatPoints(entry.averagePerPick)}
+                              </span>
+                            </p>
+                          </div>
+                          <p className="text-xs text-default-500">
+                            {entry.breakdown
+                              .map((pick) => `${pick.playerName} (${formatPoints(pick.points)})`)
+                              .join(" • ")}
+                          </p>
+                          <Progress
+                            aria-label={`${entry.displayName} total points`}
+                            color="primary"
+                            size="sm"
+                            value={Math.min(100, leaderRatio)}
+                          />
+                        </div>
+                      ) : (
+                        <p className="mt-2 text-xs text-default-500">Not drafted yet.</p>
+                      )
                     ) : (
-                      <td className="px-2 py-2 text-sm text-default-500">Not drafted yet.</td>
+                      <p className="mt-2 text-xs text-default-500">Not drafted yet.</p>
                     )}
-                  </tr>
+                  </div>
                 );
               })
-              )}
-            </tbody>
-          </table>
+            )}
+          </div>
+
+          <div className="hidden overflow-x-auto md:block">
+            <table
+              className={`w-full border-collapse text-left text-sm ${
+                hasCompletedDraft ? "min-w-[980px]" : "min-w-[560px]"
+              }`}
+            >
+              <thead>
+                <tr className="text-default-500">
+                  <th className="px-2 py-2 font-medium">#</th>
+                  <th className="px-2 py-2 font-medium">User</th>
+                  {hasCompletedDraft ? (
+                    <>
+                      <th className="px-2 py-2 font-medium">Total</th>
+                      <th className="px-2 py-2 font-medium">Avg / Pick</th>
+                      <th className="px-2 py-2 font-medium">Roster Breakdown</th>
+                    </>
+                  ) : (
+                    <th className="px-2 py-2 font-medium">Draft Status</th>
+                  )}
+                </tr>
+              </thead>
+              <tbody>
+                {dashboardStandings.rows.length === 0 ? (
+                  <tr className="border-t border-default-200/30">
+                    <td
+                      className="px-2 py-3 text-sm text-default-500"
+                      colSpan={hasCompletedDraft ? 5 : 3}
+                    >
+                      No registered users found.
+                    </td>
+                  </tr>
+                ) : (
+                  dashboardStandings.rows.map((entry, index) => {
+                    const leaderRatio = entry.drafted
+                      ? (entry.totalPoints / standingsLeaderPoints) * 100
+                      : 0;
+                    const isLeader =
+                      hasCompletedDraft &&
+                      draftedRows.length > 0 &&
+                      draftedRows[0].userId === entry.userId &&
+                      entry.drafted;
+
+                    return (
+                      <tr
+                        key={entry.userId}
+                        className="border-t border-default-200/30 align-top hover:bg-default-100/20"
+                      >
+                        <td className="px-2 py-2">{index + 1}</td>
+                        <td className="px-2 py-2">
+                          <div className="flex items-center gap-2">
+                            <UserAvatar avatarUrl={entry.avatarUrl} displayName={entry.displayName} />
+                            <div className="min-w-0">
+                              <p className="truncate">{entry.displayName}</p>
+                            </div>
+                            {isLeader ? (
+                              <Chip color="warning" size="sm" variant="flat">
+                                Leader
+                              </Chip>
+                            ) : null}
+                          </div>
+                        </td>
+                        {hasCompletedDraft ? (
+                          <>
+                            <td className="mono-points px-2 py-2">
+                              {entry.drafted ? formatPoints(entry.totalPoints) : "—"}
+                            </td>
+                            <td className="px-2 py-2">
+                              {entry.drafted ? formatPoints(entry.averagePerPick) : "—"}
+                            </td>
+                            <td className="px-2 py-2">
+                              {entry.drafted ? (
+                                <div className="min-w-[320px] space-y-2">
+                                  <p className="text-xs text-default-500">
+                                    {entry.breakdown
+                                      .map((pick) => `${pick.playerName} (${formatPoints(pick.points)})`)
+                                      .join(" • ")}
+                                  </p>
+                                  <Progress
+                                    aria-label={`${entry.displayName} total points`}
+                                    color="primary"
+                                    size="sm"
+                                    value={Math.min(100, leaderRatio)}
+                                  />
+                                </div>
+                              ) : (
+                                <p className="text-xs text-default-500">Not drafted yet.</p>
+                              )}
+                            </td>
+                          </>
+                        ) : (
+                          <td className="px-2 py-2 text-sm text-default-500">Not drafted yet.</td>
+                        )}
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
         </CardBody>
       </Card>
 
@@ -463,39 +539,76 @@ export default async function Home() {
               </p>
             </div>
           </CardHeader>
-          <CardBody className="overflow-x-auto">
-            <table className="w-full min-w-[720px] border-collapse text-left text-sm">
-              <thead>
-                <tr className="text-default-500">
-                  <th className="px-2 py-2 font-medium">#</th>
-                  <th className="px-2 py-2 font-medium">Player</th>
-                  <th className="px-2 py-2 font-medium">Team</th>
-                  <th className="px-2 py-2 font-medium">Record</th>
-                  <th className="px-2 py-2 font-medium">KDA</th>
-                  <th className="px-2 py-2 font-medium">Points</th>
-                </tr>
-              </thead>
-              <tbody>
-                {snapshot.playerTotals.slice(0, 20).map((entry, index) => (
-                  <tr
-                    key={entry.player}
-                    className="border-t border-default-200/30 hover:bg-default-100/20"
-                  >
-                    <td className="px-2 py-2">{index + 1}</td>
-                    <td className="px-2 py-2">{entry.player}</td>
-                    <td className="px-2 py-2">
-                      <TeamLabel
-                        team={entry.team}
-                        iconUrl={teamIcons.get(teamKey(entry.team)) ?? null}
-                      />
-                    </td>
-                    <td className="px-2 py-2">{formatRecord(entry.wins, entry.games)}</td>
-                    <td className="px-2 py-2">{formatKda(entry.kills, entry.deaths, entry.assists)}</td>
-                    <td className="mono-points px-2 py-2">{formatPoints(entry.fantasyPoints)}</td>
+          <CardBody className="space-y-3">
+            <div className="space-y-2 md:hidden">
+              {snapshot.playerTotals.slice(0, 20).map((entry, index) => (
+                <div
+                  key={entry.player}
+                  className="rounded-large border border-default-200/30 bg-content2/35 p-3"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-xs text-default-500">#{index + 1}</p>
+                      <p className="text-sm font-semibold">{entry.player}</p>
+                    </div>
+                    <p className="mono-points text-sm font-semibold">
+                      {formatPoints(entry.fantasyPoints)}
+                    </p>
+                  </div>
+                  <div className="mt-2 space-y-1 text-xs text-default-500">
+                    <p>
+                      Team:{" "}
+                      <span className="text-default-300">
+                        <TeamLabel
+                          team={entry.team}
+                          iconUrl={teamIcons.get(teamKey(entry.team)) ?? null}
+                        />
+                      </span>
+                    </p>
+                    <p>
+                      Record: {formatRecord(entry.wins, entry.games)} • KDA:{" "}
+                      {formatKda(entry.kills, entry.deaths, entry.assists)}
+                    </p>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="hidden overflow-x-auto md:block">
+              <table className="w-full min-w-[720px] border-collapse text-left text-sm">
+                <thead>
+                  <tr className="text-default-500">
+                    <th className="px-2 py-2 font-medium">#</th>
+                    <th className="px-2 py-2 font-medium">Player</th>
+                    <th className="px-2 py-2 font-medium">Team</th>
+                    <th className="px-2 py-2 font-medium">Record</th>
+                    <th className="px-2 py-2 font-medium">KDA</th>
+                    <th className="px-2 py-2 font-medium">Points</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {snapshot.playerTotals.slice(0, 20).map((entry, index) => (
+                    <tr
+                      key={entry.player}
+                      className="border-t border-default-200/30 hover:bg-default-100/20"
+                    >
+                      <td className="px-2 py-2">{index + 1}</td>
+                      <td className="px-2 py-2">{entry.player}</td>
+                      <td className="px-2 py-2">
+                        <TeamLabel
+                          team={entry.team}
+                          iconUrl={teamIcons.get(teamKey(entry.team)) ?? null}
+                        />
+                      </td>
+                      <td className="px-2 py-2">{formatRecord(entry.wins, entry.games)}</td>
+                      <td className="px-2 py-2">
+                        {formatKda(entry.kills, entry.deaths, entry.assists)}
+                      </td>
+                      <td className="mono-points px-2 py-2">{formatPoints(entry.fantasyPoints)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </CardBody>
         </Card>
 
@@ -508,39 +621,20 @@ export default async function Home() {
               </p>
             </div>
           </CardHeader>
-          <CardBody className="overflow-x-auto">
-            <table className="w-full min-w-[700px] border-collapse text-left text-sm">
-              <thead>
-                <tr className="text-default-500">
-                  <th className="px-2 py-2 font-medium">Player</th>
-                  <th className="px-2 py-2 font-medium">Game</th>
-                  <th className="px-2 py-2 font-medium">Date</th>
-                  <th className="px-2 py-2 font-medium">KDA</th>
-                  <th className="px-2 py-2 font-medium">Score</th>
-                </tr>
-              </thead>
-              <tbody>
-                {snapshot.topPerformances.map((entry) => (
-                  <tr
-                    key={`${entry.gameId}-${entry.player}-${entry.champion}`}
-                    className="border-t border-default-200/30 align-top hover:bg-default-100/20"
-                  >
-                    <td className="px-2 py-2">
-                      <p className="flex items-center gap-1">
-                        <TeamIcon
-                          team={entry.team}
-                          iconUrl={teamIcons.get(teamKey(entry.team)) ?? null}
-                        />
-                        <span>
-                          {entry.player}{" "}
-                          <span className="text-xs text-default-500">
-                            ({entry.champion})
-                          </span>
-                        </span>
+          <CardBody className="space-y-3">
+            <div className="space-y-2 md:hidden">
+              {snapshot.topPerformances.map((entry) => (
+                <div
+                  key={`${entry.gameId}-${entry.player}-${entry.champion}`}
+                  className="rounded-large border border-default-200/30 bg-content2/35 p-3"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-semibold">
+                        {entry.player}{" "}
+                        <span className="text-xs text-default-500">({entry.champion})</span>
                       </p>
-                    </td>
-                    <td className="px-2 py-2">
-                      <p className="flex items-center gap-1">
+                      <p className="mt-1 flex items-center gap-1 text-xs text-default-500">
                         <TeamIcon
                           team={entry.team}
                           iconUrl={teamIcons.get(teamKey(entry.team)) ?? null}
@@ -551,14 +645,66 @@ export default async function Home() {
                           iconUrl={teamIcons.get(teamKey(entry.opponent)) ?? null}
                         />
                       </p>
-                    </td>
-                    <td className="px-2 py-2">{formatShortDate(entry.playedAtLabel)}</td>
-                    <td className="px-2 py-2">{formatKda(entry.kills, entry.deaths, entry.assists)}</td>
-                    <td className="mono-points px-2 py-2">{formatPoints(entry.fantasyPoints)}</td>
+                    </div>
+                    <p className="mono-points text-sm font-semibold">{formatPoints(entry.fantasyPoints)}</p>
+                  </div>
+                  <p className="mt-2 text-xs text-default-500">
+                    {formatShortDate(entry.playedAtLabel)} • KDA{" "}
+                    {formatKda(entry.kills, entry.deaths, entry.assists)}
+                  </p>
+                </div>
+              ))}
+            </div>
+            <div className="hidden overflow-x-auto md:block">
+              <table className="w-full min-w-[700px] border-collapse text-left text-sm">
+                <thead>
+                  <tr className="text-default-500">
+                    <th className="px-2 py-2 font-medium">Player</th>
+                    <th className="px-2 py-2 font-medium">Game</th>
+                    <th className="px-2 py-2 font-medium">Date</th>
+                    <th className="px-2 py-2 font-medium">KDA</th>
+                    <th className="px-2 py-2 font-medium">Score</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {snapshot.topPerformances.map((entry) => (
+                    <tr
+                      key={`${entry.gameId}-${entry.player}-${entry.champion}`}
+                      className="border-t border-default-200/30 align-top hover:bg-default-100/20"
+                    >
+                      <td className="px-2 py-2">
+                        <p className="flex items-center gap-1">
+                          <TeamIcon
+                            team={entry.team}
+                            iconUrl={teamIcons.get(teamKey(entry.team)) ?? null}
+                          />
+                          <span>
+                            {entry.player}{" "}
+                            <span className="text-xs text-default-500">({entry.champion})</span>
+                          </span>
+                        </p>
+                      </td>
+                      <td className="px-2 py-2">
+                        <p className="flex items-center gap-1">
+                          <TeamIcon
+                            team={entry.team}
+                            iconUrl={teamIcons.get(teamKey(entry.team)) ?? null}
+                          />
+                          <span>vs</span>
+                          <TeamIcon
+                            team={entry.opponent}
+                            iconUrl={teamIcons.get(teamKey(entry.opponent)) ?? null}
+                          />
+                        </p>
+                      </td>
+                      <td className="px-2 py-2">{formatShortDate(entry.playedAtLabel)}</td>
+                      <td className="px-2 py-2">{formatKda(entry.kills, entry.deaths, entry.assists)}</td>
+                      <td className="mono-points px-2 py-2">{formatPoints(entry.fantasyPoints)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </CardBody>
         </Card>
       </section>

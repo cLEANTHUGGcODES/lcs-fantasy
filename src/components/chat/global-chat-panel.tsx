@@ -238,7 +238,7 @@ export const GlobalChatPanel = ({
   };
 
   return (
-    <div className="pointer-events-none fixed bottom-4 right-4 z-[120] flex flex-col items-end gap-2">
+    <div className="pointer-events-none fixed bottom-3 left-0 right-0 z-[120] flex flex-col items-end gap-2 px-3 sm:bottom-4 sm:left-auto sm:right-4 sm:px-0">
       {isOpen ? (
         <button
           aria-label="Close chat"
@@ -250,7 +250,7 @@ export const GlobalChatPanel = ({
 
       {isOpen ? (
         <Card
-          className={`pointer-events-auto relative z-10 w-[calc(100vw-1rem)] max-w-[380px] border border-slate-400/45 bg-gradient-to-b from-[#0a1220]/95 to-[#111d33]/95 text-slate-100 shadow-2xl backdrop-blur-md ${className ?? ""}`}
+          className={`pointer-events-auto relative z-10 max-h-[calc(100dvh-6.25rem)] w-full border border-slate-400/45 bg-gradient-to-b from-[#0a1220]/95 to-[#111d33]/95 text-slate-100 shadow-2xl backdrop-blur-md sm:max-h-[min(700px,86dvh)] sm:w-[380px] ${className ?? ""}`}
         >
           <CardHeader className="flex items-center justify-between border-b border-slate-500/35 pb-2 pt-3">
             <div>
@@ -275,7 +275,7 @@ export const GlobalChatPanel = ({
             ) : (
               <div
                 ref={messageListRef}
-                className="h-[280px] max-h-[58vh] space-y-2 overflow-y-auto rounded-large border border-slate-500/35 bg-[#070f1f]/75 p-3"
+                className="h-[42dvh] min-h-[220px] max-h-[50dvh] space-y-2 overflow-y-auto rounded-large border border-slate-500/35 bg-[#070f1f]/75 p-3 sm:h-[280px] sm:max-h-[58vh]"
               >
                 {sortedMessages.length === 0 ? (
                   <p className="text-sm text-slate-300">No messages yet. Start the banter.</p>

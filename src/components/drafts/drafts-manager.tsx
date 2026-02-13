@@ -286,21 +286,21 @@ export const DraftsManager = ({
           />
 
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-            <Card className="bg-content2/50">
-              <CardHeader>
-                <h2 className="text-base font-semibold">Registered Website Players</h2>
-              </CardHeader>
-              <CardBody className="space-y-2">
-                {availableUsers.length === 0 ? (
-                  <p className="text-sm text-default-500">No additional users available.</p>
-                ) : (
-                  availableUsers.map((entry) => (
-                    <div
-                      key={entry.userId}
-                      className="flex items-center justify-between gap-3 rounded-medium border border-default-200/40 px-2 py-2"
-                    >
-                      <div className="min-w-0">
-                        <p className="truncate text-sm font-medium">{entry.displayName}</p>
+              <Card className="bg-content2/50">
+                <CardHeader>
+                  <h2 className="text-base font-semibold">Registered Website Players</h2>
+                </CardHeader>
+                <CardBody className="max-h-[24rem] space-y-2 overflow-auto">
+                  {availableUsers.length === 0 ? (
+                    <p className="text-sm text-default-500">No additional users available.</p>
+                  ) : (
+                    availableUsers.map((entry) => (
+                      <div
+                        key={entry.userId}
+                        className="flex flex-wrap items-center justify-between gap-2 rounded-medium border border-default-200/40 px-2 py-2"
+                      >
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-medium">{entry.displayName}</p>
                         <p className="truncate text-xs text-default-500">
                           Team: {entry.teamName ?? "Not set"}
                         </p>
@@ -318,22 +318,22 @@ export const DraftsManager = ({
               </CardBody>
             </Card>
 
-            <Card className="bg-content2/50">
-              <CardHeader>
-                <h2 className="text-base font-semibold">
-                  Draft Order (Reverse Snake starts from bottom)
-                </h2>
-              </CardHeader>
-              <CardBody className="space-y-2">
-                {selectedUsers.length === 0 ? (
-                  <p className="text-sm text-default-500">
-                    Add at least two participants to enable draft creation.
+              <Card className="bg-content2/50">
+                <CardHeader>
+                  <h2 className="text-base font-semibold">
+                    Draft Order (Reverse Snake starts from bottom)
+                  </h2>
+                </CardHeader>
+                <CardBody className="max-h-[24rem] space-y-2 overflow-auto">
+                  {selectedUsers.length === 0 ? (
+                    <p className="text-sm text-default-500">
+                      Add at least two participants to enable draft creation.
                   </p>
                 ) : (
                   selectedUsers.map((entry, index) => (
                     <div
                       key={entry.userId}
-                      className="flex items-center justify-between gap-3 rounded-medium border border-default-200/40 px-2 py-2"
+                      className="flex flex-wrap items-center justify-between gap-2 rounded-medium border border-default-200/40 px-2 py-2"
                     >
                       <div className="min-w-0">
                         <p className="truncate text-sm font-medium">
@@ -343,7 +343,7 @@ export const DraftsManager = ({
                           Team: {entry.teamName ?? "Not set"}
                         </p>
                       </div>
-                      <div className="flex gap-1">
+                      <div className="flex flex-wrap gap-1">
                         <Button
                           isDisabled={index === 0}
                           size="sm"
@@ -403,7 +403,7 @@ export const DraftsManager = ({
             drafts.map((draft) => (
               <div
                 key={draft.id}
-                className="flex flex-wrap items-center justify-between gap-3 rounded-medium border border-default-200/40 px-3 py-2"
+                className="flex flex-wrap items-center justify-between gap-2 rounded-medium border border-default-200/40 px-3 py-2"
               >
                 <div className="min-w-0 space-y-1">
                   <p className="truncate text-sm font-semibold">{draft.name}</p>

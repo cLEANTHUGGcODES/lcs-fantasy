@@ -617,7 +617,7 @@ export const DraftRoom = ({
           </Chip>
         </CardHeader>
         <CardBody className="space-y-4">
-          <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
             <div className="rounded-large border border-default-200/40 bg-content2/45 p-3">
               <p className="text-xs uppercase tracking-wide text-default-500">You</p>
               <p className="mt-1 text-sm font-semibold">{currentUserLabel}</p>
@@ -681,76 +681,123 @@ export const DraftRoom = ({
             </div>
           </div>
 
-          <div className="overflow-x-auto rounded-large border border-default-200/40 bg-content2/45">
-            <table className="min-w-full border-collapse text-left text-sm">
-              <thead className="bg-content2/80 text-xs uppercase tracking-wide text-default-500">
-                <tr>
-                  <th className="w-20 px-3 py-2 font-medium">Slot</th>
-                  <th className="px-3 py-2 font-medium">Player</th>
-                  <th className="w-36 px-3 py-2 font-medium">Status</th>
-                  <th className="w-36 px-3 py-2 font-medium">Ready</th>
-                </tr>
-              </thead>
-              <tbody>
-                {participantsByPosition.map((entry) => {
-                  const presence = presenceByUserId.get(entry.userId);
-                  const isCurrentUserRow = entry.userId === currentUserId;
-                  return (
-                    <tr
-                      key={entry.id}
-                      className={`border-t border-default-200/30 ${
-                        isCurrentUserRow ? "bg-primary-500/10" : ""
-                      }`}
-                    >
-                      <td className="px-3 py-2.5 text-sm font-semibold text-default-600">
-                        #{entry.draftPosition}
-                      </td>
-                      <td className="px-3 py-2.5">
-                        <div className="flex items-center gap-2">
-                          <span className="font-medium">{entry.displayName}</span>
-                          {isCurrentUserRow ? (
-                            <Chip color="primary" size="sm" variant="flat">
-                              You
-                            </Chip>
-                          ) : null}
-                        </div>
-                        <p className="text-xs text-default-500">
-                          Team: {entry.teamName ?? "Not set"}
-                        </p>
-                      </td>
-                      <td className="px-3 py-2.5">
-                        <Chip
-                          color={presence?.isOnline ? "success" : "default"}
-                          size="sm"
-                          variant="flat"
-                        >
-                          <span className="inline-flex items-center gap-1">
-                            {presence?.isOnline ? (
-                              <Wifi className="h-3.5 w-3.5" />
-                            ) : (
-                              <WifiOff className="h-3.5 w-3.5" />
-                            )}
-                            {presence?.isOnline ? "Online" : "Offline"}
-                          </span>
-                        </Chip>
-                      </td>
-                      <td className="px-3 py-2.5">
-                        <Chip
-                          color={presence?.isReady ? "primary" : "default"}
-                          size="sm"
-                          variant="flat"
-                        >
-                          <span className="inline-flex items-center gap-1">
-                            <SquareCheckBig className="h-3.5 w-3.5" />
-                            {presence?.isReady ? "Ready" : "Not Ready"}
-                          </span>
-                        </Chip>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+          <div className="space-y-2 md:hidden">
+            {participantsByPosition.map((entry) => {
+              const presence = presenceByUserId.get(entry.userId);
+              const isCurrentUserRow = entry.userId === currentUserId;
+              return (
+                <div
+                  key={entry.id}
+                  className={`rounded-large border border-default-200/40 bg-content2/45 px-3 py-2.5 ${
+                    isCurrentUserRow ? "border-primary-300/50 bg-primary-500/10" : ""
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-sm font-semibold">
+                      #{entry.draftPosition} {entry.displayName}
+                    </p>
+                    {isCurrentUserRow ? (
+                      <Chip color="primary" size="sm" variant="flat">
+                        You
+                      </Chip>
+                    ) : null}
+                  </div>
+                  <p className="mt-1 text-xs text-default-500">Team: {entry.teamName ?? "Not set"}</p>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <Chip color={presence?.isOnline ? "success" : "default"} size="sm" variant="flat">
+                      <span className="inline-flex items-center gap-1">
+                        {presence?.isOnline ? (
+                          <Wifi className="h-3.5 w-3.5" />
+                        ) : (
+                          <WifiOff className="h-3.5 w-3.5" />
+                        )}
+                        {presence?.isOnline ? "Online" : "Offline"}
+                      </span>
+                    </Chip>
+                    <Chip color={presence?.isReady ? "primary" : "default"} size="sm" variant="flat">
+                      <span className="inline-flex items-center gap-1">
+                        <SquareCheckBig className="h-3.5 w-3.5" />
+                        {presence?.isReady ? "Ready" : "Not Ready"}
+                      </span>
+                    </Chip>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="hidden overflow-hidden rounded-large border border-default-200/40 bg-content2/45 md:block">
+            <div className="max-h-[30rem] overflow-auto">
+              <table className="min-w-full border-collapse text-left text-sm">
+                <thead className="sticky top-0 z-10 bg-content2/95 text-xs uppercase tracking-wide text-default-500 backdrop-blur">
+                  <tr>
+                    <th className="w-20 px-3 py-2 font-medium">Slot</th>
+                    <th className="px-3 py-2 font-medium">Player</th>
+                    <th className="w-36 px-3 py-2 font-medium">Status</th>
+                    <th className="w-36 px-3 py-2 font-medium">Ready</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {participantsByPosition.map((entry) => {
+                    const presence = presenceByUserId.get(entry.userId);
+                    const isCurrentUserRow = entry.userId === currentUserId;
+                    return (
+                      <tr
+                        key={entry.id}
+                        className={`border-t border-default-200/30 ${
+                          isCurrentUserRow ? "bg-primary-500/10" : ""
+                        }`}
+                      >
+                        <td className="px-3 py-2.5 text-sm font-semibold text-default-600">
+                          #{entry.draftPosition}
+                        </td>
+                        <td className="px-3 py-2.5">
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium">{entry.displayName}</span>
+                            {isCurrentUserRow ? (
+                              <Chip color="primary" size="sm" variant="flat">
+                                You
+                              </Chip>
+                            ) : null}
+                          </div>
+                          <p className="text-xs text-default-500">
+                            Team: {entry.teamName ?? "Not set"}
+                          </p>
+                        </td>
+                        <td className="px-3 py-2.5">
+                          <Chip
+                            color={presence?.isOnline ? "success" : "default"}
+                            size="sm"
+                            variant="flat"
+                          >
+                            <span className="inline-flex items-center gap-1">
+                              {presence?.isOnline ? (
+                                <Wifi className="h-3.5 w-3.5" />
+                              ) : (
+                                <WifiOff className="h-3.5 w-3.5" />
+                              )}
+                              {presence?.isOnline ? "Online" : "Offline"}
+                            </span>
+                          </Chip>
+                        </td>
+                        <td className="px-3 py-2.5">
+                          <Chip
+                            color={presence?.isReady ? "primary" : "default"}
+                            size="sm"
+                            variant="flat"
+                          >
+                            <span className="inline-flex items-center gap-1">
+                              <SquareCheckBig className="h-3.5 w-3.5" />
+                              {presence?.isReady ? "Ready" : "Not Ready"}
+                            </span>
+                          </Chip>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
           </div>
         </CardBody>
       </Card>
@@ -904,45 +951,47 @@ export const DraftRoom = ({
                   Available Players
                 </h2>
                 <p className="text-xs text-default-500">
-                  Use filters to narrow the board, then select from the table.
+                  Use filters to narrow the board, then add players to your queue.
                 </p>
               </div>
               <Chip variant="flat">
                 Showing {filteredAvailablePlayers.length} / {draft.availablePlayers.length}
               </Chip>
             </div>
-            <Tabs
-              aria-label="Position filter"
-              className="w-full"
-              color="primary"
-              selectedKey={roleFilter}
-              size="sm"
-              variant="underlined"
-              onSelectionChange={(key) => setRoleFilter(String(key))}
-            >
-              {roleFilters.map((filter) => (
-                <Tab
-                  key={filter.value}
-                  isDisabled={filter.value !== "ALL" && filter.count === 0}
-                  title={(
-                    <span className="inline-flex items-center gap-1.5">
-                      {roleIconUrl(filter.value) ? (
-                        <Image
-                          alt={`${filter.label} role icon`}
-                          className="h-4 w-4"
-                          height={16}
-                          src={roleIconUrl(filter.value)!}
-                          width={16}
-                        />
-                      ) : null}
-                      <span>
-                        {filter.label} ({filter.count})
+            <div className="overflow-x-auto pb-1">
+              <Tabs
+                aria-label="Position filter"
+                className="w-max min-w-full"
+                color="primary"
+                selectedKey={roleFilter}
+                size="sm"
+                variant="underlined"
+                onSelectionChange={(key) => setRoleFilter(String(key))}
+              >
+                {roleFilters.map((filter) => (
+                  <Tab
+                    key={filter.value}
+                    isDisabled={filter.value !== "ALL" && filter.count === 0}
+                    title={(
+                      <span className="inline-flex items-center gap-1.5">
+                        {roleIconUrl(filter.value) ? (
+                          <Image
+                            alt={`${filter.label} role icon`}
+                            className="h-4 w-4"
+                            height={16}
+                            src={roleIconUrl(filter.value)!}
+                            width={16}
+                          />
+                        ) : null}
+                        <span>
+                          {filter.label} ({filter.count})
+                        </span>
                       </span>
-                    </span>
-                  )}
-                />
-              ))}
-            </Tabs>
+                    )}
+                  />
+                ))}
+              </Tabs>
+            </div>
           </CardHeader>
           <CardBody className="space-y-3">
             <Input
@@ -955,7 +1004,85 @@ export const DraftRoom = ({
               onValueChange={setSearchTerm}
             />
 
-            <div className="overflow-hidden rounded-large border border-default-200/40 bg-content2/45">
+            <div className="space-y-2 md:hidden">
+              {filteredAvailablePlayers.length === 0 ? (
+                <p className="rounded-large border border-default-200/40 bg-content2/45 px-3 py-4 text-center text-sm text-default-500">
+                  No players match this filter.
+                </p>
+              ) : (
+                filteredAvailablePlayers.map((player) => {
+                  const isQueued = pickQueue.includes(player.playerName);
+                  return (
+                    <div
+                      key={player.id}
+                      className={`rounded-large border px-3 py-2 ${
+                        isQueued
+                          ? "border-primary-300/50 bg-primary-500/10"
+                          : "border-default-200/40 bg-content2/45"
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-semibold">{player.playerName}</p>
+                          <p className="truncate text-xs text-default-500">{player.playerTeam ?? "—"}</p>
+                        </div>
+                        <Button
+                          aria-label={
+                            isQueued
+                              ? `${player.playerName} already in queue`
+                              : `Add ${player.playerName} to queue`
+                          }
+                          color={isQueued ? "primary" : "default"}
+                          isDisabled={isQueued}
+                          isIconOnly
+                          size="sm"
+                          variant="flat"
+                          onPress={() => addPlayerToQueue(player.playerName)}
+                        >
+                          {isQueued ? (
+                            <CircleCheckBig className="h-4 w-4" />
+                          ) : (
+                            <Plus className="h-4 w-4" />
+                          )}
+                        </Button>
+                      </div>
+                      <div className="mt-2 flex items-center gap-2">
+                        <Chip
+                          className={roleChipClassName(player.playerRole)}
+                          color="default"
+                          size="sm"
+                          variant="flat"
+                        >
+                          <span className="inline-flex items-center gap-1">
+                            {roleIconUrl(player.playerRole) ? (
+                              <Image
+                                alt={`${formatRoleLabel(player.playerRole)} role icon`}
+                                className="h-3.5 w-3.5"
+                                height={14}
+                                src={roleIconUrl(player.playerRole)!}
+                                width={14}
+                              />
+                            ) : null}
+                            {formatRoleLabel(player.playerRole)}
+                          </span>
+                        </Chip>
+                        {player.teamIconUrl ? (
+                          <Image
+                            alt={`${player.playerName} team logo`}
+                            className="h-5 w-auto object-contain"
+                            height={20}
+                            src={player.teamIconUrl}
+                            width={48}
+                          />
+                        ) : null}
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            <div className="hidden overflow-hidden rounded-large border border-default-200/40 bg-content2/45 md:block">
               <div className="max-h-[29rem] overflow-auto">
                 <table className="w-full min-w-[640px] border-collapse text-left text-sm">
                   <thead className="sticky top-0 z-10 bg-content2/95 text-xs uppercase tracking-wide text-default-500 backdrop-blur">
@@ -1074,9 +1201,9 @@ export const DraftRoom = ({
               Clear Queue
             </Button>
           </CardHeader>
-          <CardBody className="flex min-h-[32rem] flex-col gap-3">
+          <CardBody className="flex min-h-[20rem] flex-col gap-3 sm:min-h-[24rem] lg:min-h-[32rem]">
             {queuedPlayers.length === 0 ? (
-              <div className="flex min-h-[16rem] items-center justify-center rounded-large border border-dashed border-default-300/50 bg-content2/35 px-4">
+              <div className="flex min-h-[11rem] items-center justify-center rounded-large border border-dashed border-default-300/50 bg-content2/35 px-4 sm:min-h-[14rem]">
                 <p className="text-center text-sm text-default-500">
                   Add players with the + button to build your queue.
                 </p>
