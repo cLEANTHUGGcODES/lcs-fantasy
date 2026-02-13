@@ -84,7 +84,11 @@ export type DashboardStandingRow = {
   breakdown: DashboardStandingBreakdown[];
 };
 
-export type HeadToHeadWeekStatus = "active" | "upcoming" | "offseason";
+export type HeadToHeadWeekStatus =
+  | "active"
+  | "upcoming"
+  | "finalized"
+  | "offseason";
 
 export type HeadToHeadMatchupSide = {
   userId: string;
@@ -106,6 +110,15 @@ export type HeadToHeadMatchup = {
   isTie: boolean;
 };
 
+export type HeadToHeadWeekView = {
+  weekNumber: number;
+  status: HeadToHeadWeekStatus;
+  startsOn: string;
+  endsOn: string;
+  hasGames: boolean;
+  matchups: HeadToHeadMatchup[];
+};
+
 export type HeadToHeadStandingRow = {
   rank: number;
   userId: string;
@@ -122,14 +135,18 @@ export type HeadToHeadStandingRow = {
 
 export type HeadToHeadSummary = {
   enabled: boolean;
+  currentWeekNumber: number | null;
   weekNumber: number | null;
   weekStatus: HeadToHeadWeekStatus;
   weekStartsOn: string | null;
   weekEndsOn: string | null;
+  canViewPreviousWeek: boolean;
+  previousWeekNumber: number | null;
   cycleLength: number;
   finalizedWeekCount: number;
   standings: HeadToHeadStandingRow[];
   matchups: HeadToHeadMatchup[];
+  weeks: HeadToHeadWeekView[];
 };
 
 export type DashboardStandings = {
@@ -148,14 +165,18 @@ const padTwo = (value: number): string => `${value}`.padStart(2, "0");
 
 const emptyHeadToHeadSummary = (): HeadToHeadSummary => ({
   enabled: false,
+  currentWeekNumber: null,
   weekNumber: null,
   weekStatus: "offseason",
   weekStartsOn: null,
   weekEndsOn: null,
+  canViewPreviousWeek: false,
+  previousWeekNumber: null,
   cycleLength: 0,
   finalizedWeekCount: 0,
   standings: [],
   matchups: [],
+  weeks: [],
 });
 
 const stripTeamSuffixFromName = (name: string, team: string | null): string => {
@@ -741,78 +762,129 @@ const buildHeadToHeadSummary = ({
   const profileByUserId = new Map(
     participantProfiles.map((participant) => [participant.userId, participant]),
   );
-  const currentWeekResult = weeklyPointsByWeek.get(currentWeekContext.weekNumber);
-  const currentWeekPoints = currentWeekResult?.pointsByUser ?? new Map<string, number>();
-  const hasCurrentWeekGames = currentWeekResult?.hasGames ?? false;
-  const currentWeekPairs = rounds[(currentWeekContext.weekNumber - 1) % rounds.length] ?? [];
+  const resolveWeekStatus = (weekNumber: number): HeadToHeadWeekStatus => {
+    if (weekNumber < currentWeekContext.weekNumber) {
+      return "finalized";
+    }
+    if (weekNumber === currentWeekContext.weekNumber) {
+      return currentWeekContext.status;
+    }
+    return "upcoming";
+  };
 
-  const matchups: HeadToHeadMatchup[] = [];
-  for (const [leftUserId, rightUserId] of currentWeekPairs) {
-    if (leftUserId === BYE_USER_ID) {
+  const weeks: HeadToHeadWeekView[] = [];
+  for (let weekNumber = 1; weekNumber <= maxWeekNumberToScore; weekNumber += 1) {
+    const weekResult = weeklyPointsByWeek.get(weekNumber);
+    const hasWeekGames = weekResult?.hasGames ?? false;
+    if (!hasWeekGames && weekNumber !== currentWeekContext.weekNumber) {
       continue;
     }
 
-    const leftProfile = profileByUserId.get(leftUserId);
-    if (!leftProfile) {
-      continue;
+    const weekPoints = weekResult?.pointsByUser ?? new Map<string, number>();
+    const weekStatus = resolveWeekStatus(weekNumber);
+    const weekBounds = getWeekBounds(weekOneStartKey, weekNumber);
+    const weekPairs = rounds[(weekNumber - 1) % rounds.length] ?? [];
+    const weekMatchups: HeadToHeadMatchup[] = [];
+
+    for (const [leftUserId, rightUserId] of weekPairs) {
+      if (leftUserId === BYE_USER_ID) {
+        continue;
+      }
+
+      const leftProfile = profileByUserId.get(leftUserId);
+      if (!leftProfile) {
+        continue;
+      }
+
+      const rightProfile =
+        rightUserId !== BYE_USER_ID ? profileByUserId.get(rightUserId) ?? null : null;
+      const leftPoints = weekPoints.get(leftUserId) ?? 0;
+      const rightPoints =
+        rightProfile && rightUserId !== BYE_USER_ID ? weekPoints.get(rightUserId) ?? 0 : 0;
+      const isTie =
+        weekStatus !== "upcoming" &&
+        hasWeekGames &&
+        Boolean(rightProfile) &&
+        leftPoints === rightPoints;
+      const winnerUserId =
+        weekStatus === "upcoming" || !rightProfile || !hasWeekGames || isTie
+          ? null
+          : leftPoints > rightPoints
+            ? leftUserId
+            : rightUserId;
+
+      weekMatchups.push({
+        matchupKey: `${weekNumber}:${leftUserId}:${rightUserId}`,
+        weekNumber,
+        startsOn: weekBounds.startsOn,
+        endsOn: weekBounds.endsOn,
+        status: weekStatus,
+        left: {
+          userId: leftProfile.userId,
+          displayName: leftProfile.displayName,
+          teamName: leftProfile.teamName,
+          avatarUrl: leftProfile.avatarUrl,
+          weekPoints: round(leftPoints),
+        },
+        right: rightProfile
+          ? {
+              userId: rightProfile.userId,
+              displayName: rightProfile.displayName,
+              teamName: rightProfile.teamName,
+              avatarUrl: rightProfile.avatarUrl,
+              weekPoints: round(rightPoints),
+            }
+          : null,
+        winnerUserId: winnerUserId && winnerUserId !== BYE_USER_ID ? winnerUserId : null,
+        isTie,
+      });
     }
 
-    const rightProfile =
-      rightUserId !== BYE_USER_ID ? profileByUserId.get(rightUserId) ?? null : null;
-    const leftPoints = currentWeekPoints.get(leftUserId) ?? 0;
-    const rightPoints =
-      rightProfile && rightUserId !== BYE_USER_ID
-        ? currentWeekPoints.get(rightUserId) ?? 0
-        : 0;
-    const isTie =
-      currentWeekContext.status !== "upcoming" &&
-      hasCurrentWeekGames &&
-      Boolean(rightProfile) &&
-      leftPoints === rightPoints;
-    const winnerUserId =
-      currentWeekContext.status === "upcoming" || !rightProfile || isTie
-        ? null
-        : leftPoints > rightPoints
-          ? leftUserId
-          : rightUserId;
-
-    matchups.push({
-      matchupKey: `${currentWeekContext.weekNumber}:${leftUserId}:${rightUserId}`,
-      weekNumber: currentWeekContext.weekNumber,
-      startsOn: currentWeekContext.startsOn,
-      endsOn: currentWeekContext.endsOn,
-      status: currentWeekContext.status,
-      left: {
-        userId: leftProfile.userId,
-        displayName: leftProfile.displayName,
-        teamName: leftProfile.teamName,
-        avatarUrl: leftProfile.avatarUrl,
-        weekPoints: round(leftPoints),
-      },
-      right: rightProfile
-        ? {
-            userId: rightProfile.userId,
-            displayName: rightProfile.displayName,
-            teamName: rightProfile.teamName,
-            avatarUrl: rightProfile.avatarUrl,
-            weekPoints: round(rightPoints),
-          }
-        : null,
-      winnerUserId: winnerUserId && winnerUserId !== BYE_USER_ID ? winnerUserId : null,
-      isTie,
+    weeks.push({
+      weekNumber,
+      status: weekStatus,
+      startsOn: weekBounds.startsOn,
+      endsOn: weekBounds.endsOn,
+      hasGames: hasWeekGames,
+      matchups: weekMatchups,
     });
   }
 
+  if (weeks.length === 0) {
+    const fallbackBounds = getWeekBounds(weekOneStartKey, currentWeekContext.weekNumber);
+    weeks.push({
+      weekNumber: currentWeekContext.weekNumber,
+      status: currentWeekContext.status,
+      startsOn: fallbackBounds.startsOn,
+      endsOn: fallbackBounds.endsOn,
+      hasGames: false,
+      matchups: [],
+    });
+  }
+
+  const selectedWeek =
+    weeks.find((entry) => entry.weekNumber === currentWeekContext.weekNumber) ??
+    weeks[weeks.length - 1];
+  const selectedWeekIndex = weeks.findIndex(
+    (entry) => entry.weekNumber === selectedWeek.weekNumber,
+  );
+  const previousWeekNumber =
+    selectedWeekIndex > 0 ? (weeks[selectedWeekIndex - 1]?.weekNumber ?? null) : null;
+
   return {
     enabled: true,
-    weekNumber: currentWeekContext.weekNumber,
-    weekStatus: currentWeekContext.status,
-    weekStartsOn: currentWeekContext.startsOn,
-    weekEndsOn: currentWeekContext.endsOn,
+    currentWeekNumber: currentWeekContext.weekNumber,
+    weekNumber: selectedWeek.weekNumber,
+    weekStatus: selectedWeek.status,
+    weekStartsOn: selectedWeek.startsOn,
+    weekEndsOn: selectedWeek.endsOn,
+    canViewPreviousWeek: previousWeekNumber !== null,
+    previousWeekNumber,
     cycleLength: rounds.length,
     finalizedWeekCount: finalizedScoredWeekCount,
     standings,
-    matchups,
+    matchups: selectedWeek.matchups,
+    weeks,
   };
 };
 

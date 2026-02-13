@@ -11,6 +11,7 @@ import { redirect } from "next/navigation";
 import { AccountWidget } from "@/components/auth/account-widget";
 import { GlobalChatPanel } from "@/components/chat/global-chat-panel";
 import { UserDraftRoomAccess } from "@/components/drafts/user-draft-room-access";
+import { WeeklyMatchupsPanel } from "@/components/matchups/weekly-matchups-panel";
 import { isGlobalAdminUser } from "@/lib/admin-access";
 import { getDashboardStandings } from "@/lib/dashboard-standings";
 import { listDraftSummariesForUser } from "@/lib/draft-data";
@@ -33,8 +34,6 @@ const pointFormat = new Intl.NumberFormat("en-US", {
   minimumFractionDigits: 1,
   maximumFractionDigits: 1,
 });
-
-const integerFormat = new Intl.NumberFormat("en-US");
 
 const sourceLinkForPage = (page: string): string =>
   `https://lol.fandom.com/wiki/${page.replace(/\s+/g, "_")}`;
@@ -60,22 +59,6 @@ const formatShortDate = (value: string | null): string => {
     month: "2-digit",
     day: "2-digit",
     year: "numeric",
-  });
-};
-
-const formatDateKeyShort = (value: string | null): string => {
-  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
-    return "—";
-  }
-
-  const parsed = new Date(`${value}T00:00:00.000Z`);
-  if (Number.isNaN(parsed.getTime())) {
-    return value;
-  }
-
-  return parsed.toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
   });
 };
 
@@ -286,17 +269,6 @@ export default async function Home() {
 
   return (
     <main className="mx-auto min-h-screen w-full max-w-7xl px-3 py-5 pb-28 md:px-6 md:py-8 md:pb-24">
-      <section className="mt-2 flex items-center justify-center py-6">
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img
-          src={insightLogoSrc}
-          alt="Insight"
-          width={1110}
-          height={210}
-          className="h-auto w-full max-w-[380px]"
-        />
-      </section>
-
       <section className="mt-2 grid grid-cols-1 gap-4 md:grid-cols-3">
         <Card className="overflow-visible bg-content1/70">
           <CardHeader className="pb-0 text-xs uppercase tracking-wide text-default-500">
@@ -315,22 +287,16 @@ export default async function Home() {
           </CardBody>
         </Card>
 
-        <Card className="bg-content1/70">
-          <CardHeader className="pb-0 text-xs uppercase tracking-wide text-default-500">
-            Active Fantasy Players
-          </CardHeader>
-          <CardBody>
-            <p className="mono-points text-3xl font-semibold">
-              {integerFormat.format(snapshot.playerCount)}
-            </p>
-            <Progress
-              aria-label="Player volume"
-              className="mt-3"
-              color="secondary"
-              value={Math.min(100, (snapshot.playerCount / 50) * 100)}
-            />
-          </CardBody>
-        </Card>
+        <div className="flex items-center justify-center py-2">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={insightLogoSrc}
+            alt="Insight LoL Fantasy"
+            width={900}
+            height={170}
+            className="h-auto w-full max-w-[280px]"
+          />
+        </div>
 
         <Card className="bg-content1/70">
           <CardHeader className="pb-0 text-xs uppercase tracking-wide text-default-500">
@@ -364,124 +330,7 @@ export default async function Home() {
 
       {headToHead.enabled ? (
         <section className="mb-4 grid grid-cols-1 gap-4 xl:grid-cols-[1.35fr_1fr]">
-          <Card className="bg-content1/70">
-            <CardHeader className="flex items-center justify-between gap-3">
-              <div>
-                <h2 className="text-xl font-semibold">Weekly Matchups</h2>
-                <p className="text-xs text-default-500">
-                  Week {headToHead.weekNumber ?? 1} • {formatDateKeyShort(headToHead.weekStartsOn)}{" "}
-                  - {formatDateKeyShort(headToHead.weekEndsOn)} • Refresh Wednesday, close Monday.
-                </p>
-              </div>
-              <Chip
-                color={
-                  headToHead.weekStatus === "active"
-                    ? "success"
-                    : headToHead.weekStatus === "upcoming"
-                      ? "warning"
-                      : "default"
-                }
-                variant="flat"
-              >
-                {headToHead.weekStatus === "active"
-                  ? "Live Week"
-                  : headToHead.weekStatus === "upcoming"
-                    ? "Upcoming Week"
-                    : "Offseason"}
-              </Chip>
-            </CardHeader>
-            <CardBody className="space-y-2">
-              {headToHead.matchups.length === 0 ? (
-                <p className="rounded-large border border-default-200/30 bg-content2/35 px-3 py-3 text-sm text-default-500">
-                  No weekly matchups available yet.
-                </p>
-              ) : (
-                <div className="space-y-2">
-                  {headToHead.matchups.map((matchup) => {
-                    const leftWinner = matchup.winnerUserId === matchup.left.userId;
-                    const rightWinner = matchup.right
-                      ? matchup.winnerUserId === matchup.right.userId
-                      : false;
-
-                    return (
-                      <div
-                        key={matchup.matchupKey}
-                        className="rounded-large border border-default-200/30 bg-content2/35 p-3"
-                      >
-                        <div className="flex items-center justify-between gap-2 text-[11px] text-default-500">
-                          <span>Week {matchup.weekNumber}</span>
-                          <span>
-                            {formatDateKeyShort(matchup.startsOn)} -{" "}
-                            {formatDateKeyShort(matchup.endsOn)}
-                          </span>
-                        </div>
-                        <div className="mt-2 grid grid-cols-[1fr_auto_1fr] items-center gap-2">
-                          <div className="min-w-0">
-                            <div className="flex items-center gap-2">
-                              <UserAvatar
-                                avatarUrl={matchup.left.avatarUrl}
-                                displayName={matchup.left.displayName}
-                              />
-                              <div className="min-w-0">
-                                <p className="truncate text-sm font-semibold">
-                                  {matchup.left.teamName ?? matchup.left.displayName}
-                                </p>
-                                <p className="truncate text-[11px] text-default-500">
-                                  {matchup.left.displayName}
-                                </p>
-                              </div>
-                            </div>
-                            <p
-                              className={`mono-points mt-1 text-sm font-semibold ${
-                                leftWinner ? "text-success-400" : "text-default-300"
-                              }`}
-                            >
-                              {formatPoints(matchup.left.weekPoints)}
-                            </p>
-                          </div>
-                          <p className="text-[11px] font-semibold uppercase tracking-wide text-default-500">
-                            vs
-                          </p>
-                          {matchup.right ? (
-                            <div className="min-w-0 text-right">
-                              <div className="flex items-center justify-end gap-2">
-                                <div className="min-w-0">
-                                  <p className="truncate text-sm font-semibold">
-                                    {matchup.right.teamName ?? matchup.right.displayName}
-                                  </p>
-                                  <p className="truncate text-[11px] text-default-500">
-                                    {matchup.right.displayName}
-                                  </p>
-                                </div>
-                                <UserAvatar
-                                  avatarUrl={matchup.right.avatarUrl}
-                                  displayName={matchup.right.displayName}
-                                />
-                              </div>
-                              <p
-                                className={`mono-points mt-1 text-sm font-semibold ${
-                                  rightWinner ? "text-success-400" : "text-default-300"
-                                }`}
-                              >
-                                {formatPoints(matchup.right.weekPoints)}
-                              </p>
-                            </div>
-                          ) : (
-                            <div className="text-right">
-                              <p className="text-sm font-semibold text-default-300">BYE</p>
-                            </div>
-                          )}
-                        </div>
-                        {matchup.isTie && matchup.right ? (
-                          <p className="mt-2 text-[11px] text-warning-300">Current result: tie</p>
-                        ) : null}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </CardBody>
-          </Card>
+          <WeeklyMatchupsPanel headToHead={headToHead} />
 
           <Card className="bg-content1/70">
             <CardHeader>
