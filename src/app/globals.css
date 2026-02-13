@@ -31,3 +31,48 @@ body {
 .mono-points {
   font-family: var(--font-code), sans-serif;
 }
+
+.chat-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(163, 175, 196, 0.45) transparent;
+}
+
+.chat-scrollbar::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.chat-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.chat-scrollbar::-webkit-scrollbar-button {
+  width: 0;
+  height: 0;
+  display: none;
+}
+
+.chat-scrollbar::-webkit-scrollbar-thumb {
+  min-height: 22px;
+  border: 2px solid transparent;
+  border-radius: 9999px;
+  background: linear-gradient(
+    180deg,
+    rgba(148, 163, 184, 0.52) 0%,
+    rgba(100, 116, 139, 0.52) 100%
+  );
+  background-clip: padding-box;
+}
+
+.chat-scrollbar:hover::-webkit-scrollbar-thumb {
+  background: linear-gradient(
+    180deg,
+    rgba(199, 209, 224, 0.62) 0%,
+    rgba(129, 143, 166, 0.62) 100%
+  );
+  background-clip: padding-box;
+}
+
+.chat-scrollbar::-webkit-scrollbar-corner {
+  background: transparent;
+}

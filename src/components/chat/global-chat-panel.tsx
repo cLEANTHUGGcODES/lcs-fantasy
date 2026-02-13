@@ -442,7 +442,7 @@ export const GlobalChatPanel = ({
             ) : (
               <div
                 ref={messageListRef}
-                className="flex-1 min-h-0 space-y-1.5 overflow-x-hidden overflow-y-auto overscroll-contain px-1 pb-1 touch-pan-y sm:space-y-2 sm:rounded-large sm:border sm:border-slate-500/35 sm:bg-[#070f1f]/75 sm:p-3"
+                className="chat-scrollbar flex-1 min-h-0 space-y-1.5 overflow-x-hidden overflow-y-auto overscroll-contain px-1 pb-1 touch-pan-y sm:space-y-2 sm:rounded-large sm:border sm:border-slate-500/35 sm:bg-[#070f1f]/75 sm:p-3"
                 style={{ WebkitOverflowScrolling: "touch" }}
                 onScroll={(event) => {
                   shouldStickToBottomRef.current = isNearBottom(event.currentTarget);
@@ -552,7 +552,7 @@ export const GlobalChatPanel = ({
                     aria-label="Chat message"
                     aria-multiline="true"
                     autoCorrect="on"
-                    className="min-h-[40px] max-h-[120px] overflow-y-auto rounded-xl border border-slate-500/45 bg-[#08111f] px-3 py-2 text-[13px] leading-5 text-slate-100 outline-none transition focus:border-primary-400/70 focus:ring-2 focus:ring-primary-400/30 sm:text-sm"
+                    className="chat-scrollbar min-h-[40px] max-h-[120px] overflow-y-auto rounded-xl border border-slate-500/45 bg-[#08111f] px-3 py-2 text-[13px] leading-5 text-slate-100 outline-none transition focus:border-primary-400/70 focus:ring-2 focus:ring-primary-400/30 sm:text-sm"
                     contentEditable={!pendingSend}
                     data-gramm="false"
                     role="textbox"
@@ -584,11 +584,11 @@ export const GlobalChatPanel = ({
                 </div>
                 <Button
                   aria-label="Send message"
-                  color="primary"
+                  className="bg-transparent text-slate-200 shadow-none hover:bg-transparent active:bg-transparent data-[hover=true]:bg-transparent data-[pressed=true]:bg-transparent data-[disabled=true]:opacity-45"
                   isIconOnly
                   isDisabled={messageInput.trim().length === 0}
                   isLoading={pendingSend}
-                  variant="flat"
+                  variant="light"
                   onPress={() => {
                     void submitMessage();
                   }}
