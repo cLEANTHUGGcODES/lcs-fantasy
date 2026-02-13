@@ -66,9 +66,8 @@ export const GlobalChatPanel = ({
   const [hasInitializedUnreadState, setHasInitializedUnreadState] = useState(false);
   const [lastSeenMessageId, setLastSeenMessageId] = useState(0);
   const [unreadCount, setUnreadCount] = useState(0);
-  const [isComposerFocused, setIsComposerFocused] = useState(false);
   const messageListRef = useRef<HTMLDivElement | null>(null);
-  const chatInputRef = useRef<HTMLDivElement | null>(null);
+  const chatInputRef = useRef<HTMLTextAreaElement | null>(null);
   const shouldStickToBottomRef = useRef(true);
   const sortedMessages = useMemo(
     () => [...messages].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()),
@@ -101,16 +100,11 @@ export const GlobalChatPanel = ({
     }, []);
   }, [currentUserId, sortedMessages]);
 
-  const moveCaretToEnd = useCallback((target: HTMLDivElement) => {
-    const selection = window.getSelection();
-    if (!selection) {
-      return;
-    }
-    const range = document.createRange();
-    range.selectNodeContents(target);
-    range.collapse(false);
-    selection.removeAllRanges();
-    selection.addRange(range);
+  const syncComposerHeight = useCallback((target: HTMLTextAreaElement) => {
+    target.style.height = "auto";
+    const nextHeight = Math.min(Math.max(target.scrollHeight, 40), 120);
+    target.style.height = `${nextHeight}px`;
+    target.style.overflowY = target.scrollHeight > 120 ? "auto" : "hidden";
   }, []);
 
   const focusChatInput = useCallback(() => {
@@ -118,9 +112,15 @@ export const GlobalChatPanel = ({
     if (!input) {
       return;
     }
-    input.focus();
-    moveCaretToEnd(input);
-  }, [moveCaretToEnd]);
+    try {
+      input.focus({ preventScroll: true });
+    } catch {
+      input.focus();
+    }
+    const cursor = input.value.length;
+    input.setSelectionRange(cursor, cursor);
+    syncComposerHeight(input);
+  }, [syncComposerHeight]);
 
   const loadMessages = useCallback(async () => {
     const response = await fetch("/api/chat", {
@@ -242,24 +242,30 @@ export const GlobalChatPanel = ({
   }, [isOpen, sortedMessages]);
 
   useEffect(() => {
+    if (!isOpen) {
+      return;
+    }
+
+    const input = chatInputRef.current;
+    if (!input) {
+      return;
+    }
+    syncComposerHeight(input);
+  }, [isOpen, messageInput, syncComposerHeight]);
+
+  useEffect(() => {
     if (!isOpen || !isMobileViewport) {
       return;
     }
 
     const html = document.documentElement;
     const body = document.body;
-    const scrollY = window.scrollY;
 
     const previous = {
       htmlOverflow: html.style.overflow,
       htmlHeight: html.style.height,
       htmlOverscrollBehaviorY: html.style.overscrollBehaviorY,
       bodyOverflow: body.style.overflow,
-      bodyPosition: body.style.position,
-      bodyTop: body.style.top,
-      bodyLeft: body.style.left,
-      bodyRight: body.style.right,
-      bodyWidth: body.style.width,
       bodyOverscrollBehaviorY: body.style.overscrollBehaviorY,
     };
 
@@ -267,11 +273,6 @@ export const GlobalChatPanel = ({
     html.style.height = "100%";
     html.style.overscrollBehaviorY = "none";
     body.style.overflow = "hidden";
-    body.style.position = "fixed";
-    body.style.top = `-${scrollY}px`;
-    body.style.left = "0";
-    body.style.right = "0";
-    body.style.width = "100%";
     body.style.overscrollBehaviorY = "none";
 
     return () => {
@@ -279,13 +280,7 @@ export const GlobalChatPanel = ({
       html.style.height = previous.htmlHeight;
       html.style.overscrollBehaviorY = previous.htmlOverscrollBehaviorY;
       body.style.overflow = previous.bodyOverflow;
-      body.style.position = previous.bodyPosition;
-      body.style.top = previous.bodyTop;
-      body.style.left = previous.bodyLeft;
-      body.style.right = previous.bodyRight;
-      body.style.width = previous.bodyWidth;
       body.style.overscrollBehaviorY = previous.bodyOverscrollBehaviorY;
-      window.scrollTo(0, scrollY);
     };
   }, [isOpen, isMobileViewport]);
 
@@ -312,9 +307,6 @@ export const GlobalChatPanel = ({
         throw new Error(payload.error ?? "Unable to send chat message.");
       }
       setMessageInput("");
-      if (chatInputRef.current) {
-        chatInputRef.current.textContent = "";
-      }
       await loadMessages();
       window.requestAnimationFrame(() => {
         focusChatInput();
@@ -402,7 +394,7 @@ export const GlobalChatPanel = ({
 
       {isOpen ? (
         <Card
-          className={`pointer-events-auto fixed inset-0 z-10 flex h-[100svh] min-h-[100svh] w-full flex-col overflow-hidden overscroll-none rounded-none bg-gradient-to-b from-[#081325] via-[#0d1a30] to-[#13223a] text-slate-100 sm:relative sm:h-auto sm:min-h-0 sm:max-h-[min(700px,86dvh)] sm:w-[380px] sm:rounded-2xl sm:border sm:border-[#d6bb73]/35 sm:shadow-2xl sm:backdrop-blur-md ${className ?? ""}`}
+          className={`pointer-events-auto fixed inset-0 z-10 flex h-[100svh] min-h-[100svh] w-full flex-col overflow-hidden overscroll-none rounded-none bg-gradient-to-b from-[#081325] via-[#0d1a30] to-[#13223a] text-slate-100 supports-[height:100dvh]:h-[100dvh] supports-[height:100dvh]:min-h-[100dvh] sm:relative sm:h-auto sm:min-h-0 sm:max-h-[min(700px,86dvh)] sm:w-[380px] sm:rounded-2xl sm:border sm:border-[#d6bb73]/35 sm:shadow-2xl sm:backdrop-blur-md ${className ?? ""}`}
         >
           <CardHeader
             className="flex items-center justify-between border-b border-[#344867]/60 px-3 pb-1.5 pt-2"
@@ -543,37 +535,22 @@ export const GlobalChatPanel = ({
             >
               <div className="flex items-end gap-2 rounded-large bg-[#0e1a2f]/85 p-1.5">
                 <div className="relative flex-1">
-                  {!isComposerFocused && messageInput.trim().length === 0 ? (
-                    <span className="pointer-events-none absolute left-3 top-2 text-base leading-5 text-[#7f92b2]">
-                      Message
-                    </span>
-                  ) : null}
-                  <div
+                  <textarea
                     ref={chatInputRef}
                     aria-label="Chat message"
-                    aria-multiline="true"
                     autoCorrect="on"
-                    className="chat-scrollbar min-h-[40px] max-h-[120px] overflow-y-auto rounded-xl border border-[#425b7d]/70 bg-[#081326] px-3 py-2 text-base leading-5 text-[#edf2ff] outline-none transition focus:border-[#e8c35a] focus:ring-2 focus:ring-[#e8c35a]/25"
-                    contentEditable={!pendingSend}
+                    className="chat-scrollbar min-h-[40px] max-h-[120px] w-full resize-none rounded-xl border border-[#425b7d]/70 bg-[#081326] px-3 py-2 text-base leading-5 text-[#edf2ff] outline-none transition focus:border-[#e8c35a] focus:ring-2 focus:ring-[#e8c35a]/25"
                     data-gramm="false"
-                    role="textbox"
+                    disabled={pendingSend}
+                    enterKeyHint="send"
+                    maxLength={MAX_GLOBAL_CHAT_MESSAGE_LENGTH}
+                    placeholder="Message"
                     spellCheck
-                    suppressContentEditableWarning
-                    onBlur={() => setIsComposerFocused(false)}
-                    onFocus={() => setIsComposerFocused(true)}
-                    onInput={(event) => {
-                      const target = event.currentTarget;
-                      const raw = target.innerText.replace(/\u00a0/g, " ");
-                      const normalized = raw.length > MAX_GLOBAL_CHAT_MESSAGE_LENGTH
-                        ? raw.slice(0, MAX_GLOBAL_CHAT_MESSAGE_LENGTH)
-                        : raw;
-
-                      if (normalized !== raw) {
-                        target.innerText = normalized;
-                        moveCaretToEnd(target);
-                      }
-
-                      setMessageInput(normalized);
+                    value={messageInput}
+                    onChange={(event) => {
+                      const nextValue = event.currentTarget.value.replace(/\u00a0/g, " ");
+                      setMessageInput(nextValue);
+                      syncComposerHeight(event.currentTarget);
                     }}
                     onKeyDown={(event) => {
                       if (event.key === "Enter" && !event.shiftKey) {
