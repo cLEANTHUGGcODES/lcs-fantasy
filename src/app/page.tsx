@@ -63,6 +63,30 @@ const formatShortDate = (value: string | null): string => {
   });
 };
 
+const formatDateKeyShort = (value: string | null): string => {
+  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return "—";
+  }
+
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
+  }
+
+  return parsed.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+  });
+};
+
+const formatHeadToHeadRecord = (
+  wins: number,
+  losses: number,
+  ties: number,
+): string => (ties > 0 ? `${wins}-${losses}-${ties}` : `${wins}-${losses}`);
+
+const formatWinPct = (value: number): string => value.toFixed(3);
+
 const teamKey = (team: string): string => team.trim().toLowerCase();
 
 const initialsForName = (value: string): string =>
@@ -251,10 +275,12 @@ export default async function Home() {
   const [dashboardStandings, userDraftSummaries] = await Promise.all([
     getDashboardStandings({
       playerTotals: snapshot.playerTotals,
+      games: snapshot.games,
     }),
     listDraftSummariesForUser({ userId }),
   ]);
   const hasCompletedDraft = dashboardStandings.completedDraftId !== null;
+  const headToHead = dashboardStandings.headToHead;
   const draftedRows = dashboardStandings.rows.filter((row) => row.drafted);
   const standingsLeaderPoints = draftedRows[0]?.totalPoints ?? 1;
 
@@ -335,6 +361,227 @@ export default async function Home() {
       ) : (
         <Divider className="my-4" />
       )}
+
+      {headToHead.enabled ? (
+        <section className="mb-4 grid grid-cols-1 gap-4 xl:grid-cols-[1.35fr_1fr]">
+          <Card className="bg-content1/70">
+            <CardHeader className="flex items-center justify-between gap-3">
+              <div>
+                <h2 className="text-xl font-semibold">Weekly Matchups</h2>
+                <p className="text-xs text-default-500">
+                  Week {headToHead.weekNumber ?? 1} • {formatDateKeyShort(headToHead.weekStartsOn)}{" "}
+                  - {formatDateKeyShort(headToHead.weekEndsOn)} • Refresh Wednesday, close Monday.
+                </p>
+              </div>
+              <Chip
+                color={
+                  headToHead.weekStatus === "active"
+                    ? "success"
+                    : headToHead.weekStatus === "upcoming"
+                      ? "warning"
+                      : "default"
+                }
+                variant="flat"
+              >
+                {headToHead.weekStatus === "active"
+                  ? "Live Week"
+                  : headToHead.weekStatus === "upcoming"
+                    ? "Upcoming Week"
+                    : "Offseason"}
+              </Chip>
+            </CardHeader>
+            <CardBody className="space-y-2">
+              {headToHead.matchups.length === 0 ? (
+                <p className="rounded-large border border-default-200/30 bg-content2/35 px-3 py-3 text-sm text-default-500">
+                  No weekly matchups available yet.
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  {headToHead.matchups.map((matchup) => {
+                    const leftWinner = matchup.winnerUserId === matchup.left.userId;
+                    const rightWinner = matchup.right
+                      ? matchup.winnerUserId === matchup.right.userId
+                      : false;
+
+                    return (
+                      <div
+                        key={matchup.matchupKey}
+                        className="rounded-large border border-default-200/30 bg-content2/35 p-3"
+                      >
+                        <div className="flex items-center justify-between gap-2 text-[11px] text-default-500">
+                          <span>Week {matchup.weekNumber}</span>
+                          <span>
+                            {formatDateKeyShort(matchup.startsOn)} -{" "}
+                            {formatDateKeyShort(matchup.endsOn)}
+                          </span>
+                        </div>
+                        <div className="mt-2 grid grid-cols-[1fr_auto_1fr] items-center gap-2">
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2">
+                              <UserAvatar
+                                avatarUrl={matchup.left.avatarUrl}
+                                displayName={matchup.left.displayName}
+                              />
+                              <div className="min-w-0">
+                                <p className="truncate text-sm font-semibold">
+                                  {matchup.left.teamName ?? matchup.left.displayName}
+                                </p>
+                                <p className="truncate text-[11px] text-default-500">
+                                  {matchup.left.displayName}
+                                </p>
+                              </div>
+                            </div>
+                            <p
+                              className={`mono-points mt-1 text-sm font-semibold ${
+                                leftWinner ? "text-success-400" : "text-default-300"
+                              }`}
+                            >
+                              {formatPoints(matchup.left.weekPoints)}
+                            </p>
+                          </div>
+                          <p className="text-[11px] font-semibold uppercase tracking-wide text-default-500">
+                            vs
+                          </p>
+                          {matchup.right ? (
+                            <div className="min-w-0 text-right">
+                              <div className="flex items-center justify-end gap-2">
+                                <div className="min-w-0">
+                                  <p className="truncate text-sm font-semibold">
+                                    {matchup.right.teamName ?? matchup.right.displayName}
+                                  </p>
+                                  <p className="truncate text-[11px] text-default-500">
+                                    {matchup.right.displayName}
+                                  </p>
+                                </div>
+                                <UserAvatar
+                                  avatarUrl={matchup.right.avatarUrl}
+                                  displayName={matchup.right.displayName}
+                                />
+                              </div>
+                              <p
+                                className={`mono-points mt-1 text-sm font-semibold ${
+                                  rightWinner ? "text-success-400" : "text-default-300"
+                                }`}
+                              >
+                                {formatPoints(matchup.right.weekPoints)}
+                              </p>
+                            </div>
+                          ) : (
+                            <div className="text-right">
+                              <p className="text-sm font-semibold text-default-300">BYE</p>
+                            </div>
+                          )}
+                        </div>
+                        {matchup.isTie && matchup.right ? (
+                          <p className="mt-2 text-[11px] text-warning-300">Current result: tie</p>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </CardBody>
+          </Card>
+
+          <Card className="bg-content1/70">
+            <CardHeader>
+              <div>
+                <h2 className="text-xl font-semibold">H2H Rankings</h2>
+                <p className="text-xs text-default-500">
+                  Sorted by H2H record, then total points for tie-breakers.
+                </p>
+              </div>
+            </CardHeader>
+            <CardBody className="space-y-2">
+              <div className="space-y-2 md:hidden">
+                {headToHead.standings.map((entry) => (
+                  <div
+                    key={entry.userId}
+                    className="rounded-large border border-default-200/30 bg-content2/35 p-3"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex min-w-0 items-center gap-2">
+                        <span className="text-xs text-default-500">#{entry.rank}</span>
+                        <UserAvatar avatarUrl={entry.avatarUrl} displayName={entry.displayName} />
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-semibold">
+                            {entry.teamName ?? entry.displayName}
+                          </p>
+                          <p className="truncate text-[11px] text-default-500">
+                            {entry.displayName}
+                          </p>
+                        </div>
+                      </div>
+                      <p className="mono-points text-xs text-default-400">
+                        PF {formatPoints(entry.pointsFor)}
+                      </p>
+                    </div>
+                    <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-default-500">
+                      <p>
+                        Record:{" "}
+                        <span className="mono-points text-default-300">
+                          {formatHeadToHeadRecord(entry.wins, entry.losses, entry.ties)}
+                        </span>
+                      </p>
+                      <p>
+                        Win%:{" "}
+                        <span className="mono-points text-default-300">{formatWinPct(entry.winPct)}</span>
+                      </p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="hidden overflow-x-auto md:block">
+                <table className="w-full min-w-[420px] border-collapse text-left text-sm">
+                  <thead>
+                    <tr className="text-default-500">
+                      <th className="px-2 py-2 font-medium">#</th>
+                      <th className="px-2 py-2 font-medium">Team</th>
+                      <th className="px-2 py-2 font-medium">Record</th>
+                      <th className="px-2 py-2 font-medium">Win%</th>
+                      <th className="px-2 py-2 font-medium">PF</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {headToHead.standings.map((entry) => (
+                      <tr
+                        key={entry.userId}
+                        className="border-t border-default-200/30 align-top hover:bg-default-100/20"
+                      >
+                        <td className="px-2 py-2">{entry.rank}</td>
+                        <td className="px-2 py-2">
+                          <div className="flex items-center gap-2">
+                            <UserAvatar avatarUrl={entry.avatarUrl} displayName={entry.displayName} />
+                            <div className="min-w-0">
+                              <p className="truncate">
+                                {entry.teamName ?? entry.displayName}
+                              </p>
+                              <p className="truncate text-xs text-default-500">
+                                {entry.displayName}
+                              </p>
+                            </div>
+                          </div>
+                        </td>
+                        <td className="mono-points px-2 py-2">
+                          {formatHeadToHeadRecord(entry.wins, entry.losses, entry.ties)}
+                        </td>
+                        <td className="mono-points px-2 py-2">{formatWinPct(entry.winPct)}</td>
+                        <td className="mono-points px-2 py-2">{formatPoints(entry.pointsFor)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <p className="text-[11px] text-default-500">
+                Finalized weeks: {headToHead.finalizedWeekCount} • Matchup cycle length:{" "}
+                {headToHead.cycleLength}
+              </p>
+            </CardBody>
+          </Card>
+        </section>
+      ) : null}
 
       <Card className="bg-content1/70">
         <CardHeader className="flex items-center justify-between">
