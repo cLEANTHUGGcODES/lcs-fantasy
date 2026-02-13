@@ -315,7 +315,10 @@ export default async function Home() {
               K {snapshot.scoring.kill} / D {snapshot.scoring.death} / A{" "}
               {snapshot.scoring.assist} / W {snapshot.scoring.win}
             </p>
-            <Code size="sm">csPer100 = {snapshot.scoring.csPer100}</Code>
+            <Code size="sm">
+              CS/minion {snapshot.scoring.csPer100 / 100} • Gold/1k{" "}
+              {snapshot.scoring.goldPer1000}
+            </Code>
           </CardBody>
         </Card>
       </section>

@@ -41,6 +41,7 @@ export interface FantasyScoring {
   assist: number;
   win: number;
   csPer100: number;
+  goldPer1000: number;
 }
 
 export interface FriendRoster {

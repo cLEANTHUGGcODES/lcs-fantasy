@@ -11,8 +11,9 @@ export const DEFAULT_SCORING: FantasyScoring = {
   kill: 3,
   death: -1,
   assist: 2,
-  win: 2,
+  win: 0,
   csPer100: 1,
+  goldPer1000: 0,
 };
 
 export const resolveScoringConfig = (
@@ -33,6 +34,7 @@ export const calculateFantasyPoints = (
   assists: number,
   won: boolean,
   cs: number | null,
+  gold: number | null,
   scoring: FantasyScoring,
 ): number => {
   const base =
@@ -41,7 +43,9 @@ export const calculateFantasyPoints = (
     assists * scoring.assist +
     (won ? scoring.win : 0);
   const csBonus = cs ? (cs / 100) * scoring.csPer100 : 0;
-  return round(base + csBonus);
+  const goldBonus = gold ? (gold / 1000) * scoring.goldPer1000 : 0;
+
+  return round(base + csBonus + goldBonus);
 };
 
 export const applyScoringToGames = (
@@ -58,6 +62,7 @@ export const applyScoringToGames = (
         player.assists,
         player.won,
         player.cs,
+        player.gold,
         scoring,
       ),
     })),

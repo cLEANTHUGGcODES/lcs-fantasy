@@ -5,8 +5,9 @@
     "kill": 3,
     "death": -1,
     "assist": 2,
-    "win": 2,
-    "csPer100": 1
+    "win": 0,
+    "csPer100": 1,
+    "goldPer1000": 0
   },
   "rosters": [
     {

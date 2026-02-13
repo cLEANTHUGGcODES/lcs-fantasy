@@ -1,4 +1,5 @@
 import leagueConfigData from "@/data/friends-league.json";
+import { resolveScoringConfig } from "@/lib/fantasy";
 import { getLatestSnapshotFromSupabase } from "@/lib/supabase-match-store";
 import type { FantasySnapshot, LeagueConfig } from "@/types/fantasy";
 
@@ -32,7 +33,7 @@ export const getFantasySnapshot = async (): Promise<FantasySnapshot> => {
     generatedAt: payload.generatedAt ?? storedAt,
     sourcePage: payload.sourcePage,
     leagueName: payload.leagueName,
-    scoring: payload.scoring,
+    scoring: resolveScoringConfig(payload.scoring),
     rosters: payload.rosters,
     matchCount: payload.matchCount,
     playerCount: payload.playerCount,
