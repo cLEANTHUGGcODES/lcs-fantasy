@@ -2,7 +2,6 @@
 
 import { Button } from "@heroui/button";
 import { Card, CardBody, CardHeader } from "@heroui/card";
-import { Input } from "@heroui/input";
 import { Spinner } from "@heroui/spinner";
 import { ChevronDown, ChevronLeft, MessageCircle, Send } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -48,21 +47,29 @@ export const GlobalChatPanel = ({
   const [lastSeenMessageId, setLastSeenMessageId] = useState(0);
   const [unreadCount, setUnreadCount] = useState(0);
   const messageListRef = useRef<HTMLDivElement | null>(null);
-  const inputContainerRef = useRef<HTMLDivElement | null>(null);
+  const chatInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const chatInputId = `global-chat-message-${currentUserId}`;
   const sortedMessages = useMemo(
     () => [...messages].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()),
     [messages],
   );
 
+  const resizeChatInput = useCallback((target: HTMLTextAreaElement) => {
+    target.style.height = "0px";
+    const nextHeight = Math.min(target.scrollHeight, 120);
+    target.style.height = `${Math.max(40, nextHeight)}px`;
+  }, []);
+
   const focusChatInput = useCallback(() => {
-    const input = inputContainerRef.current?.querySelector("input");
-    if (!(input instanceof HTMLInputElement)) {
+    const input = chatInputRef.current;
+    if (!input) {
       return;
     }
     input.focus();
     const end = input.value.length;
     input.setSelectionRange(end, end);
-  }, []);
+    resizeChatInput(input);
+  }, [resizeChatInput]);
 
   const loadMessages = useCallback(async () => {
     const response = await fetch("/api/chat", {
@@ -154,7 +161,7 @@ export const GlobalChatPanel = ({
   }, [isOpen]);
 
   const submitMessage = useCallback(async () => {
-    const trimmed = messageInput.replace(/\s+/g, " ").trim();
+    const trimmed = messageInput.trim();
     if (!trimmed) {
       return;
     }
@@ -176,6 +183,9 @@ export const GlobalChatPanel = ({
         throw new Error(payload.error ?? "Unable to send chat message.");
       }
       setMessageInput("");
+      if (chatInputRef.current) {
+        chatInputRef.current.style.height = "40px";
+      }
       await loadMessages();
       window.requestAnimationFrame(() => {
         focusChatInput();
@@ -266,12 +276,14 @@ export const GlobalChatPanel = ({
           className={`pointer-events-auto fixed inset-0 z-10 flex h-[100dvh] w-screen flex-col overflow-hidden rounded-none bg-gradient-to-b from-[#081120] via-[#0d1a30] to-[#111d33] text-slate-100 sm:relative sm:h-auto sm:max-h-[min(700px,86dvh)] sm:w-[380px] sm:rounded-2xl sm:border sm:border-slate-400/45 sm:shadow-2xl sm:backdrop-blur-md ${className ?? ""}`}
         >
           <CardHeader
-            className="flex items-center justify-between border-b border-slate-500/35 px-3 pb-2 pt-3"
+            className="flex items-center justify-between border-b border-slate-500/35 px-3 pb-1.5 pt-2"
             style={{ paddingTop: "calc(env(safe-area-inset-top) + 0.75rem)" }}
           >
             <div>
-              <h2 className="text-base font-semibold text-white">Global Chat</h2>
-              <p className="text-[11px] text-slate-300">Shared across dashboard and draft rooms</p>
+              <h2 className="text-sm font-semibold text-white sm:text-base">Global Chat</h2>
+              <p className="hidden text-[11px] text-slate-300 sm:block">
+                Shared across dashboard and draft rooms
+              </p>
             </div>
             <Button
               isIconOnly
@@ -284,7 +296,7 @@ export const GlobalChatPanel = ({
               <ChevronDown className="hidden h-4 w-4 sm:block" />
             </Button>
           </CardHeader>
-          <CardBody className="flex min-h-0 flex-1 flex-col gap-3 p-3">
+          <CardBody className="flex min-h-0 flex-1 flex-col gap-2 p-2.5 sm:gap-3 sm:p-3">
             {loading ? (
               <div className="flex min-h-0 flex-1 items-center justify-center">
                 <Spinner label="Loading chat..." />
@@ -292,7 +304,7 @@ export const GlobalChatPanel = ({
             ) : (
               <div
                 ref={messageListRef}
-                className="flex-1 min-h-0 space-y-2 overflow-y-auto px-1 pb-1 sm:rounded-large sm:border sm:border-slate-500/35 sm:bg-[#070f1f]/75 sm:p-3"
+                className="flex-1 min-h-0 space-y-1.5 overflow-y-auto px-1 pb-1 sm:space-y-2 sm:rounded-large sm:border sm:border-slate-500/35 sm:bg-[#070f1f]/75 sm:p-3"
               >
                 {sortedMessages.length === 0 ? (
                   <p className="text-sm text-slate-300">No messages yet. Start the banter.</p>
@@ -305,20 +317,24 @@ export const GlobalChatPanel = ({
                         className={`flex ${isCurrentUser ? "justify-end" : "justify-start"}`}
                       >
                         <div
-                          className={`max-w-[88%] rounded-2xl border px-3 py-2 ${
+                          className={`max-w-[82%] rounded-2xl border px-2.5 py-1.5 sm:max-w-[88%] sm:px-3 sm:py-2 ${
                             isCurrentUser
                               ? "border-blue-300/70 bg-blue-500/85 text-white shadow-[0_8px_20px_rgba(59,130,246,0.28)]"
                               : "border-slate-500/60 bg-slate-800/88 text-slate-100 shadow-[0_8px_18px_rgba(15,23,42,0.35)]"
                           }`}
                         >
-                          <p className={`text-[11px] ${isCurrentUser ? "text-blue-100/90" : "text-slate-300"}`}>
+                          <p className={`text-[10px] ${isCurrentUser ? "text-blue-100/90" : "text-slate-300"}`}>
                             <span className={`font-semibold ${isCurrentUser ? "text-white" : "text-slate-100"}`}>
                               {entry.senderLabel}
                             </span>{" "}
                             •{" "}
                             {formatTime(entry.createdAt)}
                           </p>
-                          <p className={`mt-1 whitespace-pre-wrap break-words text-sm ${isCurrentUser ? "text-white" : "text-slate-100"}`}>
+                          <p
+                            className={`mt-0.5 whitespace-pre-wrap break-words text-[13px] leading-5 sm:mt-1 sm:text-sm ${
+                              isCurrentUser ? "text-white" : "text-slate-100"
+                            }`}
+                          >
                             {entry.message}
                           </p>
                         </div>
@@ -330,25 +346,50 @@ export const GlobalChatPanel = ({
             )}
 
             <div
-              className="-mx-3 mt-auto border-t border-slate-500/35 bg-[#091426]/95 px-3 pt-2 sm:mx-0 sm:mt-0 sm:border-0 sm:bg-transparent sm:px-0 sm:pt-0"
-              style={{ paddingBottom: "calc(env(safe-area-inset-bottom) + 0.5rem)" }}
+              className="-mx-2.5 mt-auto border-t border-slate-500/35 bg-[#091426]/95 px-2.5 pt-1.5 sm:mx-0 sm:mt-0 sm:border-0 sm:bg-transparent sm:px-0 sm:pt-0"
+              style={{ paddingBottom: "calc(env(safe-area-inset-bottom) + 0.35rem)" }}
             >
               <form
-                className="flex items-center gap-2 rounded-large border border-slate-500/35 bg-slate-900/55 p-2"
+                autoComplete="off"
+                className="flex items-end gap-2 rounded-large border border-slate-500/35 bg-slate-900/55 p-2"
                 onSubmit={(event) => {
                   event.preventDefault();
                   void submitMessage();
                 }}
               >
-                <div className="flex-1" ref={inputContainerRef}>
-                  <Input
+                <div className="flex-1">
+                  <label className="sr-only" htmlFor={chatInputId}>
+                    Chat message
+                  </label>
+                  <textarea
+                    ref={chatInputRef}
                     aria-label="Chat message"
-                    isDisabled={pendingSend}
+                    autoCapitalize="sentences"
+                    autoComplete="off"
+                    autoCorrect="on"
+                    className="w-full min-h-[40px] max-h-[120px] resize-none rounded-xl border border-slate-500/45 bg-[#08111f] px-3 py-2 text-[13px] leading-5 text-slate-100 outline-none transition focus:border-primary-400/70 focus:ring-2 focus:ring-primary-400/30 sm:text-sm"
+                    data-form-type="other"
+                    data-lpignore="true"
+                    disabled={pendingSend}
+                    enterKeyHint="send"
+                    id={chatInputId}
+                    inputMode="text"
                     maxLength={MAX_GLOBAL_CHAT_MESSAGE_LENGTH}
-                    placeholder="Type your message..."
+                    name="chat_message"
+                    placeholder="Message"
+                    rows={1}
+                    spellCheck
                     value={messageInput}
-                    variant="bordered"
-                    onValueChange={setMessageInput}
+                    onChange={(event) => {
+                      setMessageInput(event.target.value);
+                      resizeChatInput(event.target);
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" && !event.shiftKey) {
+                        event.preventDefault();
+                        void submitMessage();
+                      }
+                    }}
                   />
                 </div>
                 <Button
@@ -359,12 +400,12 @@ export const GlobalChatPanel = ({
                   variant="flat"
                 >
                   <span className="inline-flex items-center gap-1">
-                    <Send className="h-4 w-4" />
+                    <Send className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
                     <span className="hidden sm:inline">Send</span>
                   </span>
                 </Button>
               </form>
-              <div className="mt-1 flex items-center justify-end text-[11px] text-slate-300">
+              <div className="mt-1 hidden items-center justify-end text-[11px] text-slate-300 sm:flex">
                 {messageInput.trim().length}/{MAX_GLOBAL_CHAT_MESSAGE_LENGTH}
               </div>
               {error ? <p className="mt-1 text-sm text-danger-400">{error}</p> : null}
