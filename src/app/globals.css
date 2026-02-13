@@ -4,9 +4,12 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
-  --font-body: var(--font-league-spartan);
-  --font-display: var(--font-league-spartan);
-  --font-code: var(--font-league-spartan);
+  --font-sans: var(--font-league-spartan);
+  --font-serif: var(--font-league-spartan);
+  --font-mono: var(--font-league-spartan);
+  --font-body: var(--font-sans);
+  --font-display: var(--font-sans);
+  --font-code: var(--font-sans);
   --insight-gold: #C79B3B;
   --insight-gold-deep: #C79B3B;
   --insight-ink: #2f2406;
