@@ -544,7 +544,7 @@ export const GlobalChatPanel = ({
               <div className="flex items-end gap-2 rounded-large bg-[#0e1a2f]/85 p-1.5">
                 <div className="relative flex-1">
                   {!isComposerFocused && messageInput.trim().length === 0 ? (
-                    <span className="pointer-events-none absolute left-3 top-2 text-[13px] text-[#7f92b2] sm:text-sm">
+                    <span className="pointer-events-none absolute left-3 top-2 text-base leading-5 text-[#7f92b2]">
                       Message
                     </span>
                   ) : null}
@@ -553,7 +553,7 @@ export const GlobalChatPanel = ({
                     aria-label="Chat message"
                     aria-multiline="true"
                     autoCorrect="on"
-                    className="chat-scrollbar min-h-[40px] max-h-[120px] overflow-y-auto rounded-xl border border-[#425b7d]/70 bg-[#081326] px-3 py-2 text-[13px] leading-5 text-[#edf2ff] outline-none transition focus:border-[#e8c35a] focus:ring-2 focus:ring-[#e8c35a]/25 sm:text-sm"
+                    className="chat-scrollbar min-h-[40px] max-h-[120px] overflow-y-auto rounded-xl border border-[#425b7d]/70 bg-[#081326] px-3 py-2 text-base leading-5 text-[#edf2ff] outline-none transition focus:border-[#e8c35a] focus:ring-2 focus:ring-[#e8c35a]/25"
                     contentEditable={!pendingSend}
                     data-gramm="false"
                     role="textbox"

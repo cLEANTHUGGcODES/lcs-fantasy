@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { League_Spartan } from "next/font/google";
 import "./globals.css";
 import { Providers } from "./providers";
@@ -11,6 +11,13 @@ const leagueSpartan = League_Spartan({
 export const metadata: Metadata = {
   title: "INSIGHT LoL Fantasy",
   description: "We couldn't find a one that we liked, so we fuckin' built one.",
+};
+
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
+  interactiveWidget: "resizes-content",
 };
 
 export default function RootLayout({

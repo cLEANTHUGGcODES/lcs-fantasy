@@ -20,6 +20,11 @@ body {
   min-height: 100%;
 }
 
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
 body {
   margin: 0;
   font-family: var(--font-body), sans-serif;
@@ -81,4 +86,16 @@ body {
 
 .chat-scrollbar::-webkit-scrollbar-corner {
   background: transparent;
+}
+
+@supports (-webkit-touch-callout: none) {
+  @media (max-width: 1024px) {
+    input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):not([type="button"]):not([type="submit"]):not([type="reset"]),
+    textarea,
+    select,
+    [contenteditable="true"],
+    [role="textbox"] {
+      font-size: 16px !important;
+    }
+  }
 }
