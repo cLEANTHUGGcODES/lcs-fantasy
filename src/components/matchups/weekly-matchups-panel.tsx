@@ -150,10 +150,12 @@ export const WeeklyMatchupsPanel = ({
       </CardHeader>
       <CardBody className="space-y-2 overflow-x-hidden">
         {headToHead.weeks.length > 1 ? (
-          <div className="flex items-center justify-between">
+          <div className="flex w-full items-center justify-between">
             <Button
+              isIconOnly
+              aria-label="Previous week"
+              className="h-8 w-8 rounded-medium border border-default-300/45 bg-content2/70 text-white shadow-sm backdrop-blur-sm data-[hover=true]:border-default-200/70 data-[hover=true]:bg-content2 data-[hover=true]:text-white data-[pressed=true]:bg-content2/85 data-[disabled=true]:border-default-300/25 data-[disabled=true]:bg-content2/35 data-[disabled=true]:text-default-400"
               size="sm"
-              startContent={<ChevronLeft className="h-3.5 w-3.5" />}
               variant="light"
               isDisabled={!canGoPrevious}
               onPress={() => {
@@ -163,11 +165,13 @@ export const WeeklyMatchupsPanel = ({
                 setSelectedWeekIndex((value) => value - 1);
               }}
             >
-              Previous Week
+              <ChevronLeft className="h-3.5 w-3.5" />
             </Button>
             <Button
+              isIconOnly
+              aria-label="Next week"
+              className="h-8 w-8 rounded-medium border border-default-300/45 bg-content2/70 text-white shadow-sm backdrop-blur-sm data-[hover=true]:border-default-200/70 data-[hover=true]:bg-content2 data-[hover=true]:text-white data-[pressed=true]:bg-content2/85 data-[disabled=true]:border-default-300/25 data-[disabled=true]:bg-content2/35 data-[disabled=true]:text-default-400"
               size="sm"
-              endContent={<ChevronRight className="h-3.5 w-3.5" />}
               variant="light"
               isDisabled={!canGoNext}
               onPress={() => {
@@ -177,7 +181,7 @@ export const WeeklyMatchupsPanel = ({
                 setSelectedWeekIndex((value) => value + 1);
               }}
             >
-              Next Week
+              <ChevronRight className="h-3.5 w-3.5" />
             </Button>
           </div>
         ) : null}

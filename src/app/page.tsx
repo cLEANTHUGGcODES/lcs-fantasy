@@ -3,9 +3,11 @@ import { Chip } from "@heroui/chip";
 import { Code } from "@heroui/code";
 import { Divider } from "@heroui/divider";
 import { Link } from "@heroui/link";
+import { Navbar, NavbarBrand, NavbarContent, NavbarItem } from "@heroui/navbar";
 import { Progress } from "@heroui/progress";
 import { stat } from "node:fs/promises";
 import path from "node:path";
+import { Crown } from "lucide-react";
 import Image from "next/image";
 import { redirect } from "next/navigation";
 import { AccountWidget } from "@/components/auth/account-widget";
@@ -269,51 +271,41 @@ export default async function Home() {
 
   return (
     <main className="mx-auto min-h-screen w-full max-w-7xl px-3 py-5 pb-28 md:px-6 md:py-8 md:pb-24">
-      <section className="mt-2 grid grid-cols-1 gap-4 md:grid-cols-3">
-        <Card className="overflow-visible bg-content1/70">
-          <CardHeader className="pb-0 text-xs uppercase tracking-wide text-default-500">
-            My Profile
-          </CardHeader>
-          <CardBody>
-            <AccountWidget
-              avatarPath={avatarPath}
-              avatarUrl={avatarUrl}
-              canAccessSettings={canAccessSettings}
-              firstName={firstName}
-              lastName={lastName}
-              teamName={teamName}
-              userLabel={userLabel}
-            />
-          </CardBody>
-        </Card>
-
-        <div className="flex items-center justify-center py-2">
+      <Navbar
+        className="overflow-visible bg-transparent"
+        classNames={{
+          wrapper: "h-16 max-w-none px-2 sm:px-3",
+        }}
+        isBlurred={false}
+        isBordered={false}
+        maxWidth="full"
+        position="static"
+      >
+        <NavbarBrand>
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src={insightLogoSrc}
             alt="Insight LoL Fantasy"
             width={900}
             height={170}
-            className="h-auto w-full max-w-[280px]"
+            className="h-auto w-full max-w-[120px]"
           />
-        </div>
-
-        <Card className="bg-content1/70">
-          <CardHeader className="pb-0 text-xs uppercase tracking-wide text-default-500">
-            Scoring Formula
-          </CardHeader>
-          <CardBody className="space-y-2">
-            <p className="mono-points text-sm text-default-600">
-              K {snapshot.scoring.kill} / D {snapshot.scoring.death} / A{" "}
-              {snapshot.scoring.assist} / W {snapshot.scoring.win}
-            </p>
-            <Code size="sm">
-              CS/minion {snapshot.scoring.csPer100 / 100} • Gold/1k{" "}
-              {snapshot.scoring.goldPer1000}
-            </Code>
-          </CardBody>
-        </Card>
-      </section>
+        </NavbarBrand>
+        <NavbarContent justify="end">
+          <NavbarItem>
+            <AccountWidget
+              avatarPath={avatarPath}
+              avatarUrl={avatarUrl}
+              canAccessSettings={canAccessSettings}
+              firstName={firstName}
+              lastName={lastName}
+              layout="navbar"
+              teamName={teamName}
+              userLabel={userLabel}
+            />
+          </NavbarItem>
+        </NavbarContent>
+      </Navbar>
 
       <GlobalChatPanel currentUserId={userId} />
 
@@ -467,6 +459,9 @@ export default async function Home() {
                   draftedRows.length > 0 &&
                   draftedRows[0].userId === entry.userId &&
                   entry.drafted;
+                const isLastPlace =
+                  dashboardStandings.rows.length > 1 &&
+                  index === dashboardStandings.rows.length - 1;
 
                 return (
                   <div
@@ -480,9 +475,19 @@ export default async function Home() {
                         <p className="truncate text-sm font-medium">{entry.displayName}</p>
                       </div>
                       {isLeader ? (
-                        <Chip color="warning" size="sm" variant="flat">
-                          Leader
-                        </Chip>
+                        <span aria-label="Leader" className="inline-flex items-center" title="Leader">
+                          <Crown className="h-4 w-4 text-warning-300" />
+                        </span>
+                      ) : isLastPlace ? (
+                        <span
+                          aria-label="Last place"
+                          className="inline-flex items-center"
+                          title="Last place"
+                        >
+                          <span aria-hidden className="text-sm leading-none">
+                            💩
+                          </span>
+                        </span>
                       ) : null}
                     </div>
                     {hasCompletedDraft ? (
@@ -567,6 +572,9 @@ export default async function Home() {
                       draftedRows.length > 0 &&
                       draftedRows[0].userId === entry.userId &&
                       entry.drafted;
+                    const isLastPlace =
+                      dashboardStandings.rows.length > 1 &&
+                      index === dashboardStandings.rows.length - 1;
 
                     return (
                       <tr
@@ -581,9 +589,23 @@ export default async function Home() {
                               <p className="truncate">{entry.displayName}</p>
                             </div>
                             {isLeader ? (
-                              <Chip color="warning" size="sm" variant="flat">
-                                Leader
-                              </Chip>
+                              <span
+                                aria-label="Leader"
+                                className="inline-flex items-center"
+                                title="Leader"
+                              >
+                                <Crown className="h-4 w-4 text-warning-300" />
+                              </span>
+                            ) : isLastPlace ? (
+                              <span
+                                aria-label="Last place"
+                                className="inline-flex items-center"
+                                title="Last place"
+                              >
+                                <span aria-hidden className="text-sm leading-none">
+                                  💩
+                                </span>
+                              </span>
                             ) : null}
                           </div>
                         </td>
