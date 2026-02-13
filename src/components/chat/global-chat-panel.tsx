@@ -17,6 +17,12 @@ type GlobalChatResponse = {
 
 const MAX_GLOBAL_CHAT_MESSAGE_LENGTH = 320;
 const CHAT_POLL_INTERVAL_MS = 2500;
+const CHAT_AUTO_SCROLL_THRESHOLD_PX = 72;
+
+const isNearBottom = (element: HTMLDivElement): boolean => {
+  const distanceFromBottom = element.scrollHeight - element.scrollTop - element.clientHeight;
+  return distanceFromBottom <= CHAT_AUTO_SCROLL_THRESHOLD_PX;
+};
 
 const toMessageId = (value: unknown): number => {
   const normalized = typeof value === "number"
@@ -63,6 +69,7 @@ export const GlobalChatPanel = ({
   const [isComposerFocused, setIsComposerFocused] = useState(false);
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const chatInputRef = useRef<HTMLDivElement | null>(null);
+  const shouldStickToBottomRef = useRef(true);
   const sortedMessages = useMemo(
     () => [...messages].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()),
     [messages],
@@ -204,10 +211,33 @@ export const GlobalChatPanel = ({
     if (!isOpen) {
       return;
     }
+
     const el = messageListRef.current;
     if (!el) {
       return;
     }
+
+    shouldStickToBottomRef.current = true;
+    window.requestAnimationFrame(() => {
+      const current = messageListRef.current;
+      if (!current) {
+        return;
+      }
+      current.scrollTop = current.scrollHeight;
+      shouldStickToBottomRef.current = true;
+    });
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen || !shouldStickToBottomRef.current) {
+      return;
+    }
+
+    const el = messageListRef.current;
+    if (!el) {
+      return;
+    }
+
     el.scrollTop = el.scrollHeight;
   }, [isOpen, sortedMessages]);
 
@@ -414,6 +444,9 @@ export const GlobalChatPanel = ({
                 ref={messageListRef}
                 className="flex-1 min-h-0 space-y-1.5 overflow-x-hidden overflow-y-auto overscroll-contain px-1 pb-1 touch-pan-y sm:space-y-2 sm:rounded-large sm:border sm:border-slate-500/35 sm:bg-[#070f1f]/75 sm:p-3"
                 style={{ WebkitOverflowScrolling: "touch" }}
+                onScroll={(event) => {
+                  shouldStickToBottomRef.current = isNearBottom(event.currentTarget);
+                }}
               >
                 {sortedMessages.length === 0 ? (
                   <p className="text-sm text-slate-300">No messages yet. Start the banter.</p>
@@ -432,6 +465,47 @@ export const GlobalChatPanel = ({
                         <div className="space-y-0.5">
                           {group.messages.map((entry, index) => {
                             const showAvatar = index === group.messages.length - 1;
+                            const avatar = showAvatar ? (
+                              <span className="relative inline-flex h-7 w-7 shrink-0 overflow-hidden rounded-full border border-default-300/35 bg-default-200/40">
+                                {group.senderAvatarUrl ? (
+                                  <Image
+                                    src={group.senderAvatarUrl}
+                                    alt={`${group.senderLabel} avatar`}
+                                    fill
+                                    sizes="28px"
+                                    className="object-cover object-center"
+                                  />
+                                ) : (
+                                  <span className="inline-flex h-full w-full items-center justify-center text-[10px] font-semibold text-default-700">
+                                    {initialsForSenderLabel(group.senderLabel)}
+                                  </span>
+                                )}
+                              </span>
+                            ) : (
+                              <span className="h-7 w-7 shrink-0" />
+                            );
+
+                            const bubble = (
+                              <div
+                                className={`max-w-[82%] rounded-2xl border px-2 py-1 sm:max-w-[88%] sm:px-2.5 sm:py-1.5 ${
+                                  group.isCurrentUser
+                                    ? "border-blue-300/70 bg-blue-500/85 text-white shadow-[0_8px_20px_rgba(59,130,246,0.28)]"
+                                    : "border-slate-500/60 bg-slate-800/88 text-slate-100 shadow-[0_8px_18px_rgba(15,23,42,0.35)]"
+                                }`}
+                              >
+                                <p className={`text-[10px] ${group.isCurrentUser ? "text-blue-100/90" : "text-slate-300"}`}>
+                                  {formatTime(entry.createdAt)}
+                                </p>
+                                <p
+                                  className={`mt-0.5 whitespace-pre-wrap break-words text-[13px] leading-[1.35rem] sm:mt-0.5 sm:text-sm ${
+                                    group.isCurrentUser ? "text-white" : "text-slate-100"
+                                  }`}
+                                >
+                                  {entry.message}
+                                </p>
+                              </div>
+                            );
+
                             return (
                               <div
                                 key={entry.id}
@@ -439,43 +513,14 @@ export const GlobalChatPanel = ({
                                   group.isCurrentUser ? "justify-end" : "justify-start"
                                 }`}
                               >
-                                {showAvatar ? (
-                                  <span className="relative inline-flex h-7 w-7 shrink-0 overflow-hidden rounded-full border border-default-300/35 bg-default-200/40">
-                                    {group.senderAvatarUrl ? (
-                                      <Image
-                                        src={group.senderAvatarUrl}
-                                        alt={`${group.senderLabel} avatar`}
-                                        fill
-                                        sizes="28px"
-                                        className="object-cover object-center"
-                                      />
-                                    ) : (
-                                      <span className="inline-flex h-full w-full items-center justify-center text-[10px] font-semibold text-default-700">
-                                        {initialsForSenderLabel(group.senderLabel)}
-                                      </span>
-                                    )}
-                                  </span>
+                                {group.isCurrentUser ? (
+                                  bubble
                                 ) : (
-                                  <span className="h-7 w-7 shrink-0" />
+                                  <>
+                                    {avatar}
+                                    {bubble}
+                                  </>
                                 )}
-                                <div
-                                  className={`max-w-[82%] rounded-2xl border px-2 py-1 sm:max-w-[88%] sm:px-2.5 sm:py-1.5 ${
-                                    group.isCurrentUser
-                                      ? "border-blue-300/70 bg-blue-500/85 text-white shadow-[0_8px_20px_rgba(59,130,246,0.28)]"
-                                      : "border-slate-500/60 bg-slate-800/88 text-slate-100 shadow-[0_8px_18px_rgba(15,23,42,0.35)]"
-                                  }`}
-                                >
-                                  <p className={`text-[10px] ${group.isCurrentUser ? "text-blue-100/90" : "text-slate-300"}`}>
-                                    {formatTime(entry.createdAt)}
-                                  </p>
-                                  <p
-                                    className={`mt-0.5 whitespace-pre-wrap break-words text-[13px] leading-[1.35rem] sm:mt-0.5 sm:text-sm ${
-                                      group.isCurrentUser ? "text-white" : "text-slate-100"
-                                    }`}
-                                  >
-                                    {entry.message}
-                                  </p>
-                                </div>
                               </div>
                             );
                           })}
