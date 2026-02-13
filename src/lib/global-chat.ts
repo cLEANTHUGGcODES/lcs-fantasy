@@ -1,9 +1,14 @@
+import { getSupabaseAuthEnv } from "@/lib/supabase-auth-env";
 import { getSupabaseServerClient } from "@/lib/supabase-server";
+import { getUserAvatarUrl } from "@/lib/user-profile";
 import type { GlobalChatMessage } from "@/types/chat";
 
 const GLOBAL_CHAT_TABLE = "fantasy_global_chat_messages";
 export const MAX_GLOBAL_CHAT_MESSAGE_LENGTH = 320;
 const DEFAULT_GLOBAL_CHAT_LIMIT = 200;
+const AVATAR_CACHE_TTL_MS = 5 * 60 * 1000;
+
+const avatarUrlByUserIdCache = new Map<string, { avatarUrl: string | null; expiresAt: number }>();
 
 type GlobalChatRow = {
   id: number;
@@ -17,9 +22,59 @@ const toGlobalChatMessage = (row: GlobalChatRow): GlobalChatMessage => ({
   id: row.id,
   userId: row.user_id,
   senderLabel: row.sender_label,
+  senderAvatarUrl: null,
   message: row.message,
   createdAt: row.created_at,
 });
+
+const resolveAvatarUrlsForUsers = async (
+  userIds: string[],
+): Promise<Map<string, string | null>> => {
+  const now = Date.now();
+  const resolved = new Map<string, string | null>();
+  const missingUserIds: string[] = [];
+
+  for (const userId of userIds) {
+    const cached = avatarUrlByUserIdCache.get(userId);
+    if (cached && cached.expiresAt > now) {
+      resolved.set(userId, cached.avatarUrl);
+      continue;
+    }
+    missingUserIds.push(userId);
+  }
+
+  if (missingUserIds.length === 0) {
+    return resolved;
+  }
+
+  const supabase = getSupabaseServerClient();
+  const { supabaseUrl } = getSupabaseAuthEnv();
+
+  await Promise.all(
+    missingUserIds.map(async (userId) => {
+      let avatarUrl: string | null = null;
+      try {
+        const { data, error } = await supabase.auth.admin.getUserById(userId);
+        if (!error && data?.user) {
+          avatarUrl = getUserAvatarUrl({
+            user: data.user,
+            supabaseUrl,
+          });
+        }
+      } catch {
+        avatarUrl = null;
+      }
+
+      avatarUrlByUserIdCache.set(userId, {
+        avatarUrl,
+        expiresAt: now + AVATAR_CACHE_TTL_MS,
+      });
+      resolved.set(userId, avatarUrl);
+    }),
+  );
+
+  return resolved;
+};
 
 export const normalizeGlobalChatMessage = (value: string): string =>
   value.replace(/\s+/g, " ").trim();
@@ -42,7 +97,14 @@ export const listGlobalChatMessages = async ({
     throw new Error(`Unable to load global chat messages: ${error.message}`);
   }
 
-  return ((data ?? []) as GlobalChatRow[]).map(toGlobalChatMessage).reverse();
+  const baseMessages = ((data ?? []) as GlobalChatRow[]).map(toGlobalChatMessage).reverse();
+  const uniqueUserIds = [...new Set(baseMessages.map((entry) => entry.userId))];
+  const avatarUrlsByUserId = await resolveAvatarUrlsForUsers(uniqueUserIds);
+
+  return baseMessages.map((entry) => ({
+    ...entry,
+    senderAvatarUrl: avatarUrlsByUserId.get(entry.userId) ?? null,
+  }));
 };
 
 export const createGlobalChatMessage = async ({

@@ -4,6 +4,7 @@ import { Button } from "@heroui/button";
 import { Card, CardBody, CardHeader } from "@heroui/card";
 import { Spinner } from "@heroui/spinner";
 import { ChevronDown, ChevronLeft, MessageCircle, Send } from "lucide-react";
+import Image from "next/image";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 import type { GlobalChatMessage } from "@/types/chat";
@@ -30,6 +31,18 @@ const formatTime = (value: string): string =>
     minute: "2-digit",
   });
 
+const initialsForSenderLabel = (value: string): string => {
+  const preferredSource = value.match(/\(([^)]+)\)/)?.[1] ?? value;
+  return (
+    preferredSource
+      .trim()
+      .split(/\s+/)
+      .slice(0, 2)
+      .map((part) => part[0]?.toUpperCase() ?? "")
+      .join("") || "?"
+  );
+};
+
 export const GlobalChatPanel = ({
   currentUserId,
   className,
@@ -47,21 +60,50 @@ export const GlobalChatPanel = ({
   const [hasInitializedUnreadState, setHasInitializedUnreadState] = useState(false);
   const [lastSeenMessageId, setLastSeenMessageId] = useState(0);
   const [unreadCount, setUnreadCount] = useState(0);
-  const [chatFieldToken] = useState(() => Math.random().toString(36).slice(2, 11));
+  const [isComposerFocused, setIsComposerFocused] = useState(false);
   const messageListRef = useRef<HTMLDivElement | null>(null);
-  const chatInputRef = useRef<HTMLTextAreaElement | null>(null);
-  const chatInputId = `global-chat-message-${chatFieldToken}`;
-  const chatFieldName = `chat_message_${chatFieldToken}`;
-  const chatAutocompleteValue = `section-chat-${chatFieldToken} chat-input`;
+  const chatInputRef = useRef<HTMLDivElement | null>(null);
   const sortedMessages = useMemo(
     () => [...messages].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()),
     [messages],
   );
+  const groupedMessages = useMemo(() => {
+    return sortedMessages.reduce<
+      Array<{
+        userId: string;
+        senderLabel: string;
+        senderAvatarUrl: string | null;
+        isCurrentUser: boolean;
+        messages: GlobalChatMessage[];
+      }>
+    >((groups, entry) => {
+      const previous = groups[groups.length - 1];
+      if (previous && previous.userId === entry.userId) {
+        previous.messages.push(entry);
+        return groups;
+      }
 
-  const resizeChatInput = useCallback((target: HTMLTextAreaElement) => {
-    target.style.height = "0px";
-    const nextHeight = Math.min(target.scrollHeight, 120);
-    target.style.height = `${Math.max(40, nextHeight)}px`;
+      groups.push({
+        userId: entry.userId,
+        senderLabel: entry.senderLabel,
+        senderAvatarUrl: entry.senderAvatarUrl,
+        isCurrentUser: entry.userId === currentUserId,
+        messages: [entry],
+      });
+      return groups;
+    }, []);
+  }, [currentUserId, sortedMessages]);
+
+  const moveCaretToEnd = useCallback((target: HTMLDivElement) => {
+    const selection = window.getSelection();
+    if (!selection) {
+      return;
+    }
+    const range = document.createRange();
+    range.selectNodeContents(target);
+    range.collapse(false);
+    selection.removeAllRanges();
+    selection.addRange(range);
   }, []);
 
   const focusChatInput = useCallback(() => {
@@ -70,10 +112,8 @@ export const GlobalChatPanel = ({
       return;
     }
     input.focus();
-    const end = input.value.length;
-    input.setSelectionRange(end, end);
-    resizeChatInput(input);
-  }, [resizeChatInput]);
+    moveCaretToEnd(input);
+  }, [moveCaretToEnd]);
 
   const loadMessages = useCallback(async () => {
     const response = await fetch("/api/chat", {
@@ -243,7 +283,7 @@ export const GlobalChatPanel = ({
       }
       setMessageInput("");
       if (chatInputRef.current) {
-        chatInputRef.current.style.height = "40px";
+        chatInputRef.current.textContent = "";
       }
       await loadMessages();
       window.requestAnimationFrame(() => {
@@ -332,17 +372,20 @@ export const GlobalChatPanel = ({
 
       {isOpen ? (
         <Card
-          className={`pointer-events-auto fixed inset-0 z-10 flex h-[100svh] min-h-[100svh] w-screen flex-col overflow-hidden overscroll-none rounded-none bg-gradient-to-b from-[#081120] via-[#0d1a30] to-[#111d33] text-slate-100 sm:relative sm:h-auto sm:min-h-0 sm:max-h-[min(700px,86dvh)] sm:w-[380px] sm:rounded-2xl sm:border sm:border-slate-400/45 sm:shadow-2xl sm:backdrop-blur-md ${className ?? ""}`}
+          className={`pointer-events-auto fixed inset-0 z-10 flex h-[100svh] min-h-[100svh] w-full flex-col overflow-hidden overscroll-none rounded-none bg-gradient-to-b from-[#081120] via-[#0d1a30] to-[#111d33] text-slate-100 sm:relative sm:h-auto sm:min-h-0 sm:max-h-[min(700px,86dvh)] sm:w-[380px] sm:rounded-2xl sm:border sm:border-slate-400/45 sm:shadow-2xl sm:backdrop-blur-md ${className ?? ""}`}
         >
           <CardHeader
             className="flex items-center justify-between border-b border-slate-500/35 px-3 pb-1.5 pt-2"
-            style={{ paddingTop: "calc(env(safe-area-inset-top) + 0.75rem)" }}
+            style={{
+              paddingTop: "calc(env(safe-area-inset-top) + 0.75rem)",
+              paddingLeft: "calc(env(safe-area-inset-left) + 0.75rem)",
+              paddingRight: "calc(env(safe-area-inset-right) + 0.75rem)",
+            }}
           >
             <div>
-              <h2 className="text-sm font-semibold text-white sm:text-base">Global Chat</h2>
-              <p className="hidden text-[11px] text-slate-300 sm:block">
-                Shared across dashboard and draft rooms
-              </p>
+              <h2 className="text-sm font-semibold text-white sm:text-base">
+                INSIGHT Fantasy Chat
+              </h2>
             </div>
             <Button
               isIconOnly
@@ -355,7 +398,13 @@ export const GlobalChatPanel = ({
               <ChevronDown className="hidden h-4 w-4 sm:block" />
             </Button>
           </CardHeader>
-          <CardBody className="flex min-h-0 flex-1 flex-col gap-2 p-2.5 sm:gap-3 sm:p-3">
+          <CardBody
+            className="flex min-h-0 flex-1 flex-col gap-2 p-2.5 sm:gap-3 sm:p-3"
+            style={{
+              paddingLeft: "calc(env(safe-area-inset-left) + 0.625rem)",
+              paddingRight: "calc(env(safe-area-inset-right) + 0.625rem)",
+            }}
+          >
             {loading ? (
               <div className="flex min-h-0 flex-1 items-center justify-center">
                 <Spinner label="Loading chat..." />
@@ -363,40 +412,73 @@ export const GlobalChatPanel = ({
             ) : (
               <div
                 ref={messageListRef}
-                className="flex-1 min-h-0 space-y-1.5 overflow-y-auto overscroll-contain px-1 pb-1 touch-pan-y sm:space-y-2 sm:rounded-large sm:border sm:border-slate-500/35 sm:bg-[#070f1f]/75 sm:p-3"
+                className="flex-1 min-h-0 space-y-1.5 overflow-x-hidden overflow-y-auto overscroll-contain px-1 pb-1 touch-pan-y sm:space-y-2 sm:rounded-large sm:border sm:border-slate-500/35 sm:bg-[#070f1f]/75 sm:p-3"
                 style={{ WebkitOverflowScrolling: "touch" }}
               >
                 {sortedMessages.length === 0 ? (
                   <p className="text-sm text-slate-300">No messages yet. Start the banter.</p>
                 ) : (
-                  sortedMessages.map((entry) => {
-                    const isCurrentUser = entry.userId === currentUserId;
+                  groupedMessages.map((group) => {
                     return (
                       <div
-                        key={entry.id}
-                        className={`flex ${isCurrentUser ? "justify-end" : "justify-start"}`}
+                        key={`${group.userId}-${group.messages[0]?.id ?? 0}-${group.messages[group.messages.length - 1]?.id ?? 0}`}
+                        className="space-y-0.5"
                       >
-                        <div
-                          className={`max-w-[82%] rounded-2xl border px-2.5 py-1.5 sm:max-w-[88%] sm:px-3 sm:py-2 ${
-                            isCurrentUser
-                              ? "border-blue-300/70 bg-blue-500/85 text-white shadow-[0_8px_20px_rgba(59,130,246,0.28)]"
-                              : "border-slate-500/60 bg-slate-800/88 text-slate-100 shadow-[0_8px_18px_rgba(15,23,42,0.35)]"
-                          }`}
-                        >
-                          <p className={`text-[10px] ${isCurrentUser ? "text-blue-100/90" : "text-slate-300"}`}>
-                            <span className={`font-semibold ${isCurrentUser ? "text-white" : "text-slate-100"}`}>
-                              {entry.senderLabel}
-                            </span>{" "}
-                            •{" "}
-                            {formatTime(entry.createdAt)}
+                        {!group.isCurrentUser ? (
+                          <p className="px-10 text-left text-[10px] font-medium text-slate-300">
+                            {group.senderLabel}
                           </p>
-                          <p
-                            className={`mt-0.5 whitespace-pre-wrap break-words text-[13px] leading-5 sm:mt-1 sm:text-sm ${
-                              isCurrentUser ? "text-white" : "text-slate-100"
-                            }`}
-                          >
-                            {entry.message}
-                          </p>
+                        ) : null}
+                        <div className="space-y-0.5">
+                          {group.messages.map((entry, index) => {
+                            const showAvatar = index === group.messages.length - 1;
+                            return (
+                              <div
+                                key={entry.id}
+                                className={`flex items-end gap-2 px-0.5 ${
+                                  group.isCurrentUser ? "justify-end" : "justify-start"
+                                }`}
+                              >
+                                {showAvatar ? (
+                                  <span className="relative inline-flex h-7 w-7 shrink-0 overflow-hidden rounded-full border border-default-300/35 bg-default-200/40">
+                                    {group.senderAvatarUrl ? (
+                                      <Image
+                                        src={group.senderAvatarUrl}
+                                        alt={`${group.senderLabel} avatar`}
+                                        fill
+                                        sizes="28px"
+                                        className="object-cover object-center"
+                                      />
+                                    ) : (
+                                      <span className="inline-flex h-full w-full items-center justify-center text-[10px] font-semibold text-default-700">
+                                        {initialsForSenderLabel(group.senderLabel)}
+                                      </span>
+                                    )}
+                                  </span>
+                                ) : (
+                                  <span className="h-7 w-7 shrink-0" />
+                                )}
+                                <div
+                                  className={`max-w-[82%] rounded-2xl border px-2 py-1 sm:max-w-[88%] sm:px-2.5 sm:py-1.5 ${
+                                    group.isCurrentUser
+                                      ? "border-blue-300/70 bg-blue-500/85 text-white shadow-[0_8px_20px_rgba(59,130,246,0.28)]"
+                                      : "border-slate-500/60 bg-slate-800/88 text-slate-100 shadow-[0_8px_18px_rgba(15,23,42,0.35)]"
+                                  }`}
+                                >
+                                  <p className={`text-[10px] ${group.isCurrentUser ? "text-blue-100/90" : "text-slate-300"}`}>
+                                    {formatTime(entry.createdAt)}
+                                  </p>
+                                  <p
+                                    className={`mt-0.5 whitespace-pre-wrap break-words text-[13px] leading-[1.35rem] sm:mt-0.5 sm:text-sm ${
+                                      group.isCurrentUser ? "text-white" : "text-slate-100"
+                                    }`}
+                                  >
+                                    {entry.message}
+                                  </p>
+                                </div>
+                              </div>
+                            );
+                          })}
                         </div>
                       </div>
                     );
@@ -407,38 +489,45 @@ export const GlobalChatPanel = ({
 
             <div
               className="-mx-2.5 mt-auto border-t border-slate-500/35 bg-[#091426]/95 px-2.5 pt-1.5 sm:mx-0 sm:mt-0 sm:border-0 sm:bg-transparent sm:px-0 sm:pt-0"
-              style={{ paddingBottom: "calc(env(safe-area-inset-bottom) + 0.35rem)" }}
+              style={{
+                paddingBottom: "calc(env(safe-area-inset-bottom) + 0.08rem)",
+                marginLeft: "calc(env(safe-area-inset-left) * -1)",
+                marginRight: "calc(env(safe-area-inset-right) * -1)",
+              }}
             >
-              <div className="flex items-end gap-2 rounded-large border border-slate-500/35 bg-slate-900/55 p-2">
-                <div className="flex-1">
-                  <label className="sr-only" htmlFor={chatInputId}>
-                    Chat message
-                  </label>
-                  <textarea
+              <div className="flex items-end gap-2 rounded-large bg-slate-900/45 p-1.5">
+                <div className="relative flex-1">
+                  {!isComposerFocused && messageInput.trim().length === 0 ? (
+                    <span className="pointer-events-none absolute left-3 top-2 text-[13px] text-slate-400 sm:text-sm">
+                      Message
+                    </span>
+                  ) : null}
+                  <div
                     ref={chatInputRef}
                     aria-label="Chat message"
-                    autoCapitalize="sentences"
-                    autoComplete={chatAutocompleteValue}
+                    aria-multiline="true"
                     autoCorrect="on"
-                    autoSave="off"
-                    className="w-full min-h-[40px] max-h-[120px] resize-none rounded-xl border border-slate-500/45 bg-[#08111f] px-3 py-2 text-[13px] leading-5 text-slate-100 outline-none transition focus:border-primary-400/70 focus:ring-2 focus:ring-primary-400/30 sm:text-sm"
-                    data-1p-ignore="true"
-                    data-bwignore="true"
-                    data-form-type="other"
-                    data-lpignore="true"
-                    disabled={pendingSend}
-                    enterKeyHint="send"
-                    id={chatInputId}
-                    inputMode="text"
-                    maxLength={MAX_GLOBAL_CHAT_MESSAGE_LENGTH}
-                    name={chatFieldName}
-                    placeholder="Message"
-                    rows={1}
+                    className="min-h-[40px] max-h-[120px] overflow-y-auto rounded-xl border border-slate-500/45 bg-[#08111f] px-3 py-2 text-[13px] leading-5 text-slate-100 outline-none transition focus:border-primary-400/70 focus:ring-2 focus:ring-primary-400/30 sm:text-sm"
+                    contentEditable={!pendingSend}
+                    data-gramm="false"
+                    role="textbox"
                     spellCheck
-                    value={messageInput}
-                    onChange={(event) => {
-                      setMessageInput(event.target.value);
-                      resizeChatInput(event.target);
+                    suppressContentEditableWarning
+                    onBlur={() => setIsComposerFocused(false)}
+                    onFocus={() => setIsComposerFocused(true)}
+                    onInput={(event) => {
+                      const target = event.currentTarget;
+                      const raw = target.innerText.replace(/\u00a0/g, " ");
+                      const normalized = raw.length > MAX_GLOBAL_CHAT_MESSAGE_LENGTH
+                        ? raw.slice(0, MAX_GLOBAL_CHAT_MESSAGE_LENGTH)
+                        : raw;
+
+                      if (normalized !== raw) {
+                        target.innerText = normalized;
+                        moveCaretToEnd(target);
+                      }
+
+                      setMessageInput(normalized);
                     }}
                     onKeyDown={(event) => {
                       if (event.key === "Enter" && !event.shiftKey) {
@@ -449,7 +538,9 @@ export const GlobalChatPanel = ({
                   />
                 </div>
                 <Button
+                  aria-label="Send message"
                   color="primary"
+                  isIconOnly
                   isDisabled={messageInput.trim().length === 0}
                   isLoading={pendingSend}
                   variant="flat"
@@ -457,14 +548,8 @@ export const GlobalChatPanel = ({
                     void submitMessage();
                   }}
                 >
-                  <span className="inline-flex items-center gap-1">
-                    <Send className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
-                    <span className="hidden sm:inline">Send</span>
-                  </span>
+                  <Send className="h-4 w-4" />
                 </Button>
-              </div>
-              <div className="mt-1 hidden items-center justify-end text-[11px] text-slate-300 sm:flex">
-                {messageInput.trim().length}/{MAX_GLOBAL_CHAT_MESSAGE_LENGTH}
               </div>
               {error ? <p className="mt-1 text-sm text-danger-400">{error}</p> : null}
             </div>
@@ -473,12 +558,12 @@ export const GlobalChatPanel = ({
       ) : null}
 
       <Button
-        className={`pointer-events-auto relative z-10 rounded-full border border-default-200/35 shadow-lg ${
+        className={`pointer-events-auto relative z-10 rounded-full border border-[#d7b460] bg-[#e1be62] text-[#2f2406] shadow-none transition-colors hover:bg-[#d8b455] active:bg-[#cfa74a] ${
           isOpen ? "hidden sm:inline-flex" : ""
         }`}
-        color="primary"
+        color="default"
         radius="full"
-        variant="shadow"
+        variant="solid"
         onPress={toggleChat}
       >
         <span className="inline-flex items-center gap-2">

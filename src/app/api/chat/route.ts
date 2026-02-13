@@ -5,7 +5,12 @@ import {
   listGlobalChatMessages,
   normalizeGlobalChatMessage,
 } from "@/lib/global-chat";
-import { getUserDisplayName, getUserTeamName } from "@/lib/user-profile";
+import { getSupabaseAuthEnv } from "@/lib/supabase-auth-env";
+import {
+  getUserAvatarUrl,
+  getUserDisplayName,
+  getUserTeamName,
+} from "@/lib/user-profile";
 
 type PostChatBody = {
   message?: string;
@@ -57,7 +62,20 @@ export async function POST(request: Request) {
       senderLabel,
       message,
     });
-    return Response.json({ message: createdMessage }, { status: 201 });
+    const { supabaseUrl } = getSupabaseAuthEnv();
+    const senderAvatarUrl = getUserAvatarUrl({
+      user,
+      supabaseUrl,
+    });
+    return Response.json(
+      {
+        message: {
+          ...createdMessage,
+          senderAvatarUrl,
+        },
+      },
+      { status: 201 },
+    );
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unable to send chat message.";
     const status = message === "UNAUTHORIZED" ? 401 : 500;
