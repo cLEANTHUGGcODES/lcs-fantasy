@@ -758,8 +758,10 @@ export const DraftRoom = ({
                     return (
                       <tr
                         key={entry.id}
-                        className={`border-t border-default-200/30 ${
-                          isCurrentUserRow ? "bg-primary-500/10" : ""
+                        className={`border-t border-default-200/30 transition-colors ${
+                          isCurrentUserRow
+                            ? "bg-primary-500/10 hover:bg-primary-500/15"
+                            : "hover:bg-default-100/20"
                         }`}
                       >
                         <td className="px-3 py-2.5 text-sm font-semibold text-default-600">
@@ -1122,8 +1124,10 @@ export const DraftRoom = ({
                         return (
                           <tr
                             key={player.id}
-                            className={`border-t border-default-200/30 transition ${
-                              isQueued ? "bg-primary-500/15" : "hover:bg-default-100/40"
+                            className={`border-t border-default-200/30 transition-colors ${
+                              isQueued
+                                ? "bg-primary-500/15 hover:bg-primary-500/20"
+                                : "hover:bg-default-100/40"
                             }`}
                           >
                             <td className="px-3 py-3">

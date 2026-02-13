@@ -206,7 +206,7 @@ export const AccountWidget = ({
             <div className="relative">
               <button
                 aria-label="Settings"
-                className="inline-flex h-9 w-9 items-center justify-center rounded-medium border border-default-300/40 bg-content2/60 p-0 text-white transition hover:border-default-200/70 hover:text-white"
+                className="inline-flex h-9 w-9 cursor-pointer items-center justify-center rounded-medium border border-default-300/40 bg-content2/60 p-0 text-white transition hover:border-default-200/70 hover:bg-content2/80 hover:text-white"
                 type="button"
                 onClick={() => setIsSettingsOpen((open) => !open)}
               >
@@ -258,7 +258,7 @@ export const AccountWidget = ({
               Signed in as
             </p>
             <button
-              className="max-w-full cursor-pointer truncate bg-transparent p-0 text-left text-sm font-semibold text-[#e8c35a] hover:underline"
+              className="max-w-full cursor-pointer truncate bg-transparent p-0 text-left text-sm font-semibold text-[#C79B3B] hover:underline"
               type="button"
               onClick={toggleProfileModal}
             >
@@ -278,7 +278,7 @@ export const AccountWidget = ({
           <div className="absolute bottom-2 right-2">
             <button
               aria-label="Settings"
-              className="cursor-pointer bg-transparent p-0 text-default-400 hover:text-default-200"
+              className="inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded-medium border border-transparent bg-transparent p-0 text-default-400 transition hover:border-default-200/40 hover:bg-content2/45 hover:text-default-200"
               type="button"
               onClick={() => setIsSettingsOpen((open) => !open)}
             >

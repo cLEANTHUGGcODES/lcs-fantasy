@@ -288,7 +288,7 @@ export const WeeklyMatchupsPanel = ({
                           )}
                         </div>
                         {matchup.isTie && matchup.right ? (
-                          <p className="mt-2 text-[11px] text-warning-300">Current result: tie</p>
+                          <p className="mt-2 text-[11px] text-[#C79B3B]">Current result: tie</p>
                         ) : null}
                       </div>
                     </motion.div>

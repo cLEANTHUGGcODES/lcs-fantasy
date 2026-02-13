@@ -60,6 +60,7 @@ type HeadToHeadRecord = {
   ties: number;
   gamesPlayed: number;
   pointsFor: number;
+  pointsAgainst: number;
 };
 
 type WeeklyFantasyPointsResult = {
@@ -135,6 +136,7 @@ export type HeadToHeadStandingRow = {
   gamesPlayed: number;
   winPct: number;
   pointsFor: number;
+  pointsAgainst: number;
 };
 
 export type HeadToHeadSummary = {
@@ -671,6 +673,7 @@ const buildHeadToHeadSummary = ({
       ties: 0,
       gamesPlayed: 0,
       pointsFor: 0,
+      pointsAgainst: 0,
     });
   }
 
@@ -711,6 +714,8 @@ const buildHeadToHeadSummary = ({
 
       leftRecord.gamesPlayed += 1;
       rightRecord.gamesPlayed += 1;
+      leftRecord.pointsAgainst = round(leftRecord.pointsAgainst + rightPoints);
+      rightRecord.pointsAgainst = round(rightRecord.pointsAgainst + leftPoints);
 
       if (leftPoints > rightPoints) {
         leftRecord.wins += 1;
@@ -733,6 +738,7 @@ const buildHeadToHeadSummary = ({
         ties: 0,
         gamesPlayed: 0,
         pointsFor: 0,
+        pointsAgainst: 0,
       };
       const winPct =
         record.gamesPlayed > 0
@@ -751,6 +757,7 @@ const buildHeadToHeadSummary = ({
         gamesPlayed: record.gamesPlayed,
         winPct: round(winPct),
         pointsFor: round(record.pointsFor),
+        pointsAgainst: round(record.pointsAgainst),
       };
     })
     .sort((a, b) => {

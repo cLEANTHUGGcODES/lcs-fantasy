@@ -14,6 +14,7 @@ import { GlobalChatPanel } from "@/components/chat/global-chat-panel";
 import { CroppedTeamLogo } from "@/components/cropped-team-logo";
 import { UserDraftRoomAccess } from "@/components/drafts/user-draft-room-access";
 import { WeeklyMatchupsPanel } from "@/components/matchups/weekly-matchups-panel";
+import { ScoringMethodologyDrawer } from "@/components/scoring-methodology-drawer";
 import { RosterBreakdownStack } from "@/components/standings/roster-breakdown-stack";
 import { isGlobalAdminUser } from "@/lib/admin-access";
 import { getDashboardStandings } from "@/lib/dashboard-standings";
@@ -75,7 +76,7 @@ const formatWinPct = (value: number): string => value.toFixed(3);
 
 const teamKey = (team: string): string => team.trim().toLowerCase();
 const TABLE_BAND_CLASS =
-  "[&>tbody>tr:nth-child(odd)]:bg-content2/[0.14] [&>tbody>tr:nth-child(even)]:bg-content2/[0.06]";
+  "[&>tbody>tr:nth-child(odd)]:bg-content2/[0.14] [&>tbody>tr:nth-child(even)]:bg-content2/[0.06] [&>tbody>tr:nth-child(odd):hover]:!bg-content2/[0.24] [&>tbody>tr:nth-child(even):hover]:!bg-content2/[0.18]";
 
 const initialsForName = (value: string): string =>
   value
@@ -296,6 +297,9 @@ export default async function Home() {
         </NavbarBrand>
         <NavbarContent justify="end">
           <NavbarItem>
+            <ScoringMethodologyDrawer scoring={snapshot.scoring} />
+          </NavbarItem>
+          <NavbarItem>
             <AccountWidget
               avatarPath={avatarPath}
               avatarUrl={avatarUrl}
@@ -357,7 +361,7 @@ export default async function Home() {
                         </div>
                       </div>
                       <p className="mono-points text-xs text-default-400">
-                        PF {formatPoints(entry.pointsFor)}
+                        PF {formatPoints(entry.pointsFor)} • PA {formatPoints(entry.pointsAgainst)}
                       </p>
                     </div>
                     <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-default-500">
@@ -387,16 +391,17 @@ export default async function Home() {
                       <th className="px-2 py-2 font-medium">Record</th>
                       <th className="px-2 py-2 font-medium">Win%</th>
                       <th className="px-2 py-2 font-medium">PF</th>
+                      <th className="px-2 py-2 font-medium">PA</th>
                     </tr>
                   </thead>
                   <tbody>
                     {headToHead.standings.map((entry) => (
                       <tr
                         key={entry.userId}
-                        className="border-t border-default-200/30 align-top hover:bg-default-100/20"
+                        className="border-t border-default-200/30 hover:bg-default-100/20"
                       >
-                        <td className="px-2 py-2">{entry.rank}</td>
-                        <td className="px-2 py-2">
+                        <td className="px-2 py-2 align-middle">{entry.rank}</td>
+                        <td className="px-2 py-2 align-middle">
                           <div className="flex items-center gap-2">
                             <UserAvatar avatarUrl={entry.avatarUrl} displayName={entry.displayName} />
                             <div className="min-w-0">
@@ -409,11 +414,12 @@ export default async function Home() {
                             </div>
                           </div>
                         </td>
-                        <td className="mono-points px-2 py-2">
+                        <td className="mono-points px-2 py-2 align-middle">
                           {formatHeadToHeadRecord(entry.wins, entry.losses, entry.ties)}
                         </td>
-                        <td className="mono-points px-2 py-2">{formatWinPct(entry.winPct)}</td>
-                        <td className="mono-points px-2 py-2">{formatPoints(entry.pointsFor)}</td>
+                        <td className="mono-points px-2 py-2 align-middle">{formatWinPct(entry.winPct)}</td>
+                        <td className="mono-points px-2 py-2 align-middle">{formatPoints(entry.pointsFor)}</td>
+                        <td className="mono-points px-2 py-2 align-middle">{formatPoints(entry.pointsAgainst)}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -487,7 +493,7 @@ export default async function Home() {
                       </div>
                       {isLeader ? (
                         <span aria-label="Leader" className="inline-flex items-center" title="Leader">
-                          <Crown className="h-4 w-4 text-warning-300" />
+                          <Crown className="h-4 w-4 text-[#C79B3B]" />
                         </span>
                       ) : isLastPlace ? (
                         <span
@@ -582,7 +588,7 @@ export default async function Home() {
                         key={entry.userId}
                         className="border-t border-default-200/30 align-top hover:bg-default-100/20"
                       >
-                        <td className="px-2 py-2">{index + 1}</td>
+                        <td className="px-2 py-2 align-middle">{index + 1}</td>
                         <td className="px-2 py-2">
                           <div className="flex items-center gap-2">
                             <UserAvatar avatarUrl={entry.avatarUrl} displayName={entry.displayName} />
@@ -602,7 +608,7 @@ export default async function Home() {
                                 className="inline-flex items-center"
                                 title="Leader"
                               >
-                                <Crown className="h-4 w-4 text-warning-300" />
+                                <Crown className="h-4 w-4 text-[#C79B3B]" />
                               </span>
                             ) : isLastPlace ? (
                               <span
@@ -625,7 +631,7 @@ export default async function Home() {
                             <td className="px-2 py-2 align-middle">
                               {entry.drafted ? formatPoints(entry.averagePerPick) : "—"}
                             </td>
-                            <td className="px-2 py-2">
+                            <td className="px-2 py-2 align-middle">
                               {entry.drafted ? (
                                 <div className="min-w-[320px] space-y-2">
                                   <RosterBreakdownStack

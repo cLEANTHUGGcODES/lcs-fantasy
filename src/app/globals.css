@@ -7,8 +7,8 @@
   --font-body: var(--font-league-spartan);
   --font-display: var(--font-league-spartan);
   --font-code: var(--font-league-spartan);
-  --insight-gold: #e8c35a;
-  --insight-gold-deep: #c8a045;
+  --insight-gold: #C79B3B;
+  --insight-gold-deep: #C79B3B;
   --insight-ink: #2f2406;
   --insight-navy-950: #070f1d;
   --insight-navy-900: #0b1628;
@@ -58,9 +58,40 @@ body {
 }
 
 .chat-scrollbar::-webkit-scrollbar-button {
-  width: 0;
-  height: 0;
-  display: none;
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  max-width: 0 !important;
+  max-height: 0 !important;
+  -webkit-appearance: none !important;
+  appearance: none !important;
+  background: transparent !important;
+}
+
+.chat-scrollbar::-webkit-scrollbar-button:single-button,
+.chat-scrollbar::-webkit-scrollbar-button:double-button,
+.chat-scrollbar::-webkit-scrollbar-button:start,
+.chat-scrollbar::-webkit-scrollbar-button:end,
+.chat-scrollbar::-webkit-scrollbar-button:start:decrement,
+.chat-scrollbar::-webkit-scrollbar-button:start:increment,
+.chat-scrollbar::-webkit-scrollbar-button:end:decrement,
+.chat-scrollbar::-webkit-scrollbar-button:end:increment,
+.chat-scrollbar::-webkit-scrollbar-button:vertical:decrement,
+.chat-scrollbar::-webkit-scrollbar-button:vertical:increment,
+.chat-scrollbar::-webkit-scrollbar-button:horizontal:decrement,
+.chat-scrollbar::-webkit-scrollbar-button:horizontal:increment {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  max-width: 0 !important;
+  max-height: 0 !important;
+  -webkit-appearance: none !important;
+  appearance: none !important;
+  background: transparent !important;
 }
 
 .chat-scrollbar::-webkit-scrollbar-thumb {
@@ -78,8 +109,8 @@ body {
 .chat-scrollbar:hover::-webkit-scrollbar-thumb {
   background: linear-gradient(
     180deg,
-    rgba(225, 197, 119, 0.78) 0%,
-    rgba(178, 147, 82, 0.78) 100%
+    rgba(199, 155, 59, 0.78) 0%,
+    rgba(199, 155, 59, 0.78) 100%
   );
   background-clip: padding-box;
 }

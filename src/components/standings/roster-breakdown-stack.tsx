@@ -157,7 +157,7 @@ export const RosterBreakdownStack = ({
             key={`${pick.playerName}-${index}`}
             classNames={{
               content:
-                "rounded-medium border border-[#d6bb73]/40 bg-[#0c1628]/95 px-2.5 py-1.5 shadow-lg backdrop-blur-sm",
+                "rounded-medium border border-[#C79B3B]/40 bg-[#0c1628]/95 px-2.5 py-1.5 shadow-lg backdrop-blur-sm",
               arrow: "bg-[#0c1628]/95",
             }}
             closeDelay={60}
@@ -194,7 +194,7 @@ export const RosterBreakdownStack = ({
                       />
                     </span>
                   ) : null}
-                  <span className="truncate text-xs font-semibold text-[#f2d58c]">{pick.playerName}</span>
+                  <span className="truncate text-xs font-semibold text-[#C79B3B]">{pick.playerName}</span>
                 </div>
                 <span className="mono-points ml-auto shrink-0 pl-2 text-right text-xs text-white">
                   {formatPoints(pick.points)} pts

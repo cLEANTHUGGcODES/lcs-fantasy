@@ -18,6 +18,8 @@ type GlobalChatResponse = {
 const MAX_GLOBAL_CHAT_MESSAGE_LENGTH = 320;
 const CHAT_POLL_INTERVAL_MS = 2500;
 const CHAT_AUTO_SCROLL_THRESHOLD_PX = 72;
+const CHAT_COMPOSER_MIN_HEIGHT_PX = 30;
+const CHAT_COMPOSER_MAX_HEIGHT_PX = 80;
 
 const isNearBottom = (element: HTMLDivElement): boolean => {
   const distanceFromBottom = element.scrollHeight - element.scrollTop - element.clientHeight;
@@ -102,9 +104,12 @@ export const GlobalChatPanel = ({
 
   const syncComposerHeight = useCallback((target: HTMLTextAreaElement) => {
     target.style.height = "auto";
-    const nextHeight = Math.min(Math.max(target.scrollHeight, 40), 120);
+    const nextHeight = Math.min(
+      Math.max(target.scrollHeight, CHAT_COMPOSER_MIN_HEIGHT_PX),
+      CHAT_COMPOSER_MAX_HEIGHT_PX,
+    );
     target.style.height = `${nextHeight}px`;
-    target.style.overflowY = target.scrollHeight > 120 ? "auto" : "hidden";
+    target.style.overflowY = target.scrollHeight > CHAT_COMPOSER_MAX_HEIGHT_PX ? "auto" : "hidden";
   }, []);
 
   const focusChatInput = useCallback(() => {
@@ -394,7 +399,7 @@ export const GlobalChatPanel = ({
 
       {isOpen ? (
         <Card
-          className={`pointer-events-auto fixed inset-0 z-10 flex h-[100svh] min-h-[100svh] w-full flex-col overflow-hidden overscroll-none rounded-none bg-gradient-to-b from-[#081325] via-[#0d1a30] to-[#13223a] text-slate-100 supports-[height:100dvh]:h-[100dvh] supports-[height:100dvh]:min-h-[100dvh] sm:relative sm:h-auto sm:min-h-0 sm:max-h-[min(700px,86dvh)] sm:w-[380px] sm:rounded-2xl sm:border sm:border-[#d6bb73]/35 sm:shadow-2xl sm:backdrop-blur-md ${className ?? ""}`}
+          className={`pointer-events-auto fixed inset-0 z-10 flex h-[100svh] min-h-[100svh] w-full flex-col overflow-hidden overscroll-none rounded-none bg-gradient-to-b from-[#081325] via-[#0d1a30] to-[#13223a] text-slate-100 supports-[height:100dvh]:h-[100dvh] supports-[height:100dvh]:min-h-[100dvh] sm:relative sm:h-auto sm:min-h-0 sm:max-h-[min(700px,86dvh)] sm:w-[380px] sm:rounded-2xl sm:border sm:border-[#C79B3B]/35 sm:shadow-2xl sm:backdrop-blur-md ${className ?? ""}`}
         >
           <CardHeader
             className="flex items-center justify-between border-b border-[#344867]/60 px-3 pb-1.5 pt-2"
@@ -405,14 +410,14 @@ export const GlobalChatPanel = ({
             }}
           >
             <div>
-              <h2 className="text-sm font-semibold text-[#e8c35a] sm:text-base">
+              <h2 className="text-sm font-semibold text-[#C79B3B] sm:text-base">
                 INSIGHT Fantasy Chat
               </h2>
             </div>
             <Button
               isIconOnly
               aria-label="Minimize chat"
-              className="text-slate-300 data-[hover=true]:text-[#e8c35a]"
+              className="text-slate-300 data-[hover=true]:text-[#C79B3B]"
               size="sm"
               variant="light"
               onPress={closeChat}
@@ -451,7 +456,7 @@ export const GlobalChatPanel = ({
                         className="space-y-0.5"
                       >
                         {!group.isCurrentUser ? (
-                          <p className="px-10 text-left text-[10px] font-medium tracking-wide text-[#e8c35a]">
+                          <p className="px-10 text-left text-[10px] font-medium tracking-wide text-[#C79B3B]">
                             {group.senderLabel}
                           </p>
                         ) : null}
@@ -459,7 +464,7 @@ export const GlobalChatPanel = ({
                           {group.messages.map((entry, index) => {
                             const showAvatar = index === group.messages.length - 1;
                             const avatar = showAvatar ? (
-                              <span className="relative inline-flex h-7 w-7 shrink-0 overflow-hidden rounded-full border border-[#d6bb73]/40 bg-[#16233a]">
+                              <span className="relative inline-flex h-7 w-7 shrink-0 overflow-hidden rounded-full border border-[#C79B3B]/40 bg-[#16233a]">
                                 {group.senderAvatarUrl ? (
                                   <Image
                                     src={group.senderAvatarUrl}
@@ -469,7 +474,7 @@ export const GlobalChatPanel = ({
                                     className="object-cover object-center"
                                   />
                                 ) : (
-                                  <span className="inline-flex h-full w-full items-center justify-center text-[10px] font-semibold text-[#f2d58c]">
+                                  <span className="inline-flex h-full w-full items-center justify-center text-[10px] font-semibold text-[#C79B3B]">
                                     {initialsForSenderLabel(group.senderLabel)}
                                   </span>
                                 )}
@@ -533,18 +538,19 @@ export const GlobalChatPanel = ({
                 marginRight: "calc(env(safe-area-inset-right) * -1)",
               }}
             >
-              <div className="flex items-end gap-2 rounded-large bg-[#0e1a2f]/85 p-1.5">
+              <div className="flex items-center gap-2">
                 <div className="relative flex-1">
                   <textarea
                     ref={chatInputRef}
                     aria-label="Chat message"
                     autoCorrect="on"
-                    className="chat-scrollbar min-h-[40px] max-h-[120px] w-full resize-none rounded-xl border border-[#425b7d]/70 bg-[#081326] px-3 py-2 text-base leading-5 text-[#edf2ff] outline-none transition focus:border-[#e8c35a] focus:ring-2 focus:ring-[#e8c35a]/25"
+                    className="chat-scrollbar min-h-[30px] max-h-[80px] w-full resize-none rounded-md border border-transparent bg-[#081326] px-3 py-1 text-base leading-5 text-[#edf2ff] outline-none transition focus:border-transparent focus:ring-2 focus:ring-[#C79B3B]/25"
                     data-gramm="false"
                     disabled={pendingSend}
                     enterKeyHint="send"
                     maxLength={MAX_GLOBAL_CHAT_MESSAGE_LENGTH}
                     placeholder="Message"
+                    rows={1}
                     spellCheck
                     value={messageInput}
                     onChange={(event) => {
@@ -562,7 +568,7 @@ export const GlobalChatPanel = ({
                 </div>
                 <Button
                   aria-label="Send message"
-                  className="bg-transparent text-[#e8c35a] shadow-none hover:bg-transparent active:bg-transparent data-[hover=true]:bg-transparent data-[hover=true]:text-[#f2d58c] data-[pressed=true]:bg-transparent data-[disabled=true]:opacity-45"
+                  className="h-[30px] w-[30px] min-h-[30px] min-w-[30px] self-center bg-transparent text-[#C79B3B] shadow-none hover:bg-transparent active:bg-transparent data-[hover=true]:bg-transparent data-[hover=true]:text-[#C79B3B] data-[pressed=true]:bg-transparent data-[disabled=true]:opacity-45"
                   isIconOnly
                   isDisabled={messageInput.trim().length === 0}
                   isLoading={pendingSend}
@@ -581,7 +587,7 @@ export const GlobalChatPanel = ({
       ) : null}
 
       <Button
-        className={`pointer-events-auto relative z-10 rounded-full border border-[#dcc074] bg-[#cda449] text-[#2a2006] shadow-none transition-colors hover:bg-[#d9b25a] active:bg-[#bf9640] ${
+        className={`pointer-events-auto relative z-10 rounded-full border border-[#C79B3B]/80 bg-[#C79B3B] text-[#2a2006] shadow-none transition-colors hover:bg-[#C79B3B] active:bg-[#C79B3B] data-[hover=true]:bg-[#C79B3B] data-[pressed=true]:bg-[#C79B3B] ${
           isOpen ? "hidden sm:inline-flex" : ""
         }`}
         color="default"
@@ -594,7 +600,7 @@ export const GlobalChatPanel = ({
           Chat
         </span>
         {unreadCount > 0 ? (
-          <span className="ml-2 inline-flex min-w-5 items-center justify-center rounded-full border border-[#d9bf76]/50 bg-[#121f34] px-1.5 text-[11px] font-semibold text-[#e8c35a]">
+          <span className="ml-2 inline-flex min-w-5 items-center justify-center rounded-full border border-[#C79B3B]/50 bg-[#121f34] px-1.5 text-[11px] font-semibold text-[#C79B3B]">
             {unreadCount > 99 ? "99+" : unreadCount}
           </span>
         ) : null}
