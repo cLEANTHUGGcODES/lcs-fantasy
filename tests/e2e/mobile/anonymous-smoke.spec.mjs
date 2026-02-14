@@ -20,6 +20,21 @@ test.describe("mobile anonymous smoke", () => {
     await assertNoHorizontalOverflow(page);
   });
 
+  test("auth controls satisfy mobile tap target baseline", async ({ page }) => {
+    await page.goto("/auth");
+
+    const loginTab = page.getByRole("tab", { name: "Login" });
+    const registerTab = page.getByRole("tab", { name: "Register" });
+
+    await expectMinTapTarget(loginTab, 44);
+    await expectMinTapTarget(registerTab, 44);
+    await expectMinTapTarget(page.getByRole("button", { name: "Login" }), 44);
+
+    await registerTab.click();
+    await expect(page.getByRole("button", { name: "Create Account" })).toBeVisible();
+    await expectMinTapTarget(page.getByRole("button", { name: "Create Account" }), 44);
+  });
+
   test("protected dashboard route redirects to auth", async ({ page }) => {
     await page.goto("/");
     await expect(page).toHaveURL(/\/auth(?:\?.*)?$/);

@@ -207,7 +207,13 @@ export const AuthForm = ({ nextPath }: { nextPath: string }) => {
           {error ? <p className="text-sm text-danger-400">{error}</p> : null}
           {message ? <p className="text-sm text-success-400">{message}</p> : null}
 
-          <Button className="h-11 min-h-11" color="primary" isLoading={pending} type="submit">
+          <Button
+            className="w-full"
+            color="primary"
+            isLoading={pending}
+            size="lg"
+            type="submit"
+          >
             {mode === "login" ? "Login" : "Create Account"}
           </Button>
         </form>
