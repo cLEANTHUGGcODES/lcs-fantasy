@@ -28,8 +28,8 @@ const CHAT_METRICS_FLUSH_INTERVAL_MS = 60000;
 const CHAT_AUTO_SCROLL_THRESHOLD_PX = 96;
 const CHAT_COMPOSER_MIN_HEIGHT_PX = 36;
 const CHAT_COMPOSER_MAX_HEIGHT_PX = 96;
-const CHAT_COMPOSER_FIELD_ID = "x_chat_91f3";
-const CHAT_COMPOSER_FIELD_NAME = "x_chat_91f3";
+const CHAT_COMPOSER_FIELD_ID = "x_91f3";
+const CHAT_COMPOSER_FIELD_NAME = "x_91f3";
 
 const isNearBottom = (element: HTMLDivElement): boolean => {
   const distanceFromBottom = element.scrollHeight - element.scrollTop - element.clientHeight;
@@ -1169,22 +1169,23 @@ export const GlobalChatPanel = ({
                 }}
               >
                 <label className="sr-only" htmlFor={CHAT_COMPOSER_FIELD_ID}>
-                  Message
+                  Type text
                 </label>
                 <div className="relative flex-1">
                   <textarea
                     ref={chatInputRef}
                     id={CHAT_COMPOSER_FIELD_ID}
                     name={CHAT_COMPOSER_FIELD_NAME}
-                    aria-label="Chat message"
+                    aria-label="Type text"
                     autoCapitalize="off"
                     autoComplete="off"
                     autoCorrect="off"
                     className="chat-scrollbar min-h-[36px] max-h-[96px] w-full resize-none rounded-md border border-transparent bg-[#081326] px-3 py-1.5 text-base leading-5 text-[#edf2ff] outline-none transition focus:border-transparent focus:ring-2 focus:ring-[#C79B3B]/25"
                     data-gramm="false"
                     enterKeyHint="send"
+                    inputMode="text"
                     maxLength={MAX_GLOBAL_CHAT_MESSAGE_LENGTH}
-                    placeholder="Message"
+                    placeholder="Type here"
                     rows={1}
                     spellCheck={false}
                     value={messageInput}
