@@ -28,6 +28,8 @@ const CHAT_METRICS_FLUSH_INTERVAL_MS = 60000;
 const CHAT_AUTO_SCROLL_THRESHOLD_PX = 96;
 const CHAT_COMPOSER_MIN_HEIGHT_PX = 36;
 const CHAT_COMPOSER_MAX_HEIGHT_PX = 96;
+const CHAT_COMPOSER_FIELD_ID = "x_chat_91f3";
+const CHAT_COMPOSER_FIELD_NAME = "x_chat_91f3";
 
 const isNearBottom = (element: HTMLDivElement): boolean => {
   const distanceFromBottom = element.scrollHeight - element.scrollTop - element.clientHeight;
@@ -1158,19 +1160,33 @@ export const GlobalChatPanel = ({
                 paddingRight: "calc(env(safe-area-inset-right) + 0.625rem)",
               }}
             >
-              <div className="flex items-center gap-2">
+              <form
+                autoComplete="off"
+                className="flex items-center gap-2"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void submitMessage();
+                }}
+              >
+                <label className="sr-only" htmlFor={CHAT_COMPOSER_FIELD_ID}>
+                  Message
+                </label>
                 <div className="relative flex-1">
                   <textarea
                     ref={chatInputRef}
+                    id={CHAT_COMPOSER_FIELD_ID}
+                    name={CHAT_COMPOSER_FIELD_NAME}
                     aria-label="Chat message"
-                    autoCorrect="on"
+                    autoCapitalize="off"
+                    autoComplete="off"
+                    autoCorrect="off"
                     className="chat-scrollbar min-h-[36px] max-h-[96px] w-full resize-none rounded-md border border-transparent bg-[#081326] px-3 py-1.5 text-base leading-5 text-[#edf2ff] outline-none transition focus:border-transparent focus:ring-2 focus:ring-[#C79B3B]/25"
                     data-gramm="false"
                     enterKeyHint="send"
                     maxLength={MAX_GLOBAL_CHAT_MESSAGE_LENGTH}
                     placeholder="Message"
                     rows={1}
-                    spellCheck
+                    spellCheck={false}
                     value={messageInput}
                     onChange={(event) => {
                       const nextValue = event.currentTarget.value.replace(/\u00a0/g, " ");
@@ -1208,6 +1224,7 @@ export const GlobalChatPanel = ({
                   isIconOnly
                   aria-label="Close chat"
                   className="h-11 w-11 min-h-11 min-w-11 self-center text-slate-300 data-[hover=true]:text-[#C79B3B] sm:hidden"
+                  type="button"
                   variant="light"
                   onPress={closeChat}
                 >
@@ -1219,6 +1236,7 @@ export const GlobalChatPanel = ({
                   isIconOnly
                   isDisabled={pendingSend || messageInput.trim().length === 0}
                   isLoading={pendingSend}
+                  type="submit"
                   variant="light"
                   onMouseDown={(event) => {
                     event.preventDefault();
@@ -1226,13 +1244,10 @@ export const GlobalChatPanel = ({
                   onTouchStart={(event) => {
                     event.preventDefault();
                   }}
-                  onPress={() => {
-                    void submitMessage();
-                  }}
                 >
                   <Send className="h-4 w-4" />
                 </Button>
-              </div>
+              </form>
               {error ? <p className="mt-1 text-sm text-danger-400">{error}</p> : null}
             </div>
           </CardBody>
