@@ -594,6 +594,8 @@ export default async function Home() {
 
   const snapshot = snapshotResult.snapshot;
   const sourceLink = sourceLinkForPage(snapshot.sourcePage);
+  const currentYear = new Date().getFullYear();
+  const generatedAtLabel = new Date(snapshot.generatedAt).toLocaleString();
   const insightLogoSrc = await resolveInsightLogoSrc();
   const recentGames = [...snapshot.games].slice(-6).reverse();
   const teamIcons = buildTeamIconLookup(snapshot.games);
@@ -1557,16 +1559,30 @@ export default async function Home() {
         </CardBody>
       </Card>
 
-      <footer className="mt-6 border-t border-default-200/30 pt-3">
-        <div className="flex flex-wrap items-center gap-3 text-xs text-default-500">
-          <span>Updated: {new Date(snapshot.generatedAt).toLocaleString()}</span>
-          <span>•</span>
-          <span>
-            Source:{" "}
-            <Link href={sourceLink} target="_blank" rel="noreferrer" underline="hover">
-              {snapshot.sourcePage}
-            </Link>
-          </span>
+      <footer className="mt-8 border-t border-default-200/28 pt-4">
+        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 text-[11px] text-[#d8e0ee]">
+          <div className="min-w-0">
+            <p className="truncate font-semibold uppercase tracking-[0.14em] text-[#f5f8ff]">
+              INSIGHT GAMING FANTASY LEAGUE
+            </p>
+            <p className="mt-1 text-[#d2dced]">© {currentYear} Insight Gaming Fantasy League. All rights reserved.</p>
+          </div>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[#dce4f2] md:justify-end">
+            <span className="mono-points text-[11px] text-[#e4ebf8]">Updated: {generatedAtLabel}</span>
+            <span className="hidden text-[#a9b4c9] md:inline">•</span>
+            <span className="inline-flex items-center gap-1 text-[11px] text-[#e4ebf8]">
+              Source:
+              <Link
+                href={sourceLink}
+                target="_blank"
+                rel="noreferrer"
+                underline="hover"
+                className="max-w-[280px] truncate text-[11px] text-[#f2f6ff] data-[hover=true]:text-[#f0d58e]"
+              >
+                {snapshot.sourcePage}
+              </Link>
+            </span>
+          </div>
         </div>
       </footer>
     </main>

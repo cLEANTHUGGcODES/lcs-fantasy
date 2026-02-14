@@ -25,7 +25,7 @@ const CHAT_PAGE_FETCH_LIMIT = 80;
 const CHAT_FALLBACK_POLL_INTERVAL_MS = 10000;
 const CHAT_WAKE_SYNC_DEBOUNCE_MS = 400;
 const CHAT_METRICS_FLUSH_INTERVAL_MS = 60000;
-const CHAT_AUTO_SCROLL_THRESHOLD_PX = 72;
+const CHAT_AUTO_SCROLL_THRESHOLD_PX = 96;
 const CHAT_COMPOSER_MIN_HEIGHT_PX = 36;
 const CHAT_COMPOSER_MAX_HEIGHT_PX = 96;
 
@@ -181,12 +181,15 @@ export const GlobalChatPanel = ({
   const [oldestCursorId, setOldestCursorId] = useState<number | null>(null);
   const [messageInput, setMessageInput] = useState("");
   const [pendingSend, setPendingSend] = useState(false);
+  const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [hasInitializedUnreadState, setHasInitializedUnreadState] = useState(false);
   const [lastSeenMessageId, setLastSeenMessageId] = useState(0);
   const [unreadCount, setUnreadCount] = useState(0);
   const messageListRef = useRef<HTMLDivElement | null>(null);
+  const messageContentRef = useRef<HTMLDivElement | null>(null);
   const chatInputRef = useRef<HTMLTextAreaElement | null>(null);
   const composerResizeFrameRef = useRef<number | null>(null);
+  const viewportSettleTimeoutRef = useRef<number | null>(null);
   const shouldStickToBottomRef = useRef(true);
   const latestMessageIdRef = useRef(0);
   const realtimeConnectedRef = useRef(false);
@@ -261,6 +264,19 @@ export const GlobalChatPanel = ({
     input.setSelectionRange(cursor, cursor);
     syncComposerHeight(input);
   }, [syncComposerHeight]);
+
+  const scrollMessagesToBottom = useCallback((behavior: ScrollBehavior = "auto") => {
+    const scroller = messageListRef.current;
+    if (!scroller) {
+      return;
+    }
+    scroller.scrollTo({
+      top: scroller.scrollHeight,
+      behavior,
+    });
+    shouldStickToBottomRef.current = true;
+    setShowJumpToLatest(false);
+  }, []);
 
   const queueComposerHeightSync = useCallback(
     (target: HTMLTextAreaElement) => {
@@ -601,34 +617,29 @@ export const GlobalChatPanel = ({
       return;
     }
 
-    const el = messageListRef.current;
-    if (!el) {
-      return;
-    }
-
     shouldStickToBottomRef.current = true;
     window.requestAnimationFrame(() => {
-      const current = messageListRef.current;
-      if (!current) {
-        return;
-      }
-      current.scrollTop = current.scrollHeight;
-      shouldStickToBottomRef.current = true;
+      scrollMessagesToBottom();
     });
-  }, [isOpen]);
+  }, [isOpen, scrollMessagesToBottom]);
 
   useEffect(() => {
     if (!isOpen || !shouldStickToBottomRef.current) {
       return;
     }
 
-    const el = messageListRef.current;
-    if (!el) {
+    scrollMessagesToBottom();
+  }, [isOpen, scrollMessagesToBottom, sortedMessages]);
+
+  useEffect(() => {
+    if (!isOpen || shouldStickToBottomRef.current || sortedMessages.length === 0) {
       return;
     }
-
-    el.scrollTop = el.scrollHeight;
-  }, [isOpen, sortedMessages]);
+    const latestMessage = sortedMessages[sortedMessages.length - 1];
+    if (latestMessage?.userId !== currentUserId) {
+      setShowJumpToLatest(true);
+    }
+  }, [currentUserId, isOpen, sortedMessages]);
 
   useEffect(() => {
     if (!isOpen) {
@@ -648,8 +659,100 @@ export const GlobalChatPanel = ({
         window.cancelAnimationFrame(composerResizeFrameRef.current);
         composerResizeFrameRef.current = null;
       }
+      if (viewportSettleTimeoutRef.current !== null) {
+        window.clearTimeout(viewportSettleTimeoutRef.current);
+        viewportSettleTimeoutRef.current = null;
+      }
     };
   }, []);
+
+  useEffect(() => {
+    if (!isOpen) {
+      return;
+    }
+
+    const scroller = messageListRef.current;
+    const content = messageContentRef.current;
+    if (!scroller || !content || typeof ResizeObserver === "undefined") {
+      return;
+    }
+
+    let frame: number | null = null;
+    const pinIfNeeded = () => {
+      if (!shouldStickToBottomRef.current) {
+        return;
+      }
+      if (frame !== null) {
+        window.cancelAnimationFrame(frame);
+      }
+      frame = window.requestAnimationFrame(() => {
+        frame = null;
+        scrollMessagesToBottom();
+      });
+    };
+
+    const observer = new ResizeObserver(() => {
+      pinIfNeeded();
+    });
+
+    observer.observe(content);
+    return () => {
+      observer.disconnect();
+      if (frame !== null) {
+        window.cancelAnimationFrame(frame);
+      }
+    };
+  }, [isOpen, scrollMessagesToBottom]);
+
+  useEffect(() => {
+    if (!isMobileViewport) {
+      document.documentElement.style.removeProperty("--chat-vvh");
+      return;
+    }
+
+    const root = document.documentElement;
+    const visualViewport = window.visualViewport;
+
+    const applyViewportHeight = () => {
+      const nextHeight = visualViewport?.height ?? window.innerHeight;
+      root.style.setProperty("--chat-vvh", `${Math.round(nextHeight)}px`);
+    };
+
+    const settleAfterViewportShift = () => {
+      applyViewportHeight();
+      if (!isOpen || !shouldStickToBottomRef.current) {
+        return;
+      }
+      window.requestAnimationFrame(() => {
+        scrollMessagesToBottom();
+      });
+      if (viewportSettleTimeoutRef.current !== null) {
+        window.clearTimeout(viewportSettleTimeoutRef.current);
+      }
+      viewportSettleTimeoutRef.current = window.setTimeout(() => {
+        scrollMessagesToBottom();
+        viewportSettleTimeoutRef.current = null;
+      }, 90);
+    };
+
+    settleAfterViewportShift();
+    visualViewport?.addEventListener("resize", settleAfterViewportShift);
+    visualViewport?.addEventListener("scroll", settleAfterViewportShift);
+    window.addEventListener("resize", settleAfterViewportShift);
+    window.addEventListener("orientationchange", settleAfterViewportShift);
+
+    return () => {
+      visualViewport?.removeEventListener("resize", settleAfterViewportShift);
+      visualViewport?.removeEventListener("scroll", settleAfterViewportShift);
+      window.removeEventListener("resize", settleAfterViewportShift);
+      window.removeEventListener("orientationchange", settleAfterViewportShift);
+      if (viewportSettleTimeoutRef.current !== null) {
+        window.clearTimeout(viewportSettleTimeoutRef.current);
+        viewportSettleTimeoutRef.current = null;
+      }
+      root.style.removeProperty("--chat-vvh");
+    };
+  }, [isMobileViewport, isOpen, scrollMessagesToBottom]);
 
   useEffect(() => {
     if (!isOpen || !isMobileViewport) {
@@ -687,6 +790,10 @@ export const GlobalChatPanel = ({
       return;
     }
 
+    const scroller = messageListRef.current;
+    const previousScrollHeight = scroller?.scrollHeight ?? 0;
+    const previousScrollTop = scroller?.scrollTop ?? 0;
+
     setLoadingOlder(true);
     setError(null);
     try {
@@ -694,6 +801,15 @@ export const GlobalChatPanel = ({
         mode: "older",
         beforeId: oldestCursorId,
         limit: CHAT_PAGE_FETCH_LIMIT,
+      });
+      window.requestAnimationFrame(() => {
+        const currentScroller = messageListRef.current;
+        if (!currentScroller) {
+          return;
+        }
+        const nextScrollHeight = currentScroller.scrollHeight;
+        const delta = nextScrollHeight - previousScrollHeight;
+        currentScroller.scrollTop = previousScrollTop + Math.max(delta, 0);
       });
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Unable to load older messages.");
@@ -709,122 +825,128 @@ export const GlobalChatPanel = ({
         className="chat-scrollbar flex-1 min-h-0 space-y-1.5 overflow-x-hidden overflow-y-auto overscroll-contain px-1 pb-1 touch-pan-y sm:space-y-2 sm:rounded-large sm:border sm:border-[#334767]/55 sm:bg-[#081326]/88 sm:p-3"
         style={{ WebkitOverflowScrolling: "touch" }}
         onScroll={(event) => {
-          shouldStickToBottomRef.current = isNearBottom(event.currentTarget);
+          const nearBottom = isNearBottom(event.currentTarget);
+          shouldStickToBottomRef.current = nearBottom;
+          if (nearBottom) {
+            setShowJumpToLatest(false);
+          }
         }}
       >
-        {hasOlderMessages ? (
-          <div className="mb-2 flex justify-center">
-            <Button
-              className="h-11 min-h-11 rounded-full border border-[#3f5578]/80 bg-[#0f1d33]/90 px-3.5 text-xs font-semibold text-[#c5d5f1] data-[hover=true]:bg-[#14253f] sm:h-8 sm:min-h-8 sm:px-3 sm:text-[11px]"
-              isDisabled={loadingOlder}
-              size="sm"
-              variant="flat"
-              onPress={() => {
-                void loadOlderMessages();
-              }}
-            >
-              {loadingOlder ? "Loading older..." : "Load older messages"}
-            </Button>
-          </div>
-        ) : null}
-        {sortedMessages.length === 0 ? (
-          <p className="text-sm text-slate-300">No messages yet. Start the banter.</p>
-        ) : (
-          groupedMessages.map((group, groupIndex) => {
-            const previousGroup = groupedMessages[groupIndex - 1];
-            const showDaySeparator = !previousGroup || previousGroup.dayKey !== group.dayKey;
-            return (
-              <div
-                key={`${group.userId}-${group.messages[0]?.id ?? 0}-${group.messages[group.messages.length - 1]?.id ?? 0}`}
-                className="space-y-0.5"
+        <div ref={messageContentRef} className="space-y-1.5 sm:space-y-2">
+          {hasOlderMessages ? (
+            <div className="mb-2 flex justify-center">
+              <Button
+                className="h-11 min-h-11 rounded-full border border-[#3f5578]/80 bg-[#0f1d33]/90 px-3.5 text-xs font-semibold text-[#c5d5f1] data-[hover=true]:bg-[#14253f] sm:h-8 sm:min-h-8 sm:px-3 sm:text-[11px]"
+                isDisabled={loadingOlder}
+                size="sm"
+                variant="flat"
+                onPress={() => {
+                  void loadOlderMessages();
+                }}
               >
-                {showDaySeparator ? (
-                  <div className="my-2.5 flex items-center gap-2 px-1">
-                    <span className="h-px flex-1 bg-[#3a4f72]/55" />
-                    <span className="text-[10px] font-medium tracking-wide text-[#9fb3d6]/90">
-                      {group.dayLabel}
-                    </span>
-                    <span className="h-px flex-1 bg-[#3a4f72]/55" />
-                  </div>
-                ) : null}
-                {!group.isCurrentUser ? (
-                  <p className="px-10 text-left text-[10px] font-medium tracking-wide text-[#C79B3B]">
-                    {group.senderLabel}
-                  </p>
-                ) : null}
-                <div className="space-y-0.5">
-                  {group.messages.map((entry, index) => {
-                    const showAvatar = index === group.messages.length - 1;
-                    const avatarBorderStyle = group.senderAvatarBorderColor
-                      ? { outlineColor: group.senderAvatarBorderColor }
-                      : undefined;
-                    const avatar = showAvatar ? (
-                      <span
-                        className="relative inline-flex h-7 w-7 shrink-0 overflow-hidden rounded-full bg-[#16233a] outline outline-2 outline-[#C79B3B]/40"
-                        style={avatarBorderStyle}
-                      >
-                        {group.senderAvatarUrl ? (
-                          <Image
-                            src={group.senderAvatarUrl}
-                            alt={`${group.senderLabel} avatar`}
-                            fill
-                            sizes="28px"
-                            className="object-cover object-center"
-                          />
-                        ) : (
-                          <span className="inline-flex h-full w-full items-center justify-center text-[10px] font-semibold text-[#C79B3B]">
-                            {initialsForSenderLabel(group.senderLabel)}
-                          </span>
-                        )}
+                {loadingOlder ? "Loading older..." : "Load older messages"}
+              </Button>
+            </div>
+          ) : null}
+          {sortedMessages.length === 0 ? (
+            <p className="text-sm text-slate-300">No messages yet. Start the banter.</p>
+          ) : (
+            groupedMessages.map((group, groupIndex) => {
+              const previousGroup = groupedMessages[groupIndex - 1];
+              const showDaySeparator = !previousGroup || previousGroup.dayKey !== group.dayKey;
+              return (
+                <div
+                  key={`${group.userId}-${group.messages[0]?.id ?? 0}-${group.messages[group.messages.length - 1]?.id ?? 0}`}
+                  className="space-y-0.5"
+                >
+                  {showDaySeparator ? (
+                    <div className="my-2.5 flex items-center gap-2 px-1">
+                      <span className="h-px flex-1 bg-[#3a4f72]/55" />
+                      <span className="text-[10px] font-medium tracking-wide text-[#9fb3d6]/90">
+                        {group.dayLabel}
                       </span>
-                    ) : (
-                      <span className="h-7 w-7 shrink-0" />
-                    );
+                      <span className="h-px flex-1 bg-[#3a4f72]/55" />
+                    </div>
+                  ) : null}
+                  {!group.isCurrentUser ? (
+                    <p className="px-10 text-left text-[10px] font-medium tracking-wide text-[#C79B3B]">
+                      {group.senderLabel}
+                    </p>
+                  ) : null}
+                  <div className="space-y-0.5">
+                    {group.messages.map((entry, index) => {
+                      const showAvatar = index === group.messages.length - 1;
+                      const avatarBorderStyle = group.senderAvatarBorderColor
+                        ? { outlineColor: group.senderAvatarBorderColor }
+                        : undefined;
+                      const avatar = showAvatar ? (
+                        <span
+                          className="relative inline-flex h-7 w-7 shrink-0 overflow-hidden rounded-full bg-[#16233a] outline outline-2 outline-[#C79B3B]/40"
+                          style={avatarBorderStyle}
+                        >
+                          {group.senderAvatarUrl ? (
+                            <Image
+                              src={group.senderAvatarUrl}
+                              alt={`${group.senderLabel} avatar`}
+                              fill
+                              sizes="28px"
+                              className="object-cover object-center"
+                            />
+                          ) : (
+                            <span className="inline-flex h-full w-full items-center justify-center text-[10px] font-semibold text-[#C79B3B]">
+                              {initialsForSenderLabel(group.senderLabel)}
+                            </span>
+                          )}
+                        </span>
+                      ) : (
+                        <span className="h-7 w-7 shrink-0" />
+                      );
 
-                    const bubble = (
-                      <div
-                        className={`max-w-[82%] rounded-2xl border px-2 py-1 sm:max-w-[88%] sm:px-2.5 sm:py-1.5 ${
-                          group.isCurrentUser
-                            ? "border-[#6c83a6]/70 bg-[#1b2a44]/92 text-[#f7faff] shadow-[0_8px_20px_rgba(11,18,33,0.32)]"
-                            : "border-[#3f5578]/75 bg-[#101c2f]/92 text-[#edf2ff] shadow-[0_8px_18px_rgba(8,12,24,0.4)]"
-                        }`}
-                      >
-                        <p className={`text-[10px] ${group.isCurrentUser ? "text-[#c9d7ef]" : "text-[#9fb3d6]"}`}>
-                          {formatTime(entry.createdAt)}
-                        </p>
-                        <p
-                          className={`mt-0.5 whitespace-pre-wrap break-words text-[13px] leading-[1.35rem] sm:mt-0.5 sm:text-sm ${
-                            group.isCurrentUser ? "text-[#f7faff]" : "text-[#edf2ff]"
+                      const bubble = (
+                        <div
+                          className={`max-w-[82%] rounded-2xl border px-2 py-1 sm:max-w-[88%] sm:px-2.5 sm:py-1.5 ${
+                            group.isCurrentUser
+                              ? "border-[#6c83a6]/70 bg-[#1b2a44]/92 text-[#f7faff] shadow-[0_8px_20px_rgba(11,18,33,0.32)]"
+                              : "border-[#3f5578]/75 bg-[#101c2f]/92 text-[#edf2ff] shadow-[0_8px_18px_rgba(8,12,24,0.4)]"
                           }`}
                         >
-                          {entry.message}
-                        </p>
-                      </div>
-                    );
+                          <p className={`text-[10px] ${group.isCurrentUser ? "text-[#c9d7ef]" : "text-[#9fb3d6]"}`}>
+                            {formatTime(entry.createdAt)}
+                          </p>
+                          <p
+                            className={`mt-0.5 whitespace-pre-wrap break-words text-[13px] leading-[1.35rem] sm:mt-0.5 sm:text-sm ${
+                              group.isCurrentUser ? "text-[#f7faff]" : "text-[#edf2ff]"
+                            }`}
+                          >
+                            {entry.message}
+                          </p>
+                        </div>
+                      );
 
-                    return (
-                      <div
-                        key={entry.id}
-                        className={`flex items-end gap-2 px-0.5 ${
-                          group.isCurrentUser ? "justify-end" : "justify-start"
-                        }`}
-                      >
-                        {group.isCurrentUser ? (
-                          bubble
-                        ) : (
-                          <>
-                            {avatar}
-                            {bubble}
-                          </>
-                        )}
-                      </div>
-                    );
-                  })}
+                      return (
+                        <div
+                          key={entry.id}
+                          className={`flex items-end gap-2 px-0.5 ${
+                            group.isCurrentUser ? "justify-end" : "justify-start"
+                          }`}
+                        >
+                          {group.isCurrentUser ? (
+                            bubble
+                          ) : (
+                            <>
+                              {avatar}
+                              {bubble}
+                            </>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
-              </div>
-            );
-          })
-        )}
+              );
+            })
+          )}
+        </div>
       </div>
     ),
     [groupedMessages, hasOlderMessages, loadOlderMessages, loadingOlder, sortedMessages.length],
@@ -925,6 +1047,7 @@ export const GlobalChatPanel = ({
 
   const openChat = () => {
     setIsOpen(true);
+    setShowJumpToLatest(false);
     const latestMessageId = toMessageId(sortedMessages[sortedMessages.length - 1]?.id ?? 0);
     setLastSeenMessageId(latestMessageId);
     setUnreadCount(0);
@@ -935,6 +1058,7 @@ export const GlobalChatPanel = ({
 
   const closeChat = () => {
     setIsOpen(false);
+    setShowJumpToLatest(false);
   };
 
   const toggleChat = () => {
@@ -945,8 +1069,12 @@ export const GlobalChatPanel = ({
     openChat();
   };
 
+  const shellContainerClassName = isOpen && isMobileViewport
+    ? "pointer-events-none fixed inset-0 z-[120] flex flex-col"
+    : "pointer-events-none fixed bottom-3 left-0 right-0 z-[120] flex flex-col items-end gap-2 px-3 sm:bottom-4 sm:left-auto sm:right-4 sm:px-0";
+
   return (
-    <div className="pointer-events-none fixed bottom-3 left-0 right-0 z-[120] flex flex-col items-end gap-2 px-3 sm:bottom-4 sm:left-auto sm:right-4 sm:px-0">
+    <div className={shellContainerClassName}>
       {isOpen ? (
         <button
           aria-label="Close chat"
@@ -958,7 +1086,12 @@ export const GlobalChatPanel = ({
 
       {isOpen ? (
         <Card
-          className={`pointer-events-auto fixed inset-0 z-10 flex h-[100svh] min-h-[100svh] w-full flex-col overflow-hidden overscroll-none rounded-none bg-gradient-to-b from-[#081325] via-[#0d1a30] to-[#13223a] text-slate-100 supports-[height:100dvh]:h-[100dvh] supports-[height:100dvh]:min-h-[100dvh] sm:relative sm:h-auto sm:min-h-0 sm:max-h-[min(700px,86dvh)] sm:w-[380px] sm:rounded-2xl sm:border sm:border-[#C79B3B]/35 sm:shadow-2xl sm:backdrop-blur-md ${className ?? ""}`}
+          className={`pointer-events-auto relative z-10 flex min-h-0 flex-col overflow-hidden overscroll-none bg-gradient-to-b from-[#081325] via-[#0d1a30] to-[#13223a] text-slate-100 ${
+            isMobileViewport
+              ? "h-full w-full flex-1 rounded-none"
+              : "w-[380px] max-h-[min(700px,86dvh)] rounded-2xl border border-[#C79B3B]/35 shadow-2xl backdrop-blur-md"
+          } ${className ?? ""}`}
+          style={isMobileViewport ? { height: "var(--chat-vvh, 100dvh)", minHeight: "100svh" } : undefined}
         >
           <CardHeader
             className="flex items-center justify-between border-b border-[#344867]/60 px-3 pb-1.5 pt-2"
@@ -986,7 +1119,7 @@ export const GlobalChatPanel = ({
             </Button>
           </CardHeader>
           <CardBody
-            className="flex min-h-0 flex-1 flex-col gap-2 p-2.5 sm:gap-3 sm:p-3"
+            className="relative flex min-h-0 flex-1 flex-col gap-2 p-2.5 sm:gap-3 sm:p-3"
             style={{
               paddingLeft: "calc(env(safe-area-inset-left) + 0.625rem)",
               paddingRight: "calc(env(safe-area-inset-right) + 0.625rem)",
@@ -1000,12 +1133,27 @@ export const GlobalChatPanel = ({
               renderedMessageList
             )}
 
+            {showJumpToLatest ? (
+              <div className="mb-1 mt-1 flex justify-center">
+                <Button
+                  className="h-11 min-h-11 rounded-full border border-[#4f678f]/80 bg-[#112038]/95 px-3.5 text-xs font-semibold text-[#d8e6ff] data-[hover=true]:bg-[#162a47] sm:h-8 sm:min-h-8 sm:px-3 sm:text-[11px]"
+                  size="sm"
+                  variant="flat"
+                  onPress={() => {
+                    scrollMessagesToBottom("smooth");
+                  }}
+                >
+                  New messages
+                </Button>
+              </div>
+            ) : null}
+
             <div
-              className="-mx-2.5 mt-auto border-t border-[#344a69]/55 bg-[#091325]/96 px-2.5 pt-1.5 sm:mx-0 sm:mt-0 sm:border-0 sm:bg-transparent sm:px-0 sm:pt-0"
+              className="mt-auto border-t border-[#344a69]/55 bg-[#091325]/96 pt-1.5 sm:mt-0 sm:border-0 sm:bg-transparent sm:pt-0"
               style={{
-                paddingBottom: "calc(env(safe-area-inset-bottom) + 0.08rem)",
-                marginLeft: "calc(env(safe-area-inset-left) * -1)",
-                marginRight: "calc(env(safe-area-inset-right) * -1)",
+                paddingBottom: "calc(env(safe-area-inset-bottom) + 0.35rem)",
+                paddingLeft: "calc(env(safe-area-inset-left) + 0.625rem)",
+                paddingRight: "calc(env(safe-area-inset-right) + 0.625rem)",
               }}
             >
               <div className="flex items-center gap-2">
@@ -1031,6 +1179,21 @@ export const GlobalChatPanel = ({
                       }
                       setMessageInput(nextValue);
                       queueComposerHeightSync(event.currentTarget);
+                    }}
+                    onFocus={() => {
+                      if (!shouldStickToBottomRef.current) {
+                        return;
+                      }
+                      window.requestAnimationFrame(() => {
+                        scrollMessagesToBottom();
+                      });
+                      if (viewportSettleTimeoutRef.current !== null) {
+                        window.clearTimeout(viewportSettleTimeoutRef.current);
+                      }
+                      viewportSettleTimeoutRef.current = window.setTimeout(() => {
+                        scrollMessagesToBottom();
+                        viewportSettleTimeoutRef.current = null;
+                      }, 90);
                     }}
                     onKeyDown={(event) => {
                       if (event.key === "Enter" && !event.shiftKey) {
