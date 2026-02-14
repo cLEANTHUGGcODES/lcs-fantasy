@@ -7,6 +7,7 @@ import {
 } from "@/lib/global-chat";
 import { getSupabaseAuthEnv } from "@/lib/supabase-auth-env";
 import {
+  getUserAvatarBorderColor,
   getUserAvatarUrl,
   getUserDisplayName,
   getUserTeamName,
@@ -67,11 +68,13 @@ export async function POST(request: Request) {
       user,
       supabaseUrl,
     });
+    const senderAvatarBorderColor = getUserAvatarBorderColor(user);
     return Response.json(
       {
         message: {
           ...createdMessage,
           senderAvatarUrl,
+          senderAvatarBorderColor,
         },
       },
       { status: 201 },

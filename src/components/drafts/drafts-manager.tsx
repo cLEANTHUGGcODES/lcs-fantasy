@@ -261,8 +261,10 @@ export const DraftsManager = ({
               isRequired
               label="Rounds"
               labelPlacement="outside"
-              description="Standard player draft is 5 rounds (4 starters + 1 bench)."
+              description="Maximum 5 rounds (one player per position)."
               type="number"
+              min={1}
+              max={5}
               value={roundCount}
               onValueChange={setRoundCount}
             />
@@ -270,6 +272,9 @@ export const DraftsManager = ({
               isRequired
               label="Seconds Per Pick"
               labelPlacement="outside"
+              description="For bug testing, this can be as low as 1 second."
+              min={1}
+              max={900}
               type="number"
               value={pickSeconds}
               onValueChange={setPickSeconds}

@@ -1433,10 +1433,23 @@ export const DraftRoom = ({
                               {pick ? (
                                 <>
                                   <div className="space-y-0.5">
-                                    <p className="truncate text-xs font-semibold">{pick.playerName}</p>
+                                    <div className="flex min-w-0 items-center gap-1.5">
+                                      {pick.teamIconUrl ? (
+                                        <CroppedTeamLogo
+                                          alt={`${pick.playerName} team logo`}
+                                          frameClassName="h-3.5 w-4"
+                                          height={14}
+                                          imageClassName="h-3.5"
+                                          src={pick.teamIconUrl}
+                                          width={20}
+                                        />
+                                      ) : (
+                                        <span className="h-3.5 w-4 shrink-0" />
+                                      )}
+                                      <p className="truncate text-xs font-semibold">{pick.playerName}</p>
+                                    </div>
                                     <p className="truncate text-[11px] text-default-500">
-                                      #{pick.overallPick}
-                                      {pick.playerTeam ? ` • ${pick.playerTeam}` : ""}
+                                      RD{pick.roundNumber} PK{pick.roundPick} (#{pick.overallPick})
                                     </p>
                                   </div>
                                   <div>

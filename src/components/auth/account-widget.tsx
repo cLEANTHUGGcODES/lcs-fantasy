@@ -1,10 +1,11 @@
 "use client";
 
 import { Drawer, DrawerBody, DrawerContent, DrawerFooter, DrawerHeader } from "@heroui/drawer";
+import { Tooltip } from "@heroui/tooltip";
 import { Settings, X } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { CSSProperties, useEffect, useState } from "react";
 import { DisplayNameForm } from "@/components/auth/display-name-form";
 import { ProfileImageForm } from "@/components/auth/profile-image-form";
 import { ScoringSettingsModal } from "@/components/auth/scoring-settings-modal";
@@ -27,6 +28,7 @@ export const AccountWidget = ({
   lastName,
   teamName,
   avatarPath,
+  avatarBorderColor,
   avatarUrl,
   canAccessSettings,
   initialScoring,
@@ -37,6 +39,7 @@ export const AccountWidget = ({
   lastName: string | null;
   teamName: string | null;
   avatarPath: string | null;
+  avatarBorderColor: string | null;
   avatarUrl: string | null;
   canAccessSettings: boolean;
   initialScoring: FantasyScoring;
@@ -50,7 +53,15 @@ export const AccountWidget = ({
   const [activeLastName, setActiveLastName] = useState(lastName);
   const [activeTeamName, setActiveTeamName] = useState(teamName);
   const [activeAvatarPath, setActiveAvatarPath] = useState(avatarPath);
+  const [activeAvatarBorderColor, setActiveAvatarBorderColor] = useState(avatarBorderColor);
   const [activeAvatarUrl, setActiveAvatarUrl] = useState(avatarUrl);
+  const [draftAvatarBorderColor, setDraftAvatarBorderColor] = useState(avatarBorderColor);
+  const activeAvatarBorderStyle: CSSProperties | undefined = activeAvatarBorderColor
+    ? { outlineColor: activeAvatarBorderColor }
+    : undefined;
+  const draftAvatarBorderStyle: CSSProperties | undefined = draftAvatarBorderColor
+    ? { outlineColor: draftAvatarBorderColor }
+    : undefined;
 
   useEffect(() => {
     if (!isOpen) {
@@ -79,23 +90,30 @@ export const AccountWidget = ({
     };
   }, [isOpen]);
 
-  const toggleProfileModal = () => {
-    setIsOpen((open) => !open);
+  const openProfileModal = () => {
+    setDraftAvatarBorderColor(activeAvatarBorderColor);
+    setIsOpen(true);
     setIsSettingsDrawerOpen(false);
     setIsScoringSettingsOpen(false);
   };
 
+  const closeProfileModal = () => {
+    setIsOpen(false);
+    setDraftAvatarBorderColor(activeAvatarBorderColor);
+  };
+
   const avatarNode = activeAvatarUrl ? (
     <span
-      className={`relative inline-flex overflow-hidden rounded-full border border-default-300/40 bg-default-200/30 ${
-        layout === "navbar" ? "h-10 w-10" : "h-14 w-14"
+      className={`relative inline-flex overflow-hidden rounded-full bg-default-200/30 outline outline-2 outline-default-300/40 ${
+        layout === "navbar" ? "h-9 w-9" : "h-14 w-14"
       }`}
+      style={activeAvatarBorderStyle}
     >
       <Image
         src={activeAvatarUrl}
         alt={`${activeLabel} profile image`}
         fill
-        sizes={layout === "navbar" ? "40px" : "56px"}
+        sizes={layout === "navbar" ? "36px" : "56px"}
         quality={100}
         unoptimized
         className="object-cover object-center"
@@ -103,9 +121,10 @@ export const AccountWidget = ({
     </span>
   ) : (
     <span
-      className={`inline-flex items-center justify-center rounded-full border border-default-300/40 bg-default-200/40 font-semibold text-default-600 ${
-        layout === "navbar" ? "h-10 w-10 text-xs" : "h-14 w-14 text-sm"
+      className={`inline-flex items-center justify-center rounded-full bg-default-200/40 font-semibold text-default-600 outline outline-2 outline-default-300/40 ${
+        layout === "navbar" ? "h-9 w-9 text-xs" : "h-14 w-14 text-sm"
       }`}
+      style={activeAvatarBorderStyle}
     >
       {initialsForName(activeLabel)}
     </span>
@@ -114,7 +133,7 @@ export const AccountWidget = ({
   const profileModal = isOpen ? (
     <div
       className="fixed inset-0 z-[90] flex items-start justify-center overflow-y-auto bg-black/55 px-4 py-5 backdrop-blur-[2px] sm:items-center sm:py-6"
-      onClick={() => setIsOpen(false)}
+      onClick={closeProfileModal}
     >
       <div
         className="w-full max-w-2xl overflow-hidden rounded-[20px] border border-default-200/40 bg-content1/95 p-5 shadow-2xl backdrop-blur-md md:p-6"
@@ -134,7 +153,7 @@ export const AccountWidget = ({
               aria-label="Close profile settings"
               className="inline-flex h-8 w-8 items-center justify-center rounded-medium border border-default-300/40 bg-content2/60 p-0 text-white transition hover:border-default-200/70 hover:bg-content2/80 hover:text-white"
               type="button"
-              onClick={() => setIsOpen(false)}
+              onClick={closeProfileModal}
             >
               <X className="h-4 w-4" />
             </button>
@@ -146,7 +165,10 @@ export const AccountWidget = ({
             <div className="rounded-large border border-default-200/30 bg-default-100/5 p-4">
               <div className="mb-3 flex justify-center">
                 {activeAvatarUrl ? (
-                  <span className="relative inline-flex h-28 w-28 overflow-hidden rounded-full border border-default-300/40 bg-default-200/30">
+                  <span
+                    className="relative inline-flex h-28 w-28 overflow-hidden rounded-full bg-default-200/30 outline outline-2 outline-default-300/40"
+                    style={draftAvatarBorderStyle}
+                  >
                     <Image
                       src={activeAvatarUrl}
                       alt={`${activeLabel} profile image`}
@@ -158,17 +180,32 @@ export const AccountWidget = ({
                     />
                   </span>
                 ) : (
-                  <span className="inline-flex h-28 w-28 items-center justify-center rounded-full border border-default-300/40 bg-default-200/40 text-xl font-semibold text-default-600">
+                  <span
+                    className="inline-flex h-28 w-28 items-center justify-center rounded-full bg-default-200/40 text-xl font-semibold text-default-600 outline outline-2 outline-default-300/40"
+                    style={draftAvatarBorderStyle}
+                  >
                     {initialsForName(activeLabel)}
                   </span>
                 )}
               </div>
               <p className="mb-2 text-center text-xs text-default-500">Profile image</p>
               <ProfileImageForm
+                currentAvatarBorderColor={draftAvatarBorderColor}
                 currentAvatarPath={activeAvatarPath}
-                onSaved={({ avatarPath: nextPath, avatarUrl: nextUrl }) => {
-                  setActiveAvatarPath(nextPath);
-                  setActiveAvatarUrl(nextUrl);
+                onSaved={({
+                  avatarPath: nextPath,
+                  avatarUrl: nextUrl,
+                  avatarBorderColor: nextBorderColor,
+                }) => {
+                  if (nextPath !== undefined) {
+                    setActiveAvatarPath(nextPath);
+                  }
+                  if (nextUrl !== undefined) {
+                    setActiveAvatarUrl(nextUrl);
+                  }
+                  if (nextBorderColor !== undefined) {
+                    setDraftAvatarBorderColor(nextBorderColor);
+                  }
                 }}
               />
             </div>
@@ -178,8 +215,11 @@ export const AccountWidget = ({
                 initialFirstName={activeFirstName ?? ""}
                 initialLastName={activeLastName ?? ""}
                 initialTeamName={activeTeamName ?? ""}
+                additionalMetadata={{
+                  avatar_border_color: draftAvatarBorderColor,
+                }}
                 pinSubmitToBottom
-                saveLabel="Update Team Name"
+                saveLabel="Save"
                 showSavedMessage={false}
                 onSaved={({
                   firstName: nextFirstName,
@@ -190,6 +230,7 @@ export const AccountWidget = ({
                   setActiveFirstName(nextFirstName);
                   setActiveLastName(nextLastName);
                   setActiveTeamName(nextTeamName);
+                  setActiveAvatarBorderColor(draftAvatarBorderColor);
                   setActiveLabel(displayLabel);
                   setIsOpen(false);
                 }}
@@ -271,29 +312,37 @@ export const AccountWidget = ({
     return (
       <>
         <div className="relative flex items-center gap-2 text-xs text-default-500">
-          <SignOutButton
-            isIconOnly
-            className="inline-flex h-9 w-9 min-h-0 min-w-0 items-center justify-center rounded-medium border border-default-300/40 bg-content2/60 p-0 text-white transition data-[hover=true]:border-default-200/70 data-[hover=true]:bg-content2/80 data-[hover=true]:text-white"
-          />
+          <Tooltip content="Sign out">
+            <span className="inline-flex">
+              <SignOutButton
+                isIconOnly
+                className="inline-flex h-9 w-9 min-h-0 min-w-0 items-center justify-center rounded-medium border border-default-300/40 bg-transparent p-0 text-[var(--insight-gold)] transition data-[hover=true]:border-default-200/70 data-[hover=true]:bg-transparent data-[hover=true]:text-[#d9ab45]"
+              />
+            </span>
+          </Tooltip>
           {canAccessSettings ? (
-            <button
-              aria-label="Settings"
-              className="inline-flex h-9 w-9 cursor-pointer items-center justify-center rounded-medium border border-default-300/40 bg-content2/60 p-0 text-white transition hover:border-default-200/70 hover:bg-content2/80 hover:text-white"
-              type="button"
-              onClick={() => setIsSettingsDrawerOpen(true)}
-            >
-              <Settings size={16} strokeWidth={2} />
-            </button>
+            <Tooltip content="Settings">
+              <button
+                aria-label="Settings"
+                className="inline-flex h-9 w-9 cursor-pointer items-center justify-center rounded-medium border border-default-300/40 bg-transparent p-0 text-[var(--insight-gold)] transition hover:border-default-200/70 hover:bg-transparent hover:text-[#d9ab45]"
+                type="button"
+                onClick={() => setIsSettingsDrawerOpen(true)}
+              >
+                <Settings size={16} strokeWidth={2} />
+              </button>
+            </Tooltip>
           ) : null}
 
-          <button
-            aria-label="Edit profile"
-            className="cursor-pointer rounded-full p-0"
-            type="button"
-            onClick={toggleProfileModal}
-          >
-            {avatarNode}
-          </button>
+          <Tooltip content="Edit profile">
+            <button
+              aria-label="Edit profile"
+              className="cursor-pointer rounded-full p-0"
+              type="button"
+              onClick={openProfileModal}
+            >
+              {avatarNode}
+            </button>
+          </Tooltip>
         </div>
         {profileModal}
         {settingsDrawer}
@@ -310,7 +359,7 @@ export const AccountWidget = ({
             aria-label="Edit profile"
             className="cursor-pointer rounded-full p-0"
             type="button"
-            onClick={toggleProfileModal}
+            onClick={openProfileModal}
           >
             {avatarNode}
           </button>
@@ -322,7 +371,7 @@ export const AccountWidget = ({
             <button
               className="max-w-full cursor-pointer truncate bg-transparent p-0 text-left text-sm font-semibold text-[#C79B3B] hover:underline"
               type="button"
-              onClick={toggleProfileModal}
+              onClick={openProfileModal}
             >
               {activeTeamName ?? "Set Team Name"}
             </button>

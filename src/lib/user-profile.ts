@@ -1,6 +1,8 @@
 import type { User } from "@supabase/supabase-js";
 import { PROFILE_IMAGES_BUCKET, getPublicStorageUrl } from "@/lib/supabase-storage";
 
+const HEX_COLOR_REGEX = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i;
+
 const readStringField = (value: unknown): string | null => {
   if (typeof value !== "string") {
     return null;
@@ -11,6 +13,19 @@ const readStringField = (value: unknown): string | null => {
 };
 
 const normalizeWhitespace = (value: string): string => value.trim().replace(/\s+/g, " ");
+
+const normalizeHexColor = (value: string): string | null => {
+  const normalized = value.trim().toLowerCase();
+  if (!HEX_COLOR_REGEX.test(normalized)) {
+    return null;
+  }
+
+  if (normalized.length === 4) {
+    return `#${normalized[1]}${normalized[1]}${normalized[2]}${normalized[2]}${normalized[3]}${normalized[3]}`;
+  }
+
+  return normalized;
+};
 
 const toNameCaseWord = (value: string): string => {
   const normalized = value.trim();
@@ -39,6 +54,15 @@ export const normalizePersonName = (value: string): string =>
 
 export const normalizeTeamName = (value: string): string =>
   value.trim();
+
+export const normalizeAvatarBorderColor = (value: unknown): string | null => {
+  const raw = readStringField(value);
+  if (!raw) {
+    return null;
+  }
+
+  return normalizeHexColor(raw);
+};
 
 const parseNameParts = (value: string): { firstName: string | null; lastName: string | null } => {
   const raw = normalizeWhitespace(value);
@@ -229,8 +253,26 @@ const readAvatarPathFromMetadata = (metadata: unknown): string | null => {
   return readStringField(record.avatar_path) ?? readStringField(record.avatarPath) ?? null;
 };
 
+const readAvatarBorderColorFromMetadata = (metadata: unknown): string | null => {
+  if (!metadata || typeof metadata !== "object") {
+    return null;
+  }
+
+  const record = metadata as Record<string, unknown>;
+  return (
+    normalizeAvatarBorderColor(record.avatar_border_color) ??
+    normalizeAvatarBorderColor(record.avatarBorderColor) ??
+    normalizeAvatarBorderColor(record.profile_border_color) ??
+    normalizeAvatarBorderColor(record.profileBorderColor) ??
+    null
+  );
+};
+
 export const getUserAvatarPath = (user: User | null): string | null =>
   user ? readAvatarPathFromMetadata(user.user_metadata) : null;
+
+export const getUserAvatarBorderColor = (user: User | null): string | null =>
+  user ? readAvatarBorderColorFromMetadata(user.user_metadata) : null;
 
 export const getUserAvatarUrl = ({
   user,

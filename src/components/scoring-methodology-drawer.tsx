@@ -101,13 +101,13 @@ export const ScoringMethodologyDrawer = ({
         <Button
           isIconOnly
           aria-label="Open scoring methodology FAQ"
-          className="h-9 w-9 min-h-0 min-w-0 text-[#C79B3B] data-[hover=true]:bg-content2/55 data-[hover=true]:text-[#C79B3B]"
+          className="h-9 w-9 min-h-0 min-w-0 rounded-medium border border-default-300/40 bg-transparent p-0 text-[var(--insight-gold)] transition data-[hover=true]:border-default-200/70 data-[hover=true]:bg-transparent data-[hover=true]:text-[#d9ab45]"
           radius="sm"
           size="sm"
           variant="light"
           onPress={() => setIsOpen(true)}
         >
-          <NotebookText className="h-4.5 w-4.5" />
+          <NotebookText className="h-4 w-4" />
         </Button>
       </Tooltip>
 

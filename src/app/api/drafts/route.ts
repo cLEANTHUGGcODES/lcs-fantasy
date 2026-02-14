@@ -77,15 +77,15 @@ export async function POST(request: Request) {
         { status: 400 },
       );
     }
-    if (!Number.isFinite(roundCount) || roundCount < 1 || roundCount > 20) {
+    if (!Number.isFinite(roundCount) || roundCount < 1 || roundCount > 5) {
       return Response.json(
-        { error: "Round count must be between 1 and 20." },
+        { error: "Round count must be between 1 and 5." },
         { status: 400 },
       );
     }
-    if (!Number.isFinite(pickSeconds) || pickSeconds < 10 || pickSeconds > 900) {
+    if (!Number.isFinite(pickSeconds) || pickSeconds < 1 || pickSeconds > 900) {
       return Response.json(
-        { error: "Pick timer must be between 10 and 900 seconds." },
+        { error: "Pick timer must be between 1 and 900 seconds." },
         { status: 400 },
       );
     }
@@ -199,6 +199,18 @@ export async function POST(request: Request) {
       .single<{ id: number }>();
 
     if (draftError) {
+      if (
+        draftError.code === "23514" &&
+        draftError.message.includes("fantasy_drafts_pick_seconds_check")
+      ) {
+        return Response.json(
+          {
+            error:
+              "Database still enforces an old pick timer constraint. Apply the SQL migration in supabase/migrations/20260214_allow_pick_seconds_min_1.sql, then retry.",
+          },
+          { status: 400 },
+        );
+      }
       throw new Error(`Unable to create draft: ${draftError.message}`);
     }
 

@@ -49,6 +49,11 @@ If you see a Windows `lightningcss.win32-x64-msvc.node` or `../pkg` error, run `
 ## Supabase Setup
 
 1. Create the table using `supabase/schema.sql` in your Supabase SQL editor.
+   - If your database was initialized before February 14, 2026, also run
+     `supabase/migrations/20260214_allow_pick_seconds_min_1.sql` to allow
+     1-second pick timers.
+   - Apply `supabase/migrations/20260214_enforce_unique_positions_max5.sql`
+     to enforce draft roster rules (one position each, max 5 players).
 2. Copy `.env.example` to `.env.local` and fill:
    - `NEXT_PUBLIC_SUPABASE_URL`
    - `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` (preferred) or `NEXT_PUBLIC_SUPABASE_ANON_KEY`

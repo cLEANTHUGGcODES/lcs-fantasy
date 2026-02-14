@@ -77,14 +77,21 @@ const statusLabel = (status: HeadToHeadWeekStatus): string => {
 
 const MatchupAvatar = ({
   displayName,
+  avatarBorderColor,
   avatarUrl,
 }: {
   displayName: string;
+  avatarBorderColor: string | null;
   avatarUrl: string | null;
 }) => {
+  const avatarBorderStyle = avatarBorderColor ? { outlineColor: avatarBorderColor } : undefined;
+
   if (avatarUrl) {
     return (
-      <span className="relative inline-flex h-8 w-8 overflow-hidden rounded-full border border-default-300/40 bg-default-200/30">
+      <span
+        className="relative inline-flex h-8 w-8 overflow-hidden rounded-full bg-default-200/30 outline outline-2 outline-default-300/40"
+        style={avatarBorderStyle}
+      >
         <Image
           src={avatarUrl}
           alt={`${displayName} avatar`}
@@ -99,7 +106,10 @@ const MatchupAvatar = ({
   }
 
   return (
-    <span className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-default-300/40 bg-default-200/40 text-[11px] font-semibold text-default-600">
+    <span
+      className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-default-200/40 text-[11px] font-semibold text-default-600 outline outline-2 outline-default-300/40"
+      style={avatarBorderStyle}
+    >
       {initialsForName(displayName)}
     </span>
   );
@@ -129,6 +139,7 @@ const MatchupCard = ({
         <div className="min-w-0">
           <div className="flex items-center gap-2">
             <MatchupAvatar
+              avatarBorderColor={matchup.left.avatarBorderColor}
               avatarUrl={matchup.left.avatarUrl}
               displayName={matchup.left.displayName}
             />
@@ -175,6 +186,7 @@ const MatchupCard = ({
                 </p>
               </div>
               <MatchupAvatar
+                avatarBorderColor={matchup.right.avatarBorderColor}
                 avatarUrl={matchup.right.avatarUrl}
                 displayName={matchup.right.displayName}
               />
@@ -288,7 +300,7 @@ export const WeeklyMatchupsPanel = ({
     <Card className="overflow-x-hidden bg-content1/70">
       <CardHeader className="flex items-center justify-between gap-3">
         <div>
-          <h2 className="text-xl font-semibold">Weekly Matchups</h2>
+          <h2 className="text-xl font-semibold">Across the league</h2>
           <p className="text-xs text-default-500">
             {weekForHeader
               ? `Week ${weekForHeader.weekNumber} • ${formatDateKeyShort(weekForHeader.startsOn)} - ${formatDateKeyShort(weekForHeader.endsOn)} • Refresh Wednesday, close Monday.`

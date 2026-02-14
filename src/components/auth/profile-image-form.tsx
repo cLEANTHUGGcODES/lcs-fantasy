@@ -9,6 +9,7 @@ import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 
 const MAX_IMAGE_BYTES = 3 * 1024 * 1024;
 const SUPPORTED_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
+const DEFAULT_BORDER_COLOR = "#c79b3b";
 
 const extensionForFile = (file: File): string => {
   const nameParts = file.name.split(".");
@@ -39,11 +40,20 @@ const validateImageFile = (file: File): string | null => {
 };
 
 type ProfileImageFormProps = {
+  currentAvatarBorderColor: string | null;
   currentAvatarPath: string | null;
-  onSaved?: (payload: { avatarPath: string | null; avatarUrl: string | null }) => void;
+  onSaved?: (payload: {
+    avatarPath?: string | null;
+    avatarUrl?: string | null;
+    avatarBorderColor?: string | null;
+  }) => void;
 };
 
-export const ProfileImageForm = ({ currentAvatarPath, onSaved }: ProfileImageFormProps) => {
+export const ProfileImageForm = ({
+  currentAvatarBorderColor,
+  currentAvatarPath,
+  onSaved,
+}: ProfileImageFormProps) => {
   const router = useRouter();
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [pending, setPending] = useState(false);
@@ -54,7 +64,11 @@ export const ProfileImageForm = ({ currentAvatarPath, onSaved }: ProfileImageFor
     inputRef.current?.click();
   };
 
-  const applyMetadataUpdate = async (avatarPath: string | null) => {
+  const applyMetadataUpdate = async ({
+    avatarPath,
+  }: {
+    avatarPath?: string | null;
+  }) => {
     const supabase = getSupabaseBrowserClient();
     const {
       data: { user },
@@ -68,12 +82,14 @@ export const ProfileImageForm = ({ currentAvatarPath, onSaved }: ProfileImageFor
     const metadata = user.user_metadata && typeof user.user_metadata === "object"
       ? (user.user_metadata as Record<string, unknown>)
       : {};
+    const nextData: Record<string, unknown> = { ...metadata };
+
+    if (avatarPath !== undefined) {
+      nextData.avatar_path = avatarPath;
+    }
 
     const { error: updateError } = await supabase.auth.updateUser({
-      data: {
-        ...metadata,
-        avatar_path: avatarPath,
-      },
+      data: nextData,
     });
 
     if (updateError) {
@@ -127,7 +143,7 @@ export const ProfileImageForm = ({ currentAvatarPath, onSaved }: ProfileImageFor
     }
 
     try {
-      await applyMetadataUpdate(nextPath);
+      await applyMetadataUpdate({ avatarPath: nextPath });
     } catch (updateError) {
       await supabase.storage.from(PROFILE_IMAGES_BUCKET).remove([nextPath]);
       setPending(false);
@@ -167,7 +183,7 @@ export const ProfileImageForm = ({ currentAvatarPath, onSaved }: ProfileImageFor
     const supabase = getSupabaseBrowserClient();
 
     try {
-      await applyMetadataUpdate(null);
+      await applyMetadataUpdate({ avatarPath: null });
     } catch (updateError) {
       setPending(false);
       setError(
@@ -208,9 +224,30 @@ export const ProfileImageForm = ({ currentAvatarPath, onSaved }: ProfileImageFor
           Remove
         </Button>
       </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <label className="text-[11px] font-medium uppercase tracking-wide text-default-500" htmlFor="avatar-border-color">
+          Border Color
+        </label>
+        <input
+          id="avatar-border-color"
+          className="h-8 w-10 cursor-pointer rounded border border-default-300/50 bg-transparent p-0"
+          disabled={pending}
+          type="color"
+          value={currentAvatarBorderColor ?? DEFAULT_BORDER_COLOR}
+          onChange={(event) => onSaved?.({ avatarBorderColor: event.target.value.toLowerCase() })}
+        />
+        <Button
+          isDisabled={pending}
+          size="sm"
+          variant="light"
+          onPress={() => onSaved?.({ avatarBorderColor: null })}
+        >
+          Use Default
+        </Button>
+      </div>
       {error ? <p className="text-xs text-danger-400">{error}</p> : null}
       {message ? <p className="text-xs text-success-400">{message}</p> : null}
-      <p className="text-[11px] text-default-500">JPG, PNG, WEBP up to 3MB.</p>
+      <p className="text-[11px] text-default-500">JPG, PNG, WEBP up to 3MB. Color saves when you click Save.</p>
     </div>
   );
 };

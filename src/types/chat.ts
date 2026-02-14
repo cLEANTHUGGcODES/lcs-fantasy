@@ -3,6 +3,7 @@ export interface GlobalChatMessage {
   userId: string;
   senderLabel: string;
   senderAvatarUrl: string | null;
+  senderAvatarBorderColor: string | null;
   message: string;
   createdAt: string;
 }

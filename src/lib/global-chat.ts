@@ -1,6 +1,6 @@
 import { getSupabaseAuthEnv } from "@/lib/supabase-auth-env";
 import { getSupabaseServerClient } from "@/lib/supabase-server";
-import { getUserAvatarUrl } from "@/lib/user-profile";
+import { getUserAvatarBorderColor, getUserAvatarUrl } from "@/lib/user-profile";
 import type { GlobalChatMessage } from "@/types/chat";
 
 const GLOBAL_CHAT_TABLE = "fantasy_global_chat_messages";
@@ -8,7 +8,13 @@ export const MAX_GLOBAL_CHAT_MESSAGE_LENGTH = 320;
 const DEFAULT_GLOBAL_CHAT_LIMIT = 200;
 const AVATAR_CACHE_TTL_MS = 5 * 60 * 1000;
 
-const avatarUrlByUserIdCache = new Map<string, { avatarUrl: string | null; expiresAt: number }>();
+type CachedAvatarProfile = {
+  avatarUrl: string | null;
+  avatarBorderColor: string | null;
+  expiresAt: number;
+};
+
+const avatarProfileByUserIdCache = new Map<string, CachedAvatarProfile>();
 
 type GlobalChatRow = {
   id: number;
@@ -23,21 +29,25 @@ const toGlobalChatMessage = (row: GlobalChatRow): GlobalChatMessage => ({
   userId: row.user_id,
   senderLabel: row.sender_label,
   senderAvatarUrl: null,
+  senderAvatarBorderColor: null,
   message: row.message,
   createdAt: row.created_at,
 });
 
-const resolveAvatarUrlsForUsers = async (
+const resolveAvatarProfilesForUsers = async (
   userIds: string[],
-): Promise<Map<string, string | null>> => {
+): Promise<Map<string, { avatarUrl: string | null; avatarBorderColor: string | null }>> => {
   const now = Date.now();
-  const resolved = new Map<string, string | null>();
+  const resolved = new Map<string, { avatarUrl: string | null; avatarBorderColor: string | null }>();
   const missingUserIds: string[] = [];
 
   for (const userId of userIds) {
-    const cached = avatarUrlByUserIdCache.get(userId);
+    const cached = avatarProfileByUserIdCache.get(userId);
     if (cached && cached.expiresAt > now) {
-      resolved.set(userId, cached.avatarUrl);
+      resolved.set(userId, {
+        avatarUrl: cached.avatarUrl,
+        avatarBorderColor: cached.avatarBorderColor,
+      });
       continue;
     }
     missingUserIds.push(userId);
@@ -53,6 +63,7 @@ const resolveAvatarUrlsForUsers = async (
   await Promise.all(
     missingUserIds.map(async (userId) => {
       let avatarUrl: string | null = null;
+      let avatarBorderColor: string | null = null;
       try {
         const { data, error } = await supabase.auth.admin.getUserById(userId);
         if (!error && data?.user) {
@@ -60,16 +71,19 @@ const resolveAvatarUrlsForUsers = async (
             user: data.user,
             supabaseUrl,
           });
+          avatarBorderColor = getUserAvatarBorderColor(data.user);
         }
       } catch {
         avatarUrl = null;
+        avatarBorderColor = null;
       }
 
-      avatarUrlByUserIdCache.set(userId, {
+      avatarProfileByUserIdCache.set(userId, {
         avatarUrl,
+        avatarBorderColor,
         expiresAt: now + AVATAR_CACHE_TTL_MS,
       });
-      resolved.set(userId, avatarUrl);
+      resolved.set(userId, { avatarUrl, avatarBorderColor });
     }),
   );
 
@@ -99,11 +113,13 @@ export const listGlobalChatMessages = async ({
 
   const baseMessages = ((data ?? []) as GlobalChatRow[]).map(toGlobalChatMessage).reverse();
   const uniqueUserIds = [...new Set(baseMessages.map((entry) => entry.userId))];
-  const avatarUrlsByUserId = await resolveAvatarUrlsForUsers(uniqueUserIds);
+  const avatarProfilesByUserId = await resolveAvatarProfilesForUsers(uniqueUserIds);
 
   return baseMessages.map((entry) => ({
     ...entry,
-    senderAvatarUrl: avatarUrlsByUserId.get(entry.userId) ?? null,
+    senderAvatarUrl: avatarProfilesByUserId.get(entry.userId)?.avatarUrl ?? null,
+    senderAvatarBorderColor:
+      avatarProfilesByUserId.get(entry.userId)?.avatarBorderColor ?? null,
   }));
 };
 

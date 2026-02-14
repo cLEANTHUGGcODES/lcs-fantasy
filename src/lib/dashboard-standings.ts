@@ -2,7 +2,12 @@ import type { User } from "@supabase/supabase-js";
 import { aggregatePlayerTotals } from "@/lib/fantasy";
 import { getSupabaseAuthEnv } from "@/lib/supabase-auth-env";
 import { getSupabaseServerClient } from "@/lib/supabase-server";
-import { getUserAvatarUrl, getUserDisplayName, getUserTeamName } from "@/lib/user-profile";
+import {
+  getUserAvatarBorderColor,
+  getUserAvatarUrl,
+  getUserDisplayName,
+  getUserTeamName,
+} from "@/lib/user-profile";
 import type { ParsedGame, PlayerTotal } from "@/types/fantasy";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -36,6 +41,7 @@ type RegisteredUserProfile = {
   displayName: string;
   teamName: string | null;
   avatarUrl: string | null;
+  avatarBorderColor: string | null;
 };
 
 type HeadToHeadParticipantProfile = {
@@ -43,6 +49,7 @@ type HeadToHeadParticipantProfile = {
   displayName: string;
   teamName: string | null;
   avatarUrl: string | null;
+  avatarBorderColor: string | null;
 };
 
 type RoundRobinPair = [string, string];
@@ -83,6 +90,7 @@ export type DashboardStandingRow = {
   teamName: string | null;
   email: string | null;
   avatarUrl: string | null;
+  avatarBorderColor: string | null;
   drafted: boolean;
   totalPoints: number;
   averagePerPick: number;
@@ -95,12 +103,21 @@ export type HeadToHeadWeekStatus =
   | "finalized"
   | "offseason";
 
+export type HeadToHeadMatchupRosterEntry = {
+  playerName: string;
+  playerTeam: string | null;
+  playerRole: string | null;
+  playerTeamIconUrl: string | null;
+};
+
 export type HeadToHeadMatchupSide = {
   userId: string;
   displayName: string;
   teamName: string | null;
   avatarUrl: string | null;
+  avatarBorderColor: string | null;
   weekPoints: number;
+  roster: HeadToHeadMatchupRosterEntry[];
 };
 
 export type HeadToHeadMatchup = {
@@ -130,6 +147,7 @@ export type HeadToHeadStandingRow = {
   displayName: string;
   teamName: string | null;
   avatarUrl: string | null;
+  avatarBorderColor: string | null;
   wins: number;
   losses: number;
   ties: number;
@@ -438,6 +456,7 @@ const listRegisteredUserProfiles = async (): Promise<RegisteredUserProfile[]> =>
       displayName: getUserDisplayName(user) ?? user.id,
       teamName: getUserTeamName(user),
       avatarUrl: getUserAvatarUrl({ user, supabaseUrl }),
+      avatarBorderColor: getUserAvatarBorderColor(user),
     }))
     .sort((a, b) => a.displayName.localeCompare(b.displayName));
 };
@@ -606,6 +625,7 @@ const buildHeadToHeadSummary = ({
               participant.display_name?.trim() || matchedUser?.displayName || participant.user_id,
             teamName: participant.team_name?.trim() || null,
             avatarUrl: matchedUser?.avatarUrl ?? null,
+            avatarBorderColor: matchedUser?.avatarBorderColor ?? null,
           };
         })
       : [...picksByUserId.keys()]
@@ -616,6 +636,7 @@ const buildHeadToHeadSummary = ({
               displayName: matchedUser?.displayName ?? userId,
               teamName: null,
               avatarUrl: matchedUser?.avatarUrl ?? null,
+              avatarBorderColor: matchedUser?.avatarBorderColor ?? null,
             };
           })
           .sort((a, b) => a.displayName.localeCompare(b.displayName));
@@ -751,6 +772,7 @@ const buildHeadToHeadSummary = ({
         displayName: participant.displayName,
         teamName: participant.teamName,
         avatarUrl: participant.avatarUrl,
+        avatarBorderColor: participant.avatarBorderColor,
         wins: record.wins,
         losses: record.losses,
         ties: record.ties,
@@ -773,6 +795,20 @@ const buildHeadToHeadSummary = ({
 
   const profileByUserId = new Map(
     participantProfiles.map((participant) => [participant.userId, participant]),
+  );
+  const rosterByUserId = new Map<string, HeadToHeadMatchupRosterEntry[]>(
+    participantProfiles.map((participant) => {
+      const picks = picksByUserId.get(participant.userId) ?? [];
+      return [
+        participant.userId,
+        picks.map((pick) => ({
+          playerName: stripTeamSuffixFromName(pick.team_name, pick.player_team),
+          playerTeam: pick.player_team,
+          playerRole: pick.player_role,
+          playerTeamIconUrl: pick.team_icon_url,
+        })),
+      ];
+    }),
   );
   const resolveWeekStatus = (weekNumber: number): HeadToHeadWeekStatus => {
     if (weekNumber < currentWeekContext.weekNumber) {
@@ -836,7 +872,9 @@ const buildHeadToHeadSummary = ({
           displayName: leftProfile.displayName,
           teamName: leftProfile.teamName,
           avatarUrl: leftProfile.avatarUrl,
+          avatarBorderColor: leftProfile.avatarBorderColor,
           weekPoints: round(leftPoints),
+          roster: rosterByUserId.get(leftProfile.userId) ?? [],
         },
         right: rightProfile
           ? {
@@ -844,7 +882,9 @@ const buildHeadToHeadSummary = ({
               displayName: rightProfile.displayName,
               teamName: rightProfile.teamName,
               avatarUrl: rightProfile.avatarUrl,
+              avatarBorderColor: rightProfile.avatarBorderColor,
               weekPoints: round(rightPoints),
+              roster: rosterByUserId.get(rightProfile.userId) ?? [],
             }
           : null,
         winnerUserId: winnerUserId && winnerUserId !== BYE_USER_ID ? winnerUserId : null,
@@ -922,6 +962,7 @@ export const getDashboardStandings = async ({
         teamName: user.teamName,
         email: user.email,
         avatarUrl: user.avatarUrl,
+        avatarBorderColor: user.avatarBorderColor,
         drafted: false,
         totalPoints: 0,
         averagePerPick: 0,
@@ -974,6 +1015,7 @@ export const getDashboardStandings = async ({
       teamName: participantTeamNameByUserId.get(user.userId) ?? user.teamName,
       email: user.email,
       avatarUrl: user.avatarUrl,
+      avatarBorderColor: user.avatarBorderColor,
       drafted: breakdown.length > 0,
       totalPoints,
       averagePerPick,

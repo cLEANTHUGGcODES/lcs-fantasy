@@ -11,6 +11,7 @@ export const DisplayNameForm = ({
   initialFirstName = "",
   initialLastName = "",
   initialTeamName = "",
+  additionalMetadata,
   onSaved,
   saveLabel = "Save Name",
   showSavedMessage = true,
@@ -19,6 +20,7 @@ export const DisplayNameForm = ({
   initialFirstName?: string;
   initialLastName?: string;
   initialTeamName?: string;
+  additionalMetadata?: Record<string, unknown>;
   onSaved?: (payload: {
     firstName: string;
     lastName: string;
@@ -85,8 +87,25 @@ export const DisplayNameForm = ({
 
     setPending(true);
     const supabase = getSupabaseBrowserClient();
+    const {
+      data: { user },
+      error: userError,
+    } = await supabase.auth.getUser();
+
+    if (userError || !user) {
+      setPending(false);
+      setError(userError?.message ?? "Unable to load current user.");
+      return;
+    }
+
+    const metadata = user.user_metadata && typeof user.user_metadata === "object"
+      ? (user.user_metadata as Record<string, unknown>)
+      : {};
+
     const { error: updateError } = await supabase.auth.updateUser({
       data: {
+        ...metadata,
+        ...(additionalMetadata ?? {}),
         first_name: firstNameToSave,
         last_name: lastNameToSave,
         team_name: normalizedTeamName,

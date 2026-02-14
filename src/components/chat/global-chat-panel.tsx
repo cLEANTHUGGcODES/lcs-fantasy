@@ -81,6 +81,7 @@ export const GlobalChatPanel = ({
         userId: string;
         senderLabel: string;
         senderAvatarUrl: string | null;
+        senderAvatarBorderColor: string | null;
         isCurrentUser: boolean;
         messages: GlobalChatMessage[];
       }>
@@ -95,6 +96,7 @@ export const GlobalChatPanel = ({
         userId: entry.userId,
         senderLabel: entry.senderLabel,
         senderAvatarUrl: entry.senderAvatarUrl,
+        senderAvatarBorderColor: entry.senderAvatarBorderColor,
         isCurrentUser: entry.userId === currentUserId,
         messages: [entry],
       });
@@ -463,8 +465,14 @@ export const GlobalChatPanel = ({
                         <div className="space-y-0.5">
                           {group.messages.map((entry, index) => {
                             const showAvatar = index === group.messages.length - 1;
+                            const avatarBorderStyle = group.senderAvatarBorderColor
+                              ? { outlineColor: group.senderAvatarBorderColor }
+                              : undefined;
                             const avatar = showAvatar ? (
-                              <span className="relative inline-flex h-7 w-7 shrink-0 overflow-hidden rounded-full border border-[#C79B3B]/40 bg-[#16233a]">
+                              <span
+                                className="relative inline-flex h-7 w-7 shrink-0 overflow-hidden rounded-full bg-[#16233a] outline outline-2 outline-[#C79B3B]/40"
+                                style={avatarBorderStyle}
+                              >
                                 {group.senderAvatarUrl ? (
                                   <Image
                                     src={group.senderAvatarUrl}

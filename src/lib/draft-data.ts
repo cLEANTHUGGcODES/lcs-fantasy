@@ -26,6 +26,7 @@ const PICKS_TABLE = "fantasy_draft_picks";
 const TEAM_POOL_TABLE = "fantasy_draft_team_pool";
 const PRESENCE_TABLE = "fantasy_draft_presence";
 const ONLINE_HEARTBEAT_WINDOW_MS = 45_000;
+const MAX_ROSTER_PLAYERS = 5;
 
 type DraftRow = {
   id: number;
@@ -100,24 +101,27 @@ const toDraftSummary = (
   row: DraftRow,
   participantCount: number,
   pickCount: number,
-): DraftSummary => ({
-  id: row.id,
-  name: row.name,
-  leagueSlug: row.league_slug,
-  seasonYear: row.season_year,
-  sourcePage: row.source_page,
-  scheduledAt: row.scheduled_at,
-  startedAt: row.started_at,
-  roundCount: row.round_count,
-  pickSeconds: row.pick_seconds,
-  status: row.status,
-  createdByUserId: row.created_by_user_id,
-  createdByLabel: formatUserLabelFromDisplayName(row.created_by_label) ?? row.created_by_label,
-  participantCount,
-  pickCount,
-  totalPickCount: participantCount * row.round_count,
-  createdAt: row.created_at,
-});
+): DraftSummary => {
+  const effectiveRoundCount = Math.min(Math.max(1, row.round_count), MAX_ROSTER_PLAYERS);
+  return {
+    id: row.id,
+    name: row.name,
+    leagueSlug: row.league_slug,
+    seasonYear: row.season_year,
+    sourcePage: row.source_page,
+    scheduledAt: row.scheduled_at,
+    startedAt: row.started_at,
+    roundCount: effectiveRoundCount,
+    pickSeconds: row.pick_seconds,
+    status: row.status,
+    createdByUserId: row.created_by_user_id,
+    createdByLabel: formatUserLabelFromDisplayName(row.created_by_label) ?? row.created_by_label,
+    participantCount,
+    pickCount,
+    totalPickCount: participantCount * effectiveRoundCount,
+    createdAt: row.created_at,
+  };
+};
 
 const toParticipant = (row: DraftParticipantRow): DraftParticipant => ({
   id: row.id,
