@@ -5,7 +5,9 @@ import type { ParsedGame, PlayerGameStat, PlayerRole, TeamSide } from "@/types/f
 const LEAGUEPEDIA_API = "https://lol.fandom.com/api.php";
 
 export const DEFAULT_PAGE =
-  "LCS/2026_Season/Lock-In/Scoreboards/Swiss_Round_3_and_Last_Chance";
+  "LCS/2026_Season/Lock-In";
+
+const SCOREBOARDS_SEGMENT = "/Scoreboards";
 
 type ParseResponse =
   | {
@@ -154,6 +156,137 @@ const normalizeWikiPageTitle = (value: string | undefined): string | null => {
   } catch {
     return encodedTitle.replace(/_/g, " ").trim() || null;
   }
+};
+
+const toPageKey = (value: string): string =>
+  value.trim().replace(/\s+/g, "_");
+
+const normalizePageInput = (value: string): string => {
+  const fromWikiLink = normalizeWikiPageTitle(value);
+  if (fromWikiLink) {
+    return toPageKey(fromWikiLink);
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return toPageKey(DEFAULT_PAGE);
+  }
+
+  return toPageKey(trimmed);
+};
+
+const scoreboardPrefixForTournament = (page: string): string =>
+  `${page.split(SCOREBOARDS_SEGMENT)[0]}${SCOREBOARDS_SEGMENT}`;
+
+const isScoreboardOrTournamentSubpage = (
+  candidate: string,
+  tournamentPage: string,
+): boolean => {
+  const normalizedCandidate = toPageKey(candidate);
+  const prefix = scoreboardPrefixForTournament(tournamentPage);
+  return (
+    normalizedCandidate === prefix ||
+    normalizedCandidate.startsWith(`${prefix}/`)
+  );
+};
+
+const readScoreboardLinksFromHtml = (
+  html: string,
+  tournamentPage: string,
+): string[] => {
+  const $ = cheerio.load(html);
+  const found = new Set<string>();
+
+  $("a[href]").each((_, link) => {
+    const title = normalizeWikiPageTitle($(link).attr("href"));
+    if (!title) {
+      return;
+    }
+
+    const normalizedTitle = toPageKey(title);
+    if (isScoreboardOrTournamentSubpage(normalizedTitle, tournamentPage)) {
+      found.add(normalizedTitle);
+    }
+  });
+
+  return [...found];
+};
+
+type ParsedPagePayload = {
+  page: string;
+  revisionId: number | null;
+  html: string;
+};
+
+const fetchParsedPagePayload = async (page: string): Promise<ParsedPagePayload> => {
+  const query = new URLSearchParams({
+    action: "parse",
+    format: "json",
+    page,
+    prop: "text|revid",
+  });
+
+  const response = await fetch(`${LEAGUEPEDIA_API}?${query.toString()}`, {
+    next: { revalidate: 900 },
+    headers: {
+      "user-agent": "lcs-fantasy-friends-app/0.1 (+self-hosted)",
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Leaguepedia request failed with status ${response.status}`);
+  }
+
+  const payload = (await response.json()) as ParseResponse;
+  if ("error" in payload) {
+    throw new Error(`Leaguepedia parse error: ${payload.error.info}`);
+  }
+
+  return {
+    page: toPageKey(payload.parse.title || page),
+    revisionId: typeof payload.parse.revid === "number" ? payload.parse.revid : null,
+    html: payload.parse.text["*"],
+  };
+};
+
+const hashRevisionString = (value: string): number => {
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = (hash * 31 + value.charCodeAt(index)) >>> 0;
+  }
+  return hash;
+};
+
+const buildCompositeRevisionId = (pages: ParsedPagePayload[]): number | null => {
+  if (pages.length === 0) {
+    return null;
+  }
+
+  if (pages.length === 1) {
+    return pages[0].revisionId;
+  }
+
+  const descriptor = pages
+    .map((entry) => `${entry.page}:${entry.revisionId ?? "null"}`)
+    .sort((a, b) => a.localeCompare(b))
+    .join("|");
+
+  return hashRevisionString(descriptor);
+};
+
+const dedupeGamesById = (games: ParsedGame[]): ParsedGame[] => {
+  const seen = new Set<string>();
+  const unique: ParsedGame[] = [];
+
+  for (const game of games) {
+    if (seen.has(game.id)) {
+      continue;
+    }
+    seen.add(game.id);
+    unique.push(game);
+  }
+
+  return unique;
 };
 
 const readTeamInfo = (
@@ -338,40 +471,54 @@ export interface LeaguepediaScoreboardSnapshot {
 export const fetchLeaguepediaSnapshot = async (
   page: string = DEFAULT_PAGE,
 ): Promise<LeaguepediaScoreboardSnapshot> => {
-  const query = new URLSearchParams({
-    action: "parse",
-    format: "json",
-    page,
-    prop: "text|revid",
-  });
+  const normalizedPage = normalizePageInput(page);
+  const isSegmentedScoreboardRequest = normalizedPage.includes(
+    `${SCOREBOARDS_SEGMENT}/`,
+  );
 
-  const response = await fetch(`${LEAGUEPEDIA_API}?${query.toString()}`, {
-    next: { revalidate: 900 },
-    headers: {
-      "user-agent": "lcs-fantasy-friends-app/0.1 (+self-hosted)",
-    },
-  });
+  const rootPayload = await fetchParsedPagePayload(normalizedPage);
 
-  if (!response.ok) {
-    throw new Error(`Leaguepedia request failed with status ${response.status}`);
+  const parsedPages: ParsedPagePayload[] = [rootPayload];
+  const parsedGames = parseScoreboardHtml(rootPayload.html);
+
+  if (!isSegmentedScoreboardRequest) {
+    const queue = readScoreboardLinksFromHtml(rootPayload.html, normalizedPage);
+    const seenPages = new Set<string>([rootPayload.page, normalizedPage]);
+
+    while (queue.length > 0) {
+      const nextPage = queue.shift();
+      if (!nextPage || seenPages.has(nextPage)) {
+        continue;
+      }
+
+      seenPages.add(nextPage);
+      const pagePayload = await fetchParsedPagePayload(nextPage);
+      parsedPages.push(pagePayload);
+      parsedGames.push(...parseScoreboardHtml(pagePayload.html));
+
+      const nestedLinks = readScoreboardLinksFromHtml(
+        pagePayload.html,
+        normalizedPage,
+      );
+
+      for (const linkedPage of nestedLinks) {
+        if (!seenPages.has(linkedPage)) {
+          queue.push(linkedPage);
+        }
+      }
+    }
   }
 
-  const payload = (await response.json()) as ParseResponse;
-  if ("error" in payload) {
-    throw new Error(`Leaguepedia parse error: ${payload.error.info}`);
-  }
-
-  const parsedGames = parseScoreboardHtml(payload.parse.text["*"]);
-  if (parsedGames.length === 0) {
-    throw new Error("No game tables were parsed from the scoreboard page.");
+  const uniqueGames = dedupeGamesById(parsedGames);
+  if (uniqueGames.length === 0) {
+    throw new Error("No game tables were parsed from the configured source page(s).");
   }
 
   return {
-    sourcePage: page,
-    sourceRevisionId:
-      typeof payload.parse.revid === "number" ? payload.parse.revid : null,
+    sourcePage: normalizedPage,
+    sourceRevisionId: buildCompositeRevisionId(parsedPages),
     fetchedAt: new Date().toISOString(),
-    games: parsedGames,
+    games: uniqueGames,
   };
 };
 

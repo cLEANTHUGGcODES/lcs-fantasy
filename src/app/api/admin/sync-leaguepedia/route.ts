@@ -66,13 +66,14 @@ export async function POST(request: Request) {
   }
 
   const { searchParams } = new URL(request.url);
-  const sourcePage =
+  const requestedSourcePage =
     searchParams.get("page") ??
     process.env.LEAGUEPEDIA_PAGE ??
     leagueConfig.sourcePage;
 
   try {
-    const sourceSnapshot = await fetchLeaguepediaSnapshot(sourcePage);
+    const sourceSnapshot = await fetchLeaguepediaSnapshot(requestedSourcePage);
+    const sourcePage = sourceSnapshot.sourcePage;
 
     const previous = await tryGetLatestSnapshotFromSupabase(sourcePage);
     const previousRevision = previous
