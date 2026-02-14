@@ -226,12 +226,16 @@ npm run test:e2e:mobile
 
 ### Optional Authenticated Mobile Smoke
 
-Anonymous smoke always runs. Authenticated smoke is enabled only when both are set:
+Anonymous smoke always runs.
+Authenticated smoke is disabled by default and only runs when explicitly enabled.
 
+Set all three env vars before running:
+
+- `E2E_AUTH_SMOKE=1`
 - `E2E_USER_EMAIL`
 - `E2E_USER_PASSWORD`
 
-Without these env vars, auth-required specs are skipped automatically.
+Without `E2E_AUTH_SMOKE=1`, authenticated specs are not registered (no skip noise in output).
 
 ## API Endpoint
 
