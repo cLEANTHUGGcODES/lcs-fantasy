@@ -5,11 +5,13 @@ import { Tooltip } from "@heroui/tooltip";
 import { Settings, X } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { CSSProperties, useEffect, useState } from "react";
 import { DisplayNameForm } from "@/components/auth/display-name-form";
 import { ProfileImageForm } from "@/components/auth/profile-image-form";
 import { ScoringSettingsModal } from "@/components/auth/scoring-settings-modal";
 import { SignOutButton } from "@/components/auth/sign-out-button";
+import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 import type { FantasyScoring } from "@/types/fantasy";
 
 const initialsForName = (value: string): string =>
@@ -45,9 +47,12 @@ export const AccountWidget = ({
   initialScoring: FantasyScoring;
   layout?: AccountWidgetLayout;
 }) => {
+  const router = useRouter();
   const [isOpen, setIsOpen] = useState(false);
   const [isSettingsDrawerOpen, setIsSettingsDrawerOpen] = useState(false);
   const [isScoringSettingsOpen, setIsScoringSettingsOpen] = useState(false);
+  const [deletePending, setDeletePending] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [activeLabel, setActiveLabel] = useState(userLabel);
   const [activeFirstName, setActiveFirstName] = useState(firstName);
   const [activeLastName, setActiveLastName] = useState(lastName);
@@ -92,6 +97,7 @@ export const AccountWidget = ({
 
   const openProfileModal = () => {
     setDraftAvatarBorderColor(activeAvatarBorderColor);
+    setDeleteError(null);
     setIsOpen(true);
     setIsSettingsDrawerOpen(false);
     setIsScoringSettingsOpen(false);
@@ -100,6 +106,55 @@ export const AccountWidget = ({
   const closeProfileModal = () => {
     setIsOpen(false);
     setDraftAvatarBorderColor(activeAvatarBorderColor);
+    setDeleteError(null);
+  };
+
+  const handleDeleteAccount = async () => {
+    if (deletePending) {
+      return;
+    }
+
+    const accepted = window.confirm(
+      "Delete your account permanently? This removes your profile and cannot be undone.",
+    );
+    if (!accepted) {
+      return;
+    }
+
+    const confirmation = window.prompt("Type DELETE to confirm account removal.");
+    if (confirmation !== "DELETE") {
+      setDeleteError("Deletion cancelled. Type DELETE exactly to confirm.");
+      return;
+    }
+
+    setDeletePending(true);
+    setDeleteError(null);
+
+    try {
+      const response = await fetch("/api/account", {
+        method: "DELETE",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ confirmation }),
+      });
+      const payload = (await response.json().catch(() => ({}))) as { error?: string };
+      if (!response.ok) {
+        throw new Error(payload.error ?? "Unable to delete account.");
+      }
+
+      const supabase = getSupabaseBrowserClient();
+      await supabase.auth.signOut().catch(() => undefined);
+      setIsOpen(false);
+      setIsSettingsDrawerOpen(false);
+      setIsScoringSettingsOpen(false);
+      router.replace("/auth");
+      router.refresh();
+    } catch (error) {
+      setDeleteError(error instanceof Error ? error.message : "Unable to delete account.");
+    } finally {
+      setDeletePending(false);
+    }
   };
 
   const avatarNode = activeAvatarUrl ? (
@@ -236,6 +291,26 @@ export const AccountWidget = ({
                 }}
               />
             </div>
+          </div>
+
+          <div className="mt-5 rounded-large border border-danger-400/35 bg-danger-500/10 p-4">
+            <p className="text-xs font-semibold uppercase tracking-wide text-danger-300">
+              Danger Zone
+            </p>
+            <p className="mt-1 text-xs text-default-300">
+              Permanently delete your account, chat history, draft participation records, and profile data.
+            </p>
+            <button
+              className="mt-3 inline-flex h-10 items-center justify-center rounded-medium border border-danger-400/45 bg-danger-500/15 px-3 text-sm font-semibold text-danger-200 transition hover:bg-danger-500/25 disabled:cursor-not-allowed disabled:opacity-60"
+              disabled={deletePending}
+              type="button"
+              onClick={() => {
+                void handleDeleteAccount();
+              }}
+            >
+              {deletePending ? "Deleting account..." : "Delete Account"}
+            </button>
+            {deleteError ? <p className="mt-2 text-xs text-danger-300">{deleteError}</p> : null}
           </div>
         </div>
       </div>
