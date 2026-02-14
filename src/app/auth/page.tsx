@@ -40,7 +40,7 @@ export default async function AuthPage({
         : "Auth configuration is missing or invalid.";
 
     return (
-      <main className="mx-auto flex min-h-screen max-w-6xl items-center justify-center px-4 py-10">
+      <main className="mx-auto flex min-h-[100svh] max-w-6xl items-center justify-center px-4 py-10 supports-[min-height:100dvh]:min-h-[100dvh]">
         <Card className="w-full max-w-2xl border border-danger-300/40 bg-danger-50/5">
           <CardHeader>
             <h1 className="text-2xl font-semibold">Authentication Setup Required</h1>
@@ -60,7 +60,7 @@ export default async function AuthPage({
   }
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-6xl items-center justify-center px-4 py-10">
+    <main className="mx-auto flex min-h-[100svh] max-w-6xl items-center justify-center px-4 py-10 supports-[min-height:100dvh]:min-h-[100dvh]">
       <AuthForm nextPath={nextPath} />
     </main>
   );

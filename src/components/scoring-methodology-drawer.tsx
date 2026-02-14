@@ -101,7 +101,7 @@ export const ScoringMethodologyDrawer = ({
         <Button
           isIconOnly
           aria-label="Open scoring methodology FAQ"
-          className="h-9 w-9 min-h-0 min-w-0 rounded-medium border border-default-300/40 bg-transparent p-0 text-[var(--insight-gold)] transition data-[hover=true]:border-default-200/70 data-[hover=true]:bg-transparent data-[hover=true]:text-[#d9ab45]"
+          className="h-11 w-11 min-h-0 min-w-0 rounded-medium border border-default-300/40 bg-transparent p-0 text-[var(--insight-gold)] transition data-[hover=true]:border-default-200/70 data-[hover=true]:bg-transparent data-[hover=true]:text-[#d9ab45] sm:h-9 sm:w-9"
           radius="sm"
           size="sm"
           variant="light"

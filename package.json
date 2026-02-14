@@ -10,7 +10,11 @@
     "build": "node ./scripts/ensure-lightningcss-win.mjs && node ./scripts/check-lightningcss-win.mjs && node ./scripts/run-next-with-css-wasm.mjs build",
     "start": "node ./scripts/ensure-lightningcss-win.mjs && node ./scripts/check-lightningcss-win.mjs && node ./scripts/run-next-with-css-wasm.mjs start",
     "lint": "eslint",
-    "check:fonts": "node ./scripts/check-font-consistency.mjs"
+    "check:fonts": "node ./scripts/check-font-consistency.mjs",
+    "test:e2e:mobile": "npx playwright test --config=playwright.mobile.config.mjs",
+    "test:e2e:mobile:headed": "npx playwright test --config=playwright.mobile.config.mjs --headed",
+    "test:e2e:mobile:ui": "npx playwright test --config=playwright.mobile.config.mjs --ui",
+    "test:e2e:mobile:install": "npx playwright install chromium"
   },
   "dependencies": {
     "@heroui/react": "2.8.8",
@@ -24,6 +28,7 @@
     "react-dom": "19.2.3"
   },
   "devDependencies": {
+    "@playwright/test": "^1.58.2",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",

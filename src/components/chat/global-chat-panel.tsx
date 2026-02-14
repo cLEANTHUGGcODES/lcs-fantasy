@@ -26,8 +26,8 @@ const CHAT_FALLBACK_POLL_INTERVAL_MS = 10000;
 const CHAT_WAKE_SYNC_DEBOUNCE_MS = 400;
 const CHAT_METRICS_FLUSH_INTERVAL_MS = 60000;
 const CHAT_AUTO_SCROLL_THRESHOLD_PX = 72;
-const CHAT_COMPOSER_MIN_HEIGHT_PX = 30;
-const CHAT_COMPOSER_MAX_HEIGHT_PX = 80;
+const CHAT_COMPOSER_MIN_HEIGHT_PX = 36;
+const CHAT_COMPOSER_MAX_HEIGHT_PX = 96;
 
 const isNearBottom = (element: HTMLDivElement): boolean => {
   const distanceFromBottom = element.scrollHeight - element.scrollTop - element.clientHeight;
@@ -715,7 +715,7 @@ export const GlobalChatPanel = ({
         {hasOlderMessages ? (
           <div className="mb-2 flex justify-center">
             <Button
-              className="h-7 min-h-7 rounded-full border border-[#3f5578]/80 bg-[#0f1d33]/90 px-3 text-[11px] font-semibold text-[#c5d5f1] data-[hover=true]:bg-[#14253f]"
+              className="h-11 min-h-11 rounded-full border border-[#3f5578]/80 bg-[#0f1d33]/90 px-3.5 text-xs font-semibold text-[#c5d5f1] data-[hover=true]:bg-[#14253f] sm:h-8 sm:min-h-8 sm:px-3 sm:text-[11px]"
               isDisabled={loadingOlder}
               size="sm"
               variant="flat"
@@ -976,7 +976,7 @@ export const GlobalChatPanel = ({
             <Button
               isIconOnly
               aria-label="Minimize chat"
-              className="text-slate-300 data-[hover=true]:text-[#C79B3B]"
+              className="h-11 w-11 text-slate-300 data-[hover=true]:text-[#C79B3B] sm:h-8 sm:w-8"
               size="sm"
               variant="light"
               onPress={closeChat}
@@ -1014,7 +1014,7 @@ export const GlobalChatPanel = ({
                     ref={chatInputRef}
                     aria-label="Chat message"
                     autoCorrect="on"
-                    className="chat-scrollbar min-h-[30px] max-h-[80px] w-full resize-none rounded-md border border-transparent bg-[#081326] px-3 py-1 text-base leading-5 text-[#edf2ff] outline-none transition focus:border-transparent focus:ring-2 focus:ring-[#C79B3B]/25"
+                    className="chat-scrollbar min-h-[36px] max-h-[96px] w-full resize-none rounded-md border border-transparent bg-[#081326] px-3 py-1.5 text-base leading-5 text-[#edf2ff] outline-none transition focus:border-transparent focus:ring-2 focus:ring-[#C79B3B]/25"
                     data-gramm="false"
                     disabled={pendingSend}
                     enterKeyHint="send"
@@ -1042,7 +1042,7 @@ export const GlobalChatPanel = ({
                 </div>
                 <Button
                   aria-label="Send message"
-                  className="h-[30px] w-[30px] min-h-[30px] min-w-[30px] self-center bg-transparent text-[#C79B3B] shadow-none hover:bg-transparent active:bg-transparent data-[hover=true]:bg-transparent data-[hover=true]:text-[#C79B3B] data-[pressed=true]:bg-transparent data-[disabled=true]:opacity-45"
+                  className="h-11 w-11 min-h-11 min-w-11 self-center bg-transparent text-[#C79B3B] shadow-none hover:bg-transparent active:bg-transparent data-[hover=true]:bg-transparent data-[hover=true]:text-[#C79B3B] data-[pressed=true]:bg-transparent data-[disabled=true]:opacity-45 sm:h-9 sm:w-9 sm:min-h-9 sm:min-w-9"
                   isIconOnly
                   isDisabled={messageInput.trim().length === 0}
                   isLoading={pendingSend}

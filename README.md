@@ -29,9 +29,10 @@ Runtime reads match data **only from Supabase**.
 
 By default this app parses:
 
-`https://lol.fandom.com/wiki/LCS/2026_Season/Lock-In/Scoreboards/Swiss_Round_3_and_Last_Chance`
+`https://lol.fandom.com/wiki/LCS/2026_Season/Lock-In`
 
-It uses the MediaWiki `action=parse` API under the hood and extracts each `table.sb` game block.
+It uses the MediaWiki `action=parse` API under the hood, discovers linked
+`/Scoreboards/...` pages for the tournament, and extracts each `table.sb` game block.
 
 ## Local Setup
 
@@ -181,11 +182,56 @@ Example player format:
 
 ## Optional Environment Override
 
-Set `LEAGUEPEDIA_PAGE` to target a different scoreboard page without editing JSON:
+Set `LEAGUEPEDIA_PAGE` to target a different source page without editing JSON:
 
 ```bash
-LEAGUEPEDIA_PAGE="LCS/2026_Season/Lock-In/Scoreboards/Swiss_Round_3_and_Last_Chance"
+LEAGUEPEDIA_PAGE="LCS/2026_Season/Lock-In"
 ```
+
+## Mobile Smoke E2E (Playwright)
+
+The repo includes mobile smoke specs and a CI workflow to enforce baseline responsiveness.
+
+Scripts:
+
+- `npm run test:e2e:mobile`
+- `npm run test:e2e:mobile:headed`
+- `npm run test:e2e:mobile:ui`
+- `npm run test:e2e:mobile:install`
+
+### Local Run (PowerShell)
+
+1. Start app in one terminal:
+
+```powershell
+npm run dev
+```
+
+2. Run tests in another terminal:
+
+```powershell
+npm run test:e2e:mobile
+```
+
+### Local Run With Managed Web Server
+
+If you want Playwright to start the app for you:
+
+```powershell
+$env:PLAYWRIGHT_WEB_SERVER_COMMAND="npm run start -- -p 3000"
+$env:PLAYWRIGHT_BASE_URL="http://127.0.0.1:3000"
+npm run build
+npm run test:e2e:mobile
+```
+
+### Optional Authenticated Mobile Smoke
+
+Anonymous smoke always runs. Authenticated smoke is enabled only when both are set:
+
+- `E2E_USER_EMAIL`
+- `E2E_USER_PASSWORD`
+
+Without these env vars, auth-required specs are skipped automatically.
 
 ## API Endpoint
 

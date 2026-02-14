@@ -294,6 +294,7 @@ export const ScoringSettingsModal = ({
                       <Input
                         key={field}
                         description={FIELD_LABELS[field].description}
+                        inputMode="decimal"
                         label={FIELD_LABELS[field].label}
                         labelPlacement="outside"
                         max={MAX_SCORING_VALUE}

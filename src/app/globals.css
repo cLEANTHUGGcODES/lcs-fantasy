@@ -21,6 +21,8 @@
 html,
 body {
   min-height: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
 }
 
 html {
@@ -35,6 +37,17 @@ body {
     radial-gradient(circle at 5% 5%, rgba(57, 131, 250, 0.22), transparent 30%),
     radial-gradient(circle at 95% 4%, rgba(41, 194, 160, 0.18), transparent 32%),
     linear-gradient(145deg, #0a111f 0%, #101a2b 50%, #132035 100%);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 .fantasy-title {
@@ -131,5 +144,15 @@ body {
     [role="textbox"] {
       font-size: 16px !important;
     }
+  }
+}
+
+@media (max-width: 1024px) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):not([type="button"]):not([type="submit"]):not([type="reset"]),
+  textarea,
+  select,
+  [contenteditable="true"],
+  [role="textbox"] {
+    font-size: 16px;
   }
 }

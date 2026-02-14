@@ -19,7 +19,7 @@ export default async function DraftsPage() {
   const defaultSourcePage = process.env.LEAGUEPEDIA_PAGE ?? leagueConfig.sourcePage;
 
   return (
-    <main className="mx-auto min-h-screen w-full max-w-7xl px-3 py-5 md:px-6 md:py-8">
+    <main className="mx-auto min-h-[100svh] w-full max-w-7xl px-3 py-5 supports-[min-height:100dvh]:min-h-[100dvh] md:px-6 md:py-8">
       <div className="mb-4">
         <Link href="/" underline="hover">
           ← Back To Dashboard

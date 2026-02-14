@@ -3,7 +3,7 @@
 import { Button } from "@heroui/button";
 import { Card, CardBody, CardHeader } from "@heroui/card";
 import { Chip } from "@heroui/chip";
-import { motion } from "framer-motion";
+import { motion, useReducedMotion } from "framer-motion";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import Image from "next/image";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -210,6 +210,7 @@ export const WeeklyMatchupsPanel = ({
 }: {
   headToHead: HeadToHeadSummary;
 }) => {
+  const prefersReducedMotion = useReducedMotion();
   const animationTimersRef = useRef<number[]>([]);
   const initialWeekIndex = useMemo(() => {
     if (headToHead.weeks.length === 0) {
@@ -269,6 +270,13 @@ export const WeeklyMatchupsPanel = ({
       return;
     }
 
+    if (prefersReducedMotion) {
+      setSelectedWeekIndex(targetWeekIndex);
+      setTransitionTargetWeekIndex(null);
+      setIsWeekTransitioning(false);
+      return;
+    }
+
     const currentMatchupCount = headToHead.weeks[currentWeekIndex]?.matchups.length ?? 0;
     const targetMatchupCount = headToHead.weeks[targetWeekIndex]?.matchups.length ?? 0;
     const flipOutDurationMs =
@@ -320,7 +328,7 @@ export const WeeklyMatchupsPanel = ({
             <Button
               isIconOnly
               aria-label="Previous week"
-              className="h-8 w-8 rounded-medium border border-default-300/45 bg-content2/70 text-white shadow-sm backdrop-blur-sm data-[hover=true]:border-default-200/70 data-[hover=true]:bg-content2 data-[hover=true]:text-white data-[pressed=true]:bg-content2/85 data-[disabled=true]:border-default-300/25 data-[disabled=true]:bg-content2/35 data-[disabled=true]:text-default-400"
+              className="h-11 w-11 rounded-medium border border-default-300/45 bg-content2/70 text-white shadow-sm backdrop-blur-sm data-[hover=true]:border-default-200/70 data-[hover=true]:bg-content2 data-[hover=true]:text-white data-[pressed=true]:bg-content2/85 data-[disabled=true]:border-default-300/25 data-[disabled=true]:bg-content2/35 data-[disabled=true]:text-default-400 sm:h-8 sm:w-8"
               size="sm"
               variant="light"
               isDisabled={!canGoPrevious || isWeekTransitioning}
@@ -336,7 +344,7 @@ export const WeeklyMatchupsPanel = ({
             <Button
               isIconOnly
               aria-label="Next week"
-              className="h-8 w-8 rounded-medium border border-default-300/45 bg-content2/70 text-white shadow-sm backdrop-blur-sm data-[hover=true]:border-default-200/70 data-[hover=true]:bg-content2 data-[hover=true]:text-white data-[pressed=true]:bg-content2/85 data-[disabled=true]:border-default-300/25 data-[disabled=true]:bg-content2/35 data-[disabled=true]:text-default-400"
+              className="h-11 w-11 rounded-medium border border-default-300/45 bg-content2/70 text-white shadow-sm backdrop-blur-sm data-[hover=true]:border-default-200/70 data-[hover=true]:bg-content2 data-[hover=true]:text-white data-[pressed=true]:bg-content2/85 data-[disabled=true]:border-default-300/25 data-[disabled=true]:bg-content2/35 data-[disabled=true]:text-default-400 sm:h-8 sm:w-8"
               size="sm"
               variant="light"
               isDisabled={!canGoNext || isWeekTransitioning}

@@ -143,6 +143,7 @@ export const AuthForm = ({ nextPath }: { nextPath: string }) => {
           <Input
             isRequired
             autoComplete="email"
+            inputMode="email"
             label="Email"
             labelPlacement="outside"
             type="email"
@@ -206,7 +207,7 @@ export const AuthForm = ({ nextPath }: { nextPath: string }) => {
           {error ? <p className="text-sm text-danger-400">{error}</p> : null}
           {message ? <p className="text-sm text-success-400">{message}</p> : null}
 
-          <Button color="primary" isLoading={pending} type="submit">
+          <Button className="h-11 min-h-11" color="primary" isLoading={pending} type="submit">
             {mode === "login" ? "Login" : "Create Account"}
           </Button>
         </form>

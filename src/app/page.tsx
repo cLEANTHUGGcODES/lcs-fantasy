@@ -540,7 +540,7 @@ export default async function Home() {
 
   if (!snapshotResult.snapshot) {
     return (
-      <main className="mx-auto flex min-h-screen max-w-6xl items-center px-4 py-10">
+      <main className="mx-auto flex min-h-[100svh] max-w-6xl items-center px-4 py-10 supports-[min-height:100dvh]:min-h-[100dvh]">
         <Card className="w-full border border-danger-300/40 bg-danger-50/5">
           <CardHeader className="flex flex-col items-start gap-2">
             <Chip color="danger" variant="flat">
@@ -685,7 +685,7 @@ export default async function Home() {
   const currentPointSplitLabel =
     `${Math.round(currentUserWeekPointShare)}% / ${Math.round(currentOpponentWeekPointShare)}%`;
   return (
-    <main className="mx-auto min-h-screen w-full max-w-7xl px-3 py-5 pb-28 md:px-6 md:py-8 md:pb-24">
+    <main className="mx-auto min-h-[100svh] w-full max-w-7xl px-3 py-5 pb-28 supports-[min-height:100dvh]:min-h-[100dvh] md:px-6 md:py-8 md:pb-24">
       <Navbar
         className="overflow-visible bg-transparent"
         classNames={{

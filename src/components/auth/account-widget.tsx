@@ -105,7 +105,7 @@ export const AccountWidget = ({
   const avatarNode = activeAvatarUrl ? (
     <span
       className={`relative inline-flex overflow-hidden rounded-full bg-default-200/30 outline outline-2 outline-default-300/40 ${
-        layout === "navbar" ? "h-9 w-9" : "h-14 w-14"
+        layout === "navbar" ? "h-11 w-11 sm:h-9 sm:w-9" : "h-14 w-14"
       }`}
       style={activeAvatarBorderStyle}
     >
@@ -113,7 +113,7 @@ export const AccountWidget = ({
         src={activeAvatarUrl}
         alt={`${activeLabel} profile image`}
         fill
-        sizes={layout === "navbar" ? "36px" : "56px"}
+        sizes={layout === "navbar" ? "(max-width: 639px) 44px, 36px" : "56px"}
         quality={100}
         unoptimized
         className="object-cover object-center"
@@ -122,7 +122,7 @@ export const AccountWidget = ({
   ) : (
     <span
       className={`inline-flex items-center justify-center rounded-full bg-default-200/40 font-semibold text-default-600 outline outline-2 outline-default-300/40 ${
-        layout === "navbar" ? "h-9 w-9 text-xs" : "h-14 w-14 text-sm"
+        layout === "navbar" ? "h-11 w-11 text-xs sm:h-9 sm:w-9" : "h-14 w-14 text-sm"
       }`}
       style={activeAvatarBorderStyle}
     >
@@ -147,11 +147,11 @@ export const AccountWidget = ({
           <div className="flex items-center gap-1">
             <SignOutButton
               isIconOnly
-              className="inline-flex h-8 w-8 min-h-0 min-w-0 items-center justify-center rounded-medium border border-default-300/40 bg-content2/60 p-0 text-white data-[hover=true]:border-default-200/70 data-[hover=true]:bg-content2/80 data-[hover=true]:text-white"
+              className="inline-flex h-10 w-10 min-h-0 min-w-0 items-center justify-center rounded-medium border border-default-300/40 bg-content2/60 p-0 text-white data-[hover=true]:border-default-200/70 data-[hover=true]:bg-content2/80 data-[hover=true]:text-white sm:h-8 sm:w-8"
             />
             <button
               aria-label="Close profile settings"
-              className="inline-flex h-8 w-8 items-center justify-center rounded-medium border border-default-300/40 bg-content2/60 p-0 text-white transition hover:border-default-200/70 hover:bg-content2/80 hover:text-white"
+              className="inline-flex h-10 w-10 items-center justify-center rounded-medium border border-default-300/40 bg-content2/60 p-0 text-white transition hover:border-default-200/70 hover:bg-content2/80 hover:text-white sm:h-8 sm:w-8"
               type="button"
               onClick={closeProfileModal}
             >
@@ -316,7 +316,7 @@ export const AccountWidget = ({
             <span className="inline-flex">
               <SignOutButton
                 isIconOnly
-                className="inline-flex h-9 w-9 min-h-0 min-w-0 items-center justify-center rounded-medium border border-default-300/40 bg-transparent p-0 text-[var(--insight-gold)] transition data-[hover=true]:border-default-200/70 data-[hover=true]:bg-transparent data-[hover=true]:text-[#d9ab45]"
+                className="inline-flex h-11 w-11 min-h-0 min-w-0 items-center justify-center rounded-medium border border-default-300/40 bg-transparent p-0 text-[var(--insight-gold)] transition data-[hover=true]:border-default-200/70 data-[hover=true]:bg-transparent data-[hover=true]:text-[#d9ab45] sm:h-9 sm:w-9"
               />
             </span>
           </Tooltip>
@@ -324,7 +324,7 @@ export const AccountWidget = ({
             <Tooltip content="Settings">
               <button
                 aria-label="Settings"
-                className="inline-flex h-9 w-9 cursor-pointer items-center justify-center rounded-medium border border-default-300/40 bg-transparent p-0 text-[var(--insight-gold)] transition hover:border-default-200/70 hover:bg-transparent hover:text-[#d9ab45]"
+                className="inline-flex h-11 w-11 cursor-pointer items-center justify-center rounded-medium border border-default-300/40 bg-transparent p-0 text-[var(--insight-gold)] transition hover:border-default-200/70 hover:bg-transparent hover:text-[#d9ab45] sm:h-9 sm:w-9"
                 type="button"
                 onClick={() => setIsSettingsDrawerOpen(true)}
               >
@@ -389,7 +389,7 @@ export const AccountWidget = ({
           <div className="absolute bottom-2 right-2">
             <button
               aria-label="Settings"
-              className="inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded-medium border border-transparent bg-transparent p-0 text-default-400 transition hover:border-default-200/40 hover:bg-content2/45 hover:text-default-200"
+              className="inline-flex h-10 w-10 cursor-pointer items-center justify-center rounded-medium border border-transparent bg-transparent p-0 text-default-400 transition hover:border-default-200/40 hover:bg-content2/45 hover:text-default-200 sm:h-8 sm:w-8"
               type="button"
               onClick={() => setIsSettingsDrawerOpen(true)}
             >

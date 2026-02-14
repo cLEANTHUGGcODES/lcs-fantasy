@@ -27,7 +27,7 @@ export default async function DraftRoomPage({
   }
 
   return (
-    <main className="mx-auto min-h-screen w-full max-w-7xl px-3 py-5 pb-28 md:px-6 md:py-8 md:pb-24">
+    <main className="mx-auto min-h-[100svh] w-full max-w-7xl px-3 py-5 pb-28 supports-[min-height:100dvh]:min-h-[100dvh] md:px-6 md:py-8 md:pb-24">
       <div className="mb-4 flex flex-wrap gap-3">
         <Link href="/" underline="hover">
           ← Back To Dashboard
