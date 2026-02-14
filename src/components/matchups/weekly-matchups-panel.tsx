@@ -89,7 +89,7 @@ const MatchupAvatar = ({
   if (avatarUrl) {
     return (
       <span
-        className="relative inline-flex h-8 w-8 overflow-hidden rounded-full bg-default-200/30 outline outline-2 outline-default-300/40"
+        className="relative inline-flex h-8 w-8 min-h-8 min-w-8 shrink-0 aspect-square overflow-hidden rounded-full bg-default-200/30 outline outline-2 outline-default-300/40 [backface-visibility:hidden] [transform:translateZ(0)]"
         style={avatarBorderStyle}
       >
         <Image
@@ -97,9 +97,10 @@ const MatchupAvatar = ({
           alt={`${displayName} avatar`}
           fill
           sizes="32px"
+          loading="eager"
           quality={100}
           unoptimized
-          className="object-cover object-center"
+          className="object-cover object-center [backface-visibility:hidden] [transform:translateZ(0)]"
         />
       </span>
     );
@@ -107,7 +108,7 @@ const MatchupAvatar = ({
 
   return (
     <span
-      className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-default-200/40 text-[11px] font-semibold text-default-600 outline outline-2 outline-default-300/40"
+      className="inline-flex h-8 w-8 min-h-8 min-w-8 shrink-0 aspect-square items-center justify-center rounded-full bg-default-200/40 text-[11px] font-semibold text-default-600 outline outline-2 outline-default-300/40 [backface-visibility:hidden] [transform:translateZ(0)]"
       style={avatarBorderStyle}
     >
       {initialsForName(displayName)}
