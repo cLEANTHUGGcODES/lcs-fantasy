@@ -138,6 +138,21 @@ const normalizeRoleLabel = (value: string | null): string | null => {
   }
   return null;
 };
+const MATCHUP_ROLE_ICON_URLS: Record<string, string> = {
+  TOP: "https://static.wikia.nocookie.net/lolesports_gamepedia_en/images/4/44/Toprole_icon.png/revision/latest",
+  JNG: "https://static.wikia.nocookie.net/lolesports_gamepedia_en/images/f/fb/Junglerole_icon.png/revision/latest",
+  MID: "https://static.wikia.nocookie.net/lolesports_gamepedia_en/images/c/ce/Midrole_icon.png/revision/latest",
+  ADC: "https://static.wikia.nocookie.net/lolesports_gamepedia_en/images/d/d1/AD_Carryrole_icon.png/revision/latest",
+  SUP: "https://static.wikia.nocookie.net/lolesports_gamepedia_en/images/7/73/Supportrole_icon.png/revision/latest",
+};
+
+const matchupRoleIconUrl = (role: string | null): string | null => {
+  const normalized = normalizeRoleLabel(role);
+  if (!normalized) {
+    return null;
+  }
+  return MATCHUP_ROLE_ICON_URLS[normalized] ?? null;
+};
 const MATCHUP_ROLE_ORDER = ["TOP", "JNG", "MID", "ADC", "SUP", "FLEX"] as const;
 
 const matchupRoleOrderIndex = (role: string | null): number => {
@@ -351,7 +366,7 @@ const CurrentMatchupLane = ({
           const leftEntry = orderedLeftRoster[index] ?? null;
           const rightEntry = orderedRightRoster[index] ?? null;
           const normalizedRole = normalizeRoleLabel(leftEntry?.playerRole ?? rightEntry?.playerRole);
-          const roleLabel = normalizedRole ?? `P${index + 1}`;
+          const roleIcon = matchupRoleIconUrl(normalizedRole);
 
           return (
             <div
@@ -370,8 +385,18 @@ const CurrentMatchupLane = ({
                 iconUrl={leftEntry?.playerTeamIconUrl ?? null}
                 size="md"
               />
-              <span className="inline-flex h-5 min-w-9 items-center justify-center rounded-full border border-default-200/30 bg-black/25 px-2 text-[10px] font-semibold uppercase tracking-[0.08em] text-[#f5efdf]">
-                {roleLabel}
+              <span className="inline-flex h-5 min-w-8 items-center justify-center rounded-full border border-default-200/30 bg-black/25 px-1.5">
+                {roleIcon ? (
+                  <Image
+                    src={roleIcon}
+                    alt={`${normalizedRole ?? "Position"} icon`}
+                    className="h-3.5 w-3.5 object-contain"
+                    height={14}
+                    width={14}
+                  />
+                ) : (
+                  <span className="mono-points text-[9px] font-semibold text-[#d9cdb5]">—</span>
+                )}
               </span>
               <TeamIcon
                 team={rightEntry?.playerTeam ?? rightEntry?.playerName ?? "R"}

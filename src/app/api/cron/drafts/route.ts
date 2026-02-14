@@ -1,4 +1,5 @@
 import { processDueDrafts } from "@/lib/draft-automation";
+import { cleanupGlobalChatData, getChatObservabilitySummary } from "@/lib/global-chat";
 
 const readBearer = (authorization: string | null): string | null => {
   if (!authorization) {
@@ -29,10 +30,32 @@ const handle = async (request: Request) => {
   }
 
   const result = await processDueDrafts();
+  let chatCleanup: {
+    deletedMessages: number;
+    deletedObservabilityEvents: number;
+  } | null = null;
+  let chatCleanupError: string | null = null;
+  let chatObservabilitySummary: Record<string, unknown> | null = null;
+  let chatObservabilitySummaryError: string | null = null;
+  try {
+    chatCleanup = await cleanupGlobalChatData();
+  } catch (error) {
+    chatCleanupError = error instanceof Error ? error.message : "Unable to clean up chat data.";
+  }
+  try {
+    chatObservabilitySummary = await getChatObservabilitySummary();
+  } catch (error) {
+    chatObservabilitySummaryError =
+      error instanceof Error ? error.message : "Unable to load chat observability summary.";
+  }
   return Response.json(
     {
       ok: true,
       ...result,
+      chatCleanup,
+      chatCleanupError,
+      chatObservabilitySummary,
+      chatObservabilitySummaryError,
       serverNow: new Date().toISOString(),
     },
     { status: 200 },

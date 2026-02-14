@@ -12,11 +12,19 @@ import type { GlobalChatMessage } from "@/types/chat";
 type GlobalChatResponse = {
   messages?: GlobalChatMessage[];
   message?: GlobalChatMessage;
+  hasMore?: boolean;
+  nextBeforeId?: number | null;
+  duplicate?: boolean;
   error?: string;
 };
 
 const MAX_GLOBAL_CHAT_MESSAGE_LENGTH = 320;
-const CHAT_POLL_INTERVAL_MS = 2500;
+const CHAT_INITIAL_FETCH_LIMIT = 120;
+const CHAT_INCREMENTAL_FETCH_LIMIT = 60;
+const CHAT_PAGE_FETCH_LIMIT = 80;
+const CHAT_FALLBACK_POLL_INTERVAL_MS = 10000;
+const CHAT_WAKE_SYNC_DEBOUNCE_MS = 400;
+const CHAT_METRICS_FLUSH_INTERVAL_MS = 60000;
 const CHAT_AUTO_SCROLL_THRESHOLD_PX = 72;
 const CHAT_COMPOSER_MIN_HEIGHT_PX = 30;
 const CHAT_COMPOSER_MAX_HEIGHT_PX = 80;
@@ -33,11 +41,116 @@ const toMessageId = (value: unknown): number => {
   return Number.isFinite(normalized) ? normalized : 0;
 };
 
+const mergeIncomingMessages = (
+  existing: GlobalChatMessage[],
+  incoming: GlobalChatMessage[],
+): { messages: GlobalChatMessage[]; droppedCount: number } => {
+  if (incoming.length === 0) {
+    return { messages: existing, droppedCount: 0 };
+  }
+
+  const knownIds = new Set(existing.map((entry) => toMessageId(entry.id)));
+  let droppedCount = 0;
+  const additions = incoming.filter((entry) => {
+    const messageId = toMessageId(entry.id);
+    if (knownIds.has(messageId)) {
+      droppedCount += 1;
+      return false;
+    }
+    knownIds.add(messageId);
+    return true;
+  });
+
+  if (additions.length === 0) {
+    return { messages: existing, droppedCount };
+  }
+
+  return {
+    messages: [...existing, ...additions],
+    droppedCount,
+  };
+};
+
+const prependOlderMessages = (
+  existing: GlobalChatMessage[],
+  older: GlobalChatMessage[],
+): { messages: GlobalChatMessage[]; droppedCount: number } => {
+  if (older.length === 0) {
+    return { messages: existing, droppedCount: 0 };
+  }
+
+  const knownIds = new Set(existing.map((entry) => toMessageId(entry.id)));
+  let droppedCount = 0;
+  const olderUnique = older.filter((entry) => {
+    const messageId = toMessageId(entry.id);
+    if (knownIds.has(messageId)) {
+      droppedCount += 1;
+      return false;
+    }
+    knownIds.add(messageId);
+    return true;
+  });
+
+  if (olderUnique.length === 0) {
+    return { messages: existing, droppedCount };
+  }
+
+  return {
+    messages: [...olderUnique, ...existing],
+    droppedCount,
+  };
+};
+
+const isBrowserOnline = (): boolean =>
+  typeof navigator === "undefined" || navigator.onLine;
+
+const generateIdempotencyKey = (): string => {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `chat-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+};
+
 const formatTime = (value: string): string =>
   new Date(value).toLocaleTimeString(undefined, {
     hour: "numeric",
     minute: "2-digit",
   });
+
+const formatDayKey = (value: string): string => {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "unknown-day";
+  }
+  return `${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()}`;
+};
+
+const formatDayLabel = (value: string): string => {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const startOfDate = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+  const dayDifference = Math.round((startOfToday - startOfDate) / (24 * 60 * 60 * 1000));
+
+  if (dayDifference === 0) {
+    return "Today";
+  }
+  if (dayDifference === 1) {
+    return "Yesterday";
+  }
+
+  const sameYear = date.getFullYear() === now.getFullYear();
+  return date.toLocaleDateString(undefined, {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    ...(sameYear ? {} : { year: "numeric" }),
+  });
+};
 
 const initialsForSenderLabel = (value: string): string => {
   const preferredSource = value.match(/\(([^)]+)\)/)?.[1] ?? value;
@@ -62,7 +175,10 @@ export const GlobalChatPanel = ({
   const [isMobileViewport, setIsMobileViewport] = useState(false);
   const [messages, setMessages] = useState<GlobalChatMessage[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadingOlder, setLoadingOlder] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [hasOlderMessages, setHasOlderMessages] = useState(false);
+  const [oldestCursorId, setOldestCursorId] = useState<number | null>(null);
   const [messageInput, setMessageInput] = useState("");
   const [pendingSend, setPendingSend] = useState(false);
   const [hasInitializedUnreadState, setHasInitializedUnreadState] = useState(false);
@@ -70,11 +186,23 @@ export const GlobalChatPanel = ({
   const [unreadCount, setUnreadCount] = useState(0);
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const chatInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const composerResizeFrameRef = useRef<number | null>(null);
   const shouldStickToBottomRef = useRef(true);
-  const sortedMessages = useMemo(
-    () => [...messages].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()),
-    [messages],
-  );
+  const latestMessageIdRef = useRef(0);
+  const realtimeConnectedRef = useRef(false);
+  const incrementalSyncInFlightRef = useRef(false);
+  const incrementalSyncQueuedRef = useRef(false);
+  const wakeSyncTimeoutRef = useRef<number | null>(null);
+  const lastRealtimeStatusRef = useRef<string | null>(null);
+  const composerIdempotencyKeyRef = useRef<string | null>(null);
+  const composerIdempotencyMessageRef = useRef<string>("");
+  const clientMetricsRef = useRef({
+    realtimeDisconnects: 0,
+    fallbackSyncs: 0,
+    duplicateDrops: 0,
+  });
+  const metricsFlushInFlightRef = useRef(false);
+  const sortedMessages = messages;
   const groupedMessages = useMemo(() => {
     return sortedMessages.reduce<
       Array<{
@@ -82,12 +210,15 @@ export const GlobalChatPanel = ({
         senderLabel: string;
         senderAvatarUrl: string | null;
         senderAvatarBorderColor: string | null;
+        dayKey: string;
+        dayLabel: string;
         isCurrentUser: boolean;
         messages: GlobalChatMessage[];
       }>
     >((groups, entry) => {
+      const dayKey = formatDayKey(entry.createdAt);
       const previous = groups[groups.length - 1];
-      if (previous && previous.userId === entry.userId) {
+      if (previous && previous.userId === entry.userId && previous.dayKey === dayKey) {
         previous.messages.push(entry);
         return groups;
       }
@@ -97,6 +228,8 @@ export const GlobalChatPanel = ({
         senderLabel: entry.senderLabel,
         senderAvatarUrl: entry.senderAvatarUrl,
         senderAvatarBorderColor: entry.senderAvatarBorderColor,
+        dayKey,
+        dayLabel: formatDayLabel(entry.createdAt),
         isCurrentUser: entry.userId === currentUserId,
         messages: [entry],
       });
@@ -129,16 +262,187 @@ export const GlobalChatPanel = ({
     syncComposerHeight(input);
   }, [syncComposerHeight]);
 
-  const loadMessages = useCallback(async () => {
-    const response = await fetch("/api/chat", {
-      cache: "no-store",
-    });
-    const payload = (await response.json()) as GlobalChatResponse;
-    if (!response.ok || !payload.messages) {
-      throw new Error(payload.error ?? "Unable to load chat.");
+  const queueComposerHeightSync = useCallback(
+    (target: HTMLTextAreaElement) => {
+      if (composerResizeFrameRef.current !== null) {
+        window.cancelAnimationFrame(composerResizeFrameRef.current);
+      }
+      composerResizeFrameRef.current = window.requestAnimationFrame(() => {
+        composerResizeFrameRef.current = null;
+        syncComposerHeight(target);
+      });
+    },
+    [syncComposerHeight],
+  );
+
+  const incrementClientMetric = useCallback(
+    (name: "realtimeDisconnects" | "fallbackSyncs" | "duplicateDrops", amount = 1) => {
+      if (amount <= 0) {
+        return;
+      }
+      clientMetricsRef.current[name] += amount;
+    },
+    [],
+  );
+
+  const flushClientMetrics = useCallback(
+    async ({ force = false }: { force?: boolean } = {}) => {
+      if (metricsFlushInFlightRef.current) {
+        return;
+      }
+
+      const snapshot = clientMetricsRef.current;
+      if (
+        snapshot.realtimeDisconnects <= 0 &&
+        snapshot.fallbackSyncs <= 0 &&
+        snapshot.duplicateDrops <= 0
+      ) {
+        return;
+      }
+
+      metricsFlushInFlightRef.current = true;
+      clientMetricsRef.current = {
+        realtimeDisconnects: 0,
+        fallbackSyncs: 0,
+        duplicateDrops: 0,
+      };
+
+      try {
+        const response = await fetch("/api/chat/metrics", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: JSON.stringify(snapshot),
+          keepalive: force,
+        });
+        if (!response.ok) {
+          throw new Error("Unable to record chat metrics.");
+        }
+      } catch {
+        clientMetricsRef.current.realtimeDisconnects += snapshot.realtimeDisconnects;
+        clientMetricsRef.current.fallbackSyncs += snapshot.fallbackSyncs;
+        clientMetricsRef.current.duplicateDrops += snapshot.duplicateDrops;
+      } finally {
+        metricsFlushInFlightRef.current = false;
+      }
+    },
+    [],
+  );
+
+  const loadMessages = useCallback(
+    async ({
+      mode = "replace",
+      limit,
+      beforeId,
+    }: {
+      mode?: "replace" | "incremental" | "older";
+      limit?: number;
+      beforeId?: number;
+    } = {}) => {
+      const params = new URLSearchParams();
+      const afterId = mode === "incremental" ? latestMessageIdRef.current : 0;
+      if (afterId > 0) {
+        params.set("afterId", `${afterId}`);
+      }
+      if (mode === "older" && beforeId && beforeId > 0) {
+        params.set("beforeId", `${beforeId}`);
+      }
+      if (limit && limit > 0) {
+        params.set("limit", `${limit}`);
+      }
+
+      const query = params.toString();
+      const response = await fetch(query ? `/api/chat?${query}` : "/api/chat", {
+        cache: "no-store",
+      });
+      const payload = (await response.json()) as GlobalChatResponse;
+      if (!response.ok || !payload.messages) {
+        throw new Error(payload.error ?? "Unable to load chat.");
+      }
+
+      if (mode === "replace") {
+        const nextMessages = payload.messages;
+        const nextOldestCursorId = payload.nextBeforeId
+          ?? (() => {
+            const firstMessageId = toMessageId(nextMessages[0]?.id ?? 0);
+            return firstMessageId > 0 ? firstMessageId : null;
+          })();
+        setMessages(nextMessages);
+        latestMessageIdRef.current = toMessageId(nextMessages[nextMessages.length - 1]?.id ?? 0);
+        setHasOlderMessages(payload.hasMore === true);
+        setOldestCursorId(nextOldestCursorId);
+        return;
+      }
+
+      if (mode === "incremental") {
+        setMessages((currentMessages) => {
+          const mergeResult = mergeIncomingMessages(currentMessages, payload.messages ?? []);
+          latestMessageIdRef.current = toMessageId(mergeResult.messages[mergeResult.messages.length - 1]?.id ?? 0);
+          if (mergeResult.droppedCount > 0) {
+            incrementClientMetric("duplicateDrops", mergeResult.droppedCount);
+          }
+          return mergeResult.messages;
+        });
+        return;
+      }
+
+      if (mode === "older") {
+        setMessages((currentMessages) => {
+          const mergeResult = prependOlderMessages(currentMessages, payload.messages ?? []);
+          if (mergeResult.droppedCount > 0) {
+            incrementClientMetric("duplicateDrops", mergeResult.droppedCount);
+          }
+          return mergeResult.messages;
+        });
+        setHasOlderMessages(payload.hasMore === true);
+        setOldestCursorId(payload.nextBeforeId ?? null);
+      }
+    },
+    [incrementClientMetric],
+  );
+
+  const queueIncrementalSync = useCallback(() => {
+    incrementalSyncQueuedRef.current = true;
+    if (!isBrowserOnline()) {
+      return;
     }
-    setMessages(payload.messages);
-  }, []);
+    if (incrementalSyncInFlightRef.current) {
+      return;
+    }
+
+    incrementalSyncInFlightRef.current = true;
+    void (async () => {
+      try {
+        while (incrementalSyncQueuedRef.current) {
+          if (!isBrowserOnline()) {
+            break;
+          }
+          incrementalSyncQueuedRef.current = false;
+          try {
+            await loadMessages({
+              mode: "incremental",
+              limit: CHAT_INCREMENTAL_FETCH_LIMIT,
+            });
+          } catch {
+            // Background sync errors are non-fatal; the next sync attempt recovers.
+          }
+        }
+      } finally {
+        incrementalSyncInFlightRef.current = false;
+      }
+    })();
+  }, [loadMessages]);
+
+  const scheduleWakeSync = useCallback(() => {
+    if (wakeSyncTimeoutRef.current !== null) {
+      window.clearTimeout(wakeSyncTimeoutRef.current);
+    }
+    wakeSyncTimeoutRef.current = window.setTimeout(() => {
+      wakeSyncTimeoutRef.current = null;
+      queueIncrementalSync();
+    }, CHAT_WAKE_SYNC_DEBOUNCE_MS);
+  }, [queueIncrementalSync]);
 
   useEffect(() => {
     let canceled = false;
@@ -147,7 +451,9 @@ export const GlobalChatPanel = ({
       try {
         setLoading(true);
         setError(null);
-        await loadMessages();
+        await loadMessages({
+          limit: CHAT_INITIAL_FETCH_LIMIT,
+        });
       } catch (loadError) {
         if (!canceled) {
           setError(loadError instanceof Error ? loadError.message : "Unable to load chat.");
@@ -172,27 +478,103 @@ export const GlobalChatPanel = ({
       .on(
         "postgres_changes",
         {
-          event: "*",
+          event: "INSERT",
           schema: "public",
           table: "fantasy_global_chat_messages",
         },
         () => {
-          void loadMessages().catch(() => undefined);
+          queueIncrementalSync();
         },
       )
-      .subscribe();
+      .subscribe((status) => {
+        const previousStatus = lastRealtimeStatusRef.current;
+        lastRealtimeStatusRef.current = status;
+        if (status === "SUBSCRIBED") {
+          realtimeConnectedRef.current = true;
+          return;
+        }
+        if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
+          if (previousStatus === "SUBSCRIBED") {
+            incrementClientMetric("realtimeDisconnects");
+          }
+          realtimeConnectedRef.current = false;
+        }
+      });
 
     return () => {
+      realtimeConnectedRef.current = false;
       void supabase.removeChannel(channel);
     };
-  }, [loadMessages]);
+  }, [incrementClientMetric, queueIncrementalSync]);
 
   useEffect(() => {
     const id = window.setInterval(() => {
-      void loadMessages().catch(() => undefined);
-    }, CHAT_POLL_INTERVAL_MS);
+      if (realtimeConnectedRef.current) {
+        return;
+      }
+      incrementClientMetric("fallbackSyncs");
+      queueIncrementalSync();
+    }, CHAT_FALLBACK_POLL_INTERVAL_MS);
     return () => window.clearInterval(id);
-  }, [loadMessages]);
+  }, [incrementClientMetric, queueIncrementalSync]);
+
+  useEffect(() => {
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        scheduleWakeSync();
+      }
+    };
+    const onFocus = () => {
+      scheduleWakeSync();
+    };
+    const onOnline = () => {
+      scheduleWakeSync();
+    };
+    const onPageShow = () => {
+      scheduleWakeSync();
+    };
+
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("focus", onFocus);
+    window.addEventListener("online", onOnline);
+    window.addEventListener("pageshow", onPageShow);
+
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("online", onOnline);
+      window.removeEventListener("pageshow", onPageShow);
+      if (wakeSyncTimeoutRef.current !== null) {
+        window.clearTimeout(wakeSyncTimeoutRef.current);
+        wakeSyncTimeoutRef.current = null;
+      }
+    };
+  }, [scheduleWakeSync]);
+
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      void flushClientMetrics();
+    }, CHAT_METRICS_FLUSH_INTERVAL_MS);
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        void flushClientMetrics({ force: true });
+      }
+    };
+    const onPageHide = () => {
+      void flushClientMetrics({ force: true });
+    };
+
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("pagehide", onPageHide);
+
+    return () => {
+      window.clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("pagehide", onPageHide);
+      void flushClientMetrics({ force: true });
+    };
+  }, [flushClientMetrics]);
 
   useEffect(() => {
     const media = window.matchMedia("(max-width: 639px)");
@@ -257,8 +639,17 @@ export const GlobalChatPanel = ({
     if (!input) {
       return;
     }
-    syncComposerHeight(input);
-  }, [isOpen, messageInput, syncComposerHeight]);
+    queueComposerHeightSync(input);
+  }, [isOpen, queueComposerHeightSync]);
+
+  useEffect(() => {
+    return () => {
+      if (composerResizeFrameRef.current !== null) {
+        window.cancelAnimationFrame(composerResizeFrameRef.current);
+        composerResizeFrameRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (!isOpen || !isMobileViewport) {
@@ -291,10 +682,165 @@ export const GlobalChatPanel = ({
     };
   }, [isOpen, isMobileViewport]);
 
+  const loadOlderMessages = useCallback(async () => {
+    if (loadingOlder || !hasOlderMessages || !oldestCursorId) {
+      return;
+    }
+
+    setLoadingOlder(true);
+    setError(null);
+    try {
+      await loadMessages({
+        mode: "older",
+        beforeId: oldestCursorId,
+        limit: CHAT_PAGE_FETCH_LIMIT,
+      });
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "Unable to load older messages.");
+    } finally {
+      setLoadingOlder(false);
+    }
+  }, [hasOlderMessages, loadMessages, loadingOlder, oldestCursorId]);
+
+  const renderedMessageList = useMemo(
+    () => (
+      <div
+        ref={messageListRef}
+        className="chat-scrollbar flex-1 min-h-0 space-y-1.5 overflow-x-hidden overflow-y-auto overscroll-contain px-1 pb-1 touch-pan-y sm:space-y-2 sm:rounded-large sm:border sm:border-[#334767]/55 sm:bg-[#081326]/88 sm:p-3"
+        style={{ WebkitOverflowScrolling: "touch" }}
+        onScroll={(event) => {
+          shouldStickToBottomRef.current = isNearBottom(event.currentTarget);
+        }}
+      >
+        {hasOlderMessages ? (
+          <div className="mb-2 flex justify-center">
+            <Button
+              className="h-7 min-h-7 rounded-full border border-[#3f5578]/80 bg-[#0f1d33]/90 px-3 text-[11px] font-semibold text-[#c5d5f1] data-[hover=true]:bg-[#14253f]"
+              isDisabled={loadingOlder}
+              size="sm"
+              variant="flat"
+              onPress={() => {
+                void loadOlderMessages();
+              }}
+            >
+              {loadingOlder ? "Loading older..." : "Load older messages"}
+            </Button>
+          </div>
+        ) : null}
+        {sortedMessages.length === 0 ? (
+          <p className="text-sm text-slate-300">No messages yet. Start the banter.</p>
+        ) : (
+          groupedMessages.map((group, groupIndex) => {
+            const previousGroup = groupedMessages[groupIndex - 1];
+            const showDaySeparator = !previousGroup || previousGroup.dayKey !== group.dayKey;
+            return (
+              <div
+                key={`${group.userId}-${group.messages[0]?.id ?? 0}-${group.messages[group.messages.length - 1]?.id ?? 0}`}
+                className="space-y-0.5"
+              >
+                {showDaySeparator ? (
+                  <div className="my-2.5 flex items-center gap-2 px-1">
+                    <span className="h-px flex-1 bg-[#3a4f72]/55" />
+                    <span className="text-[10px] font-medium tracking-wide text-[#9fb3d6]/90">
+                      {group.dayLabel}
+                    </span>
+                    <span className="h-px flex-1 bg-[#3a4f72]/55" />
+                  </div>
+                ) : null}
+                {!group.isCurrentUser ? (
+                  <p className="px-10 text-left text-[10px] font-medium tracking-wide text-[#C79B3B]">
+                    {group.senderLabel}
+                  </p>
+                ) : null}
+                <div className="space-y-0.5">
+                  {group.messages.map((entry, index) => {
+                    const showAvatar = index === group.messages.length - 1;
+                    const avatarBorderStyle = group.senderAvatarBorderColor
+                      ? { outlineColor: group.senderAvatarBorderColor }
+                      : undefined;
+                    const avatar = showAvatar ? (
+                      <span
+                        className="relative inline-flex h-7 w-7 shrink-0 overflow-hidden rounded-full bg-[#16233a] outline outline-2 outline-[#C79B3B]/40"
+                        style={avatarBorderStyle}
+                      >
+                        {group.senderAvatarUrl ? (
+                          <Image
+                            src={group.senderAvatarUrl}
+                            alt={`${group.senderLabel} avatar`}
+                            fill
+                            sizes="28px"
+                            className="object-cover object-center"
+                          />
+                        ) : (
+                          <span className="inline-flex h-full w-full items-center justify-center text-[10px] font-semibold text-[#C79B3B]">
+                            {initialsForSenderLabel(group.senderLabel)}
+                          </span>
+                        )}
+                      </span>
+                    ) : (
+                      <span className="h-7 w-7 shrink-0" />
+                    );
+
+                    const bubble = (
+                      <div
+                        className={`max-w-[82%] rounded-2xl border px-2 py-1 sm:max-w-[88%] sm:px-2.5 sm:py-1.5 ${
+                          group.isCurrentUser
+                            ? "border-[#6c83a6]/70 bg-[#1b2a44]/92 text-[#f7faff] shadow-[0_8px_20px_rgba(11,18,33,0.32)]"
+                            : "border-[#3f5578]/75 bg-[#101c2f]/92 text-[#edf2ff] shadow-[0_8px_18px_rgba(8,12,24,0.4)]"
+                        }`}
+                      >
+                        <p className={`text-[10px] ${group.isCurrentUser ? "text-[#c9d7ef]" : "text-[#9fb3d6]"}`}>
+                          {formatTime(entry.createdAt)}
+                        </p>
+                        <p
+                          className={`mt-0.5 whitespace-pre-wrap break-words text-[13px] leading-[1.35rem] sm:mt-0.5 sm:text-sm ${
+                            group.isCurrentUser ? "text-[#f7faff]" : "text-[#edf2ff]"
+                          }`}
+                        >
+                          {entry.message}
+                        </p>
+                      </div>
+                    );
+
+                    return (
+                      <div
+                        key={entry.id}
+                        className={`flex items-end gap-2 px-0.5 ${
+                          group.isCurrentUser ? "justify-end" : "justify-start"
+                        }`}
+                      >
+                        {group.isCurrentUser ? (
+                          bubble
+                        ) : (
+                          <>
+                            {avatar}
+                            {bubble}
+                          </>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })
+        )}
+      </div>
+    ),
+    [groupedMessages, hasOlderMessages, loadOlderMessages, loadingOlder, sortedMessages.length],
+  );
+
   const submitMessage = useCallback(async () => {
     const trimmed = messageInput.trim();
     if (!trimmed) {
       return;
+    }
+
+    let idempotencyKey = composerIdempotencyKeyRef.current;
+    if (!idempotencyKey || composerIdempotencyMessageRef.current !== trimmed) {
+      idempotencyKey = generateIdempotencyKey();
+      composerIdempotencyKeyRef.current = idempotencyKey;
+      composerIdempotencyMessageRef.current = trimmed;
     }
 
     setPendingSend(true);
@@ -304,6 +850,7 @@ export const GlobalChatPanel = ({
         method: "POST",
         headers: {
           "content-type": "application/json",
+          "x-idempotency-key": idempotencyKey,
         },
         body: JSON.stringify({
           message: trimmed,
@@ -313,8 +860,18 @@ export const GlobalChatPanel = ({
       if (!response.ok || !payload.message) {
         throw new Error(payload.error ?? "Unable to send chat message.");
       }
+      const createdMessage = payload.message;
       setMessageInput("");
-      await loadMessages();
+      composerIdempotencyKeyRef.current = null;
+      composerIdempotencyMessageRef.current = "";
+      setMessages((currentMessages) => {
+        const mergeResult = mergeIncomingMessages(currentMessages, [createdMessage]);
+        latestMessageIdRef.current = toMessageId(mergeResult.messages[mergeResult.messages.length - 1]?.id ?? 0);
+        if (mergeResult.droppedCount > 0) {
+          incrementClientMetric("duplicateDrops", mergeResult.droppedCount);
+        }
+        return mergeResult.messages;
+      });
       window.requestAnimationFrame(() => {
         focusChatInput();
       });
@@ -323,7 +880,7 @@ export const GlobalChatPanel = ({
     } finally {
       setPendingSend(false);
     }
-  }, [focusChatInput, loadMessages, messageInput]);
+  }, [focusChatInput, incrementClientMetric, messageInput]);
 
   useEffect(() => {
     const latestMessageId = sortedMessages[sortedMessages.length - 1]?.id ?? 0;
@@ -440,102 +997,7 @@ export const GlobalChatPanel = ({
                 <Spinner label="Loading chat..." />
               </div>
             ) : (
-              <div
-                ref={messageListRef}
-                className="chat-scrollbar flex-1 min-h-0 space-y-1.5 overflow-x-hidden overflow-y-auto overscroll-contain px-1 pb-1 touch-pan-y sm:space-y-2 sm:rounded-large sm:border sm:border-[#334767]/55 sm:bg-[#081326]/88 sm:p-3"
-                style={{ WebkitOverflowScrolling: "touch" }}
-                onScroll={(event) => {
-                  shouldStickToBottomRef.current = isNearBottom(event.currentTarget);
-                }}
-              >
-                {sortedMessages.length === 0 ? (
-                  <p className="text-sm text-slate-300">No messages yet. Start the banter.</p>
-                ) : (
-                  groupedMessages.map((group) => {
-                    return (
-                      <div
-                        key={`${group.userId}-${group.messages[0]?.id ?? 0}-${group.messages[group.messages.length - 1]?.id ?? 0}`}
-                        className="space-y-0.5"
-                      >
-                        {!group.isCurrentUser ? (
-                          <p className="px-10 text-left text-[10px] font-medium tracking-wide text-[#C79B3B]">
-                            {group.senderLabel}
-                          </p>
-                        ) : null}
-                        <div className="space-y-0.5">
-                          {group.messages.map((entry, index) => {
-                            const showAvatar = index === group.messages.length - 1;
-                            const avatarBorderStyle = group.senderAvatarBorderColor
-                              ? { outlineColor: group.senderAvatarBorderColor }
-                              : undefined;
-                            const avatar = showAvatar ? (
-                              <span
-                                className="relative inline-flex h-7 w-7 shrink-0 overflow-hidden rounded-full bg-[#16233a] outline outline-2 outline-[#C79B3B]/40"
-                                style={avatarBorderStyle}
-                              >
-                                {group.senderAvatarUrl ? (
-                                  <Image
-                                    src={group.senderAvatarUrl}
-                                    alt={`${group.senderLabel} avatar`}
-                                    fill
-                                    sizes="28px"
-                                    className="object-cover object-center"
-                                  />
-                                ) : (
-                                  <span className="inline-flex h-full w-full items-center justify-center text-[10px] font-semibold text-[#C79B3B]">
-                                    {initialsForSenderLabel(group.senderLabel)}
-                                  </span>
-                                )}
-                              </span>
-                            ) : (
-                              <span className="h-7 w-7 shrink-0" />
-                            );
-
-                            const bubble = (
-                              <div
-                                className={`max-w-[82%] rounded-2xl border px-2 py-1 sm:max-w-[88%] sm:px-2.5 sm:py-1.5 ${
-                                  group.isCurrentUser
-                                    ? "border-[#6c83a6]/70 bg-[#1b2a44]/92 text-[#f7faff] shadow-[0_8px_20px_rgba(11,18,33,0.32)]"
-                                    : "border-[#3f5578]/75 bg-[#101c2f]/92 text-[#edf2ff] shadow-[0_8px_18px_rgba(8,12,24,0.4)]"
-                                }`}
-                              >
-                                <p className={`text-[10px] ${group.isCurrentUser ? "text-[#c9d7ef]" : "text-[#9fb3d6]"}`}>
-                                  {formatTime(entry.createdAt)}
-                                </p>
-                                <p
-                                  className={`mt-0.5 whitespace-pre-wrap break-words text-[13px] leading-[1.35rem] sm:mt-0.5 sm:text-sm ${
-                                    group.isCurrentUser ? "text-[#f7faff]" : "text-[#edf2ff]"
-                                  }`}
-                                >
-                                  {entry.message}
-                                </p>
-                              </div>
-                            );
-
-                            return (
-                              <div
-                                key={entry.id}
-                                className={`flex items-end gap-2 px-0.5 ${
-                                  group.isCurrentUser ? "justify-end" : "justify-start"
-                                }`}
-                              >
-                                {group.isCurrentUser ? (
-                                  bubble
-                                ) : (
-                                  <>
-                                    {avatar}
-                                    {bubble}
-                                  </>
-                                )}
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
+              renderedMessageList
             )}
 
             <div
@@ -563,8 +1025,12 @@ export const GlobalChatPanel = ({
                     value={messageInput}
                     onChange={(event) => {
                       const nextValue = event.currentTarget.value.replace(/\u00a0/g, " ");
+                      if (nextValue.trim() !== composerIdempotencyMessageRef.current) {
+                        composerIdempotencyKeyRef.current = null;
+                        composerIdempotencyMessageRef.current = "";
+                      }
                       setMessageInput(nextValue);
-                      syncComposerHeight(event.currentTarget);
+                      queueComposerHeightSync(event.currentTarget);
                     }}
                     onKeyDown={(event) => {
                       if (event.key === "Enter" && !event.shiftKey) {
