@@ -420,12 +420,16 @@ const UserAvatar = ({
   avatarUrl,
   size = "sm",
   variant = "default",
+  showLeaderCrown = false,
+  showLastPlaceBadge = false,
 }: {
   displayName: string;
   avatarBorderColor: string | null;
   avatarUrl: string | null;
   size?: "sm" | "xl" | "2xl";
   variant?: "default" | "matchupHero";
+  showLeaderCrown?: boolean;
+  showLastPlaceBadge?: boolean;
 }) => {
   const avatarBorderStyle = avatarBorderColor
     ? { outlineColor: avatarBorderColor, borderColor: avatarBorderColor }
@@ -440,35 +444,62 @@ const UserAvatar = ({
     variant === "matchupHero"
       ? "border border-default-100/35 ring-1 ring-white/20 shadow-[0_6px_14px_rgba(0,0,0,0.34),inset_0_1px_0_rgba(255,255,255,0.2)]"
       : "";
-
-  if (avatarUrl) {
-    return (
-      <span
-        className={`relative inline-flex overflow-hidden rounded-full bg-default-200/30 outline outline-2 outline-default-300/40 ${heroRingClassName} ${sizeClasses}`}
-        style={avatarBorderStyle}
-      >
-        <Image
-          src={avatarUrl}
-          alt={`${displayName} avatar`}
-          fill
-          sizes={imageSize}
-          quality={100}
-          unoptimized
-          className="object-cover object-center"
-        />
-        {variant === "matchupHero" ? (
-          <span aria-hidden className="pointer-events-none absolute inset-0 bg-black/10" />
-        ) : null}
-      </span>
-    );
-  }
-
-  return (
+  const crownClassName = size === "2xl"
+    ? "-top-[12px] h-5 w-5"
+    : size === "xl"
+      ? "-top-[10px] h-[18px] w-[18px]"
+      : "-top-[10px] h-4 w-4";
+  const emojiBadgeClassName = size === "2xl"
+    ? "-top-[12px] h-5 w-5 text-[15px]"
+    : size === "xl"
+      ? "-top-[10px] h-[18px] w-[18px] text-[13px]"
+      : "-top-[10px] h-4 w-4 text-[12px]";
+  const avatarCore = avatarUrl ? (
+    <span
+      className={`relative inline-flex overflow-hidden rounded-full bg-default-200/30 outline outline-2 outline-default-300/40 ${heroRingClassName} ${sizeClasses}`}
+      style={avatarBorderStyle}
+    >
+      <Image
+        src={avatarUrl}
+        alt={`${displayName} avatar`}
+        fill
+        sizes={imageSize}
+        quality={100}
+        unoptimized
+        className="object-cover object-center"
+      />
+      {variant === "matchupHero" ? (
+        <span aria-hidden className="pointer-events-none absolute inset-0 bg-black/10" />
+      ) : null}
+    </span>
+  ) : (
     <span
       className={`inline-flex items-center justify-center rounded-full bg-default-200/40 font-semibold text-default-100 outline outline-2 outline-default-300/40 ${heroRingClassName} ${sizeClasses}`}
       style={avatarBorderStyle}
     >
       {initialsForName(displayName)}
+    </span>
+  );
+
+  return (
+    <span className="relative inline-flex">
+      {avatarCore}
+      {showLeaderCrown ? (
+        <span
+          aria-hidden
+          className={`pointer-events-none absolute left-1/2 z-[2] -translate-x-1/2 ${crownClassName}`}
+        >
+          <Crown className="h-full w-full text-[#C79B3B] drop-shadow-[0_1px_2px_rgba(0,0,0,0.65)]" />
+        </span>
+      ) : showLastPlaceBadge ? (
+        <span
+          aria-label="Last place"
+          className={`pointer-events-none absolute left-1/2 z-[2] inline-flex -translate-x-1/2 items-center justify-center leading-none ${emojiBadgeClassName}`}
+          title="Last place"
+        >
+          💩
+        </span>
+      ) : null}
     </span>
   );
 };
@@ -768,7 +799,7 @@ export default async function Home() {
                 </div>
               </div>
             </CardHeader>
-            <CardBody className="relative px-3 pb-3 pt-5 md:px-5">
+            <CardBody className="relative px-3 pb-3 pt-6 sm:pt-5 md:px-5">
               <span
                 aria-hidden
                 className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_8%,rgba(199,155,59,0.1),transparent_50%)]"
@@ -783,7 +814,7 @@ export default async function Home() {
               />
               {currentUserCurrentWeekMatchup && currentUserWeekSide ? (
                 <div className="relative z-10 mx-auto w-full max-w-6xl">
-                  <div className="relative z-10 -mt-5 mb-3 flex justify-center">
+                  <div className="relative z-10 -mt-3 mb-3 flex justify-center sm:-mt-5">
                     <div className="relative w-full max-w-[560px] overflow-hidden rounded-2xl border border-default-200/30 bg-[#10141a]/94 px-4 py-1.5 shadow-[0_10px_24px_rgba(0,0,0,0.28)]">
                       <span
                         aria-hidden
@@ -797,7 +828,7 @@ export default async function Home() {
                         aria-hidden
                         className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_left_center,rgba(0,0,0,0.24),transparent_58%),radial-gradient(circle_at_right_center,rgba(0,0,0,0.24),transparent_58%)]"
                       />
-                      <div className="relative grid items-center gap-2 sm:grid-cols-[1fr_auto_1fr]">
+                      <div className="relative flex items-center justify-between gap-2">
                         <span
                           aria-hidden
                           className="pointer-events-none absolute left-1/2 top-1.5 hidden h-4 w-px -translate-x-1/2 bg-gradient-to-b from-transparent via-white/14 to-transparent sm:block"
@@ -806,7 +837,7 @@ export default async function Home() {
                           aria-hidden
                           className="pointer-events-none absolute bottom-1.5 left-1/2 hidden h-4 w-px -translate-x-1/2 bg-gradient-to-t from-transparent via-white/14 to-transparent sm:block"
                         />
-                        <div className="min-w-0 text-center">
+                        <div className="min-w-0 flex-1 text-center">
                           <div className="mx-auto w-fit">
                             <UserAvatar
                               avatarBorderColor={currentUserWeekSide.avatarBorderColor}
@@ -823,14 +854,14 @@ export default async function Home() {
                             H2H {currentUserHeadToHeadLabel}
                           </p>
                         </div>
-                        <span className="relative mx-auto inline-flex h-14 w-14 items-center justify-center rounded-full border border-[#e6c87a]/65 bg-[#C79B3B]/14 text-[14px] font-semibold uppercase tracking-[0.12em] text-[#f0d58e] shadow-[0_10px_20px_rgba(0,0,0,0.36)]">
+                        <span className="relative mx-1 inline-flex h-14 w-14 shrink-0 self-center items-center justify-center rounded-full border border-[#e6c87a]/65 bg-[#C79B3B]/14 text-[14px] font-semibold uppercase tracking-[0.12em] text-[#f0d58e] shadow-[0_10px_20px_rgba(0,0,0,0.36)]">
                           <span
                             aria-hidden
                             className="pointer-events-none absolute -inset-2 rounded-full bg-[#C79B3B]/22 blur-md"
                           />
                           <span className="relative z-[1] inline-block translate-x-[0.6px]">VS</span>
                         </span>
-                        <div className="min-w-0 text-center">
+                        <div className="min-w-0 flex-1 text-center">
                           {currentUserOpponentSide ? (
                             <>
                               <div className="mx-auto w-fit">
@@ -865,7 +896,7 @@ export default async function Home() {
 
                   <div className="mb-3 rounded-2xl border border-default-200/28 bg-black/35 px-4 py-2.5 shadow-[0_8px_20px_rgba(0,0,0,0.2)]">
                     <div className={`grid items-end gap-3 ${currentUserOpponentSide ? "grid-cols-[minmax(0,1fr)_minmax(0,1fr)]" : "grid-cols-1"}`}>
-                      <div className="text-left">
+                      <div className="flex flex-col items-start text-left">
                         <p className="text-[10px] uppercase tracking-[0.1em] text-[#d9cdb5]">Your {scoreStateLabel}</p>
                         <p
                           className={`mono-points ${
@@ -880,7 +911,7 @@ export default async function Home() {
                           <p className="text-[10px] text-[#b8ad95]">Pending</p>
                         ) : null}
                       </div>
-                      <div className="text-left sm:text-right">
+                      <div className="flex flex-col items-end text-right">
                         <p className="text-[10px] uppercase tracking-[0.1em] text-[#d9cdb5]">
                           {currentUserOpponentSide ? `Opponent ${scoreStateLabel}` : "Bye Week"}
                         </p>
@@ -933,7 +964,7 @@ export default async function Home() {
                   </div>
 
                   <div
-                    className={`relative grid items-start gap-3 md:gap-4 ${
+                    className={`relative hidden items-start gap-3 md:grid md:gap-4 ${
                       currentUserOpponentSide
                         ? "grid-cols-1 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)_minmax(0,0.95fr)] xl:gap-4"
                         : "grid-cols-1"
@@ -971,7 +1002,9 @@ export default async function Home() {
                         rightRoster={currentUserOpponentSide.roster}
                       />
                     </div>
-                  ) : null}
+                  ) : (
+                    <p className="mt-3 text-center text-lg font-semibold text-white md:hidden">BYE WEEK</p>
+                  )}
 
                 </div>
               ) : (
@@ -1001,7 +1034,7 @@ export default async function Home() {
                       key={entry.userId}
                       className="rounded-large border border-default-200/30 bg-content2/35 p-3"
                     >
-                      <div className="flex items-start justify-between gap-2">
+                      <div className="flex items-center justify-between gap-3">
                         <div className="flex min-w-0 items-center gap-2">
                           <span className="text-xs text-default-500">#{entry.rank}</span>
                           <UserAvatar
@@ -1018,21 +1051,20 @@ export default async function Home() {
                             </p>
                           </div>
                         </div>
-                        <p className="mono-points text-xs text-default-400">
-                          PF {formatPoints(entry.pointsFor)} • PA {formatPoints(entry.pointsAgainst)}
-                        </p>
-                      </div>
-                      <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-default-500">
-                        <p>
-                          Record:{" "}
-                          <span className="mono-points text-default-300">
-                            {formatHeadToHeadRecord(entry.wins, entry.losses, entry.ties)}
-                          </span>
-                        </p>
-                        <p>
-                          Win%:{" "}
-                          <span className="mono-points text-default-300">{formatWinPct(entry.winPct)}</span>
-                        </p>
+                        <div className="shrink-0 self-center text-right">
+                          <p className="mono-points text-xs text-default-400">
+                            PF {formatPoints(entry.pointsFor)} • PA {formatPoints(entry.pointsAgainst)}
+                          </p>
+                          <p className="mt-1 text-[11px] text-default-500">
+                            Record:{" "}
+                            <span className="mono-points text-default-300">
+                              {formatHeadToHeadRecord(entry.wins, entry.losses, entry.ties)}
+                            </span>
+                          </p>
+                          <p className="text-[11px] text-default-500">
+                            Win%: <span className="mono-points text-default-300">{formatWinPct(entry.winPct)}</span>
+                          </p>
+                        </div>
                       </div>
                     </div>
                   ))}
@@ -1146,6 +1178,8 @@ export default async function Home() {
                           avatarBorderColor={entry.avatarBorderColor}
                           avatarUrl={entry.avatarUrl}
                           displayName={entry.displayName}
+                          showLeaderCrown={isLeader}
+                          showLastPlaceBadge={isLastPlace}
                         />
                         <div className="min-w-0">
                           <p className="truncate text-sm font-semibold">
@@ -1158,21 +1192,6 @@ export default async function Home() {
                           ) : null}
                         </div>
                       </div>
-                      {isLeader ? (
-                        <span aria-label="Leader" className="inline-flex items-center" title="Leader">
-                          <Crown className="h-4 w-4 text-[#C79B3B]" />
-                        </span>
-                      ) : isLastPlace ? (
-                        <span
-                          aria-label="Last place"
-                          className="inline-flex items-center"
-                          title="Last place"
-                        >
-                          <span aria-hidden className="text-sm leading-none">
-                            💩
-                          </span>
-                        </span>
-                      ) : null}
                     </div>
                     {hasCompletedDraft ? (
                       entry.drafted ? (
@@ -1262,6 +1281,8 @@ export default async function Home() {
                               avatarBorderColor={entry.avatarBorderColor}
                               avatarUrl={entry.avatarUrl}
                               displayName={entry.displayName}
+                              showLeaderCrown={isLeader}
+                              showLastPlaceBadge={isLastPlace}
                             />
                             <div className="min-w-0">
                               <p className="truncate font-semibold">
@@ -1273,25 +1294,6 @@ export default async function Home() {
                                 </p>
                               ) : null}
                             </div>
-                            {isLeader ? (
-                              <span
-                                aria-label="Leader"
-                                className="inline-flex items-center"
-                                title="Leader"
-                              >
-                                <Crown className="h-4 w-4 text-[#C79B3B]" />
-                              </span>
-                            ) : isLastPlace ? (
-                              <span
-                                aria-label="Last place"
-                                className="inline-flex items-center"
-                                title="Last place"
-                              >
-                                <span aria-hidden className="text-sm leading-none">
-                                  💩
-                                </span>
-                              </span>
-                            ) : null}
                           </div>
                         </td>
                         {hasCompletedDraft ? (

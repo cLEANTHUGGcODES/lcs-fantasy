@@ -29,6 +29,15 @@ const shouldUseLightBackdrop = ({
   return normalized.includes("disguised");
 };
 
+const shouldScaleDown = ({ alt, src }: { alt: string; src: string }): boolean => {
+  const normalized = `${alt} ${src}`.toLowerCase();
+  return (
+    normalized.includes("cloud9") ||
+    normalized.includes("cloud 9") ||
+    /(^|[^a-z0-9])c9([^a-z0-9]|$)/.test(normalized)
+  );
+};
+
 export const CroppedTeamLogo = ({
   alt,
   src,
@@ -40,6 +49,7 @@ export const CroppedTeamLogo = ({
   onError,
 }: CroppedTeamLogoProps) => {
   const useLightBackdrop = shouldUseLightBackdrop({ alt, src, lightBackdrop });
+  const scaleDownClass = shouldScaleDown({ alt, src }) ? "scale-[0.85]" : "";
 
   return (
     <span
@@ -57,7 +67,7 @@ export const CroppedTeamLogo = ({
         alt={alt}
         className={`absolute left-1/2 top-1/2 z-[1] w-auto max-w-none -translate-x-1/2 -translate-y-1/2 object-contain ${
           imageClassName ?? ""
-        }`}
+        } ${scaleDownClass}`}
         height={height}
         src={src}
         width={width}
