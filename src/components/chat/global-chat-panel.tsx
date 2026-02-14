@@ -3,7 +3,7 @@
 import { Button } from "@heroui/button";
 import { Card, CardBody, CardHeader } from "@heroui/card";
 import { Spinner } from "@heroui/spinner";
-import { ChevronDown, ChevronLeft, MessageCircle, Send } from "lucide-react";
+import { ChevronDown, ChevronLeft, MessageCircle, Send, X } from "lucide-react";
 import Image from "next/image";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
@@ -983,7 +983,7 @@ export const GlobalChatPanel = ({
         throw new Error(payload.error ?? "Unable to send chat message.");
       }
       const createdMessage = payload.message;
-      setMessageInput("");
+      setMessageInput((current) => (current.trim() === trimmed ? "" : current));
       composerIdempotencyKeyRef.current = null;
       composerIdempotencyMessageRef.current = "";
       setMessages((currentMessages) => {
@@ -994,15 +994,17 @@ export const GlobalChatPanel = ({
         }
         return mergeResult.messages;
       });
-      window.requestAnimationFrame(() => {
-        focusChatInput();
-      });
     } catch (sendError) {
       setError(sendError instanceof Error ? sendError.message : "Unable to send chat message.");
     } finally {
       setPendingSend(false);
+      if (isOpen) {
+        window.requestAnimationFrame(() => {
+          focusChatInput();
+        });
+      }
     }
-  }, [focusChatInput, incrementClientMetric, messageInput]);
+  }, [focusChatInput, incrementClientMetric, isOpen, messageInput]);
 
   useEffect(() => {
     const latestMessageId = sortedMessages[sortedMessages.length - 1]?.id ?? 0;
@@ -1164,7 +1166,6 @@ export const GlobalChatPanel = ({
                     autoCorrect="on"
                     className="chat-scrollbar min-h-[36px] max-h-[96px] w-full resize-none rounded-md border border-transparent bg-[#081326] px-3 py-1.5 text-base leading-5 text-[#edf2ff] outline-none transition focus:border-transparent focus:ring-2 focus:ring-[#C79B3B]/25"
                     data-gramm="false"
-                    disabled={pendingSend}
                     enterKeyHint="send"
                     maxLength={MAX_GLOBAL_CHAT_MESSAGE_LENGTH}
                     placeholder="Message"
@@ -1204,12 +1205,27 @@ export const GlobalChatPanel = ({
                   />
                 </div>
                 <Button
+                  isIconOnly
+                  aria-label="Close chat"
+                  className="h-11 w-11 min-h-11 min-w-11 self-center text-slate-300 data-[hover=true]:text-[#C79B3B] sm:hidden"
+                  variant="light"
+                  onPress={closeChat}
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+                <Button
                   aria-label="Send message"
                   className="h-11 w-11 min-h-11 min-w-11 self-center bg-transparent text-[#C79B3B] shadow-none hover:bg-transparent active:bg-transparent data-[hover=true]:bg-transparent data-[hover=true]:text-[#C79B3B] data-[pressed=true]:bg-transparent data-[disabled=true]:opacity-45 sm:h-9 sm:w-9 sm:min-h-9 sm:min-w-9"
                   isIconOnly
-                  isDisabled={messageInput.trim().length === 0}
+                  isDisabled={pendingSend || messageInput.trim().length === 0}
                   isLoading={pendingSend}
                   variant="light"
+                  onMouseDown={(event) => {
+                    event.preventDefault();
+                  }}
+                  onTouchStart={(event) => {
+                    event.preventDefault();
+                  }}
                   onPress={() => {
                     void submitMessage();
                   }}
