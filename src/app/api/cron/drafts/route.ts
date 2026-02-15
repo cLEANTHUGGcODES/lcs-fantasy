@@ -1,5 +1,6 @@
 import { processDueDrafts } from "@/lib/draft-automation";
 import { cleanupGlobalChatData, getChatObservabilitySummary } from "@/lib/global-chat";
+import { syncLeaguepediaSnapshot } from "@/lib/snapshot-sync";
 
 const readBearer = (authorization: string | null): string | null => {
   if (!authorization) {
@@ -37,10 +38,20 @@ const handle = async (request: Request) => {
   let chatCleanupError: string | null = null;
   let chatObservabilitySummary: Record<string, unknown> | null = null;
   let chatObservabilitySummaryError: string | null = null;
+  let scoreSync: Record<string, unknown> | null = null;
+  let scoreSyncError: string | null = null;
   try {
     chatCleanup = await cleanupGlobalChatData();
   } catch (error) {
     chatCleanupError = error instanceof Error ? error.message : "Unable to clean up chat data.";
+  }
+  try {
+    scoreSync = await syncLeaguepediaSnapshot({
+      createdBy: "api-cron-drafts",
+    });
+  } catch (error) {
+    scoreSyncError =
+      error instanceof Error ? error.message : "Unable to sync scoring snapshot.";
   }
   try {
     chatObservabilitySummary = await getChatObservabilitySummary();
@@ -54,6 +65,8 @@ const handle = async (request: Request) => {
       ...result,
       chatCleanup,
       chatCleanupError,
+      scoreSync,
+      scoreSyncError,
       chatObservabilitySummary,
       chatObservabilitySummaryError,
       serverNow: new Date().toISOString(),

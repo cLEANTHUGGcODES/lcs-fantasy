@@ -22,6 +22,7 @@ Runtime reads match data **only from Supabase**.
 
 - App/API snapshot endpoint: reads latest row from `fantasy_match_snapshots`
 - Sync endpoint: fetches from Leaguepedia and writes a new snapshot row to Supabase
+- Automatic refresh: snapshot reads can auto-sync when data is stale (configurable throttling)
 - Each row stores full payload: matches (including blue/red team icon URLs from Fandom), scoring config, rosters, standings, player totals, top performances
 - Sync stores Leaguepedia `revid` (`sourceRevisionId`) and skips insert when revision is unchanged
 
@@ -64,6 +65,9 @@ If you see a Windows `lightningcss.win32-x64-msvc.node` or `../pkg` error, run `
    - `SUPABASE_SCORING_SETTINGS_TABLE` (default is `fantasy_scoring_settings`)
    - `SYNC_API_TOKEN` (recommended)
    - `SNAPSHOT_STALE_MINUTES` (default `30`)
+   - `AUTO_SYNC_ON_READ` (`true` by default; set `false` to disable)
+   - `AUTO_SYNC_STALE_MINUTES` (default `10`)
+   - `AUTO_SYNC_MIN_ATTEMPT_SECONDS` (default `45`)
    - `DRAFT_AUTOMATION_TOKEN` (recommended for cron endpoint protection)
 3. In Supabase Dashboard, enable Email provider in Auth:
    - `Authentication -> Providers -> Email`
@@ -112,6 +116,12 @@ Also included in `supabase/schema.sql`:
 Route:
 
 - `GET|POST /api/cron/drafts`
+
+Behavior:
+
+- Processes draft automation (starts drafts, timeout picks, completion checks)
+- Cleans up chat retention and emits chat observability summary
+- Triggers Leaguepedia score snapshot sync using the same dedupe rules as `/api/admin/sync-leaguepedia`
 
 Auth:
 
