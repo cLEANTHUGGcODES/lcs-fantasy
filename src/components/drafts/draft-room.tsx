@@ -241,6 +241,9 @@ const TOAST_DURATION_MS = 2800;
 const DOUBLE_TAP_WINDOW_MS = 320;
 const REALTIME_REFRESH_DEBOUNCE_MS = 320;
 const PRESENCE_REFRESH_DEBOUNCE_MS = 1200;
+const REALTIME_READ_ONLY_STALE_MULTIPLIER = 4;
+const REALTIME_READ_ONLY_MIN_STALE_SECONDS = 10;
+const REALTIME_RESUBSCRIBE_DELAY_MS = 5000;
 const DRAFT_CLIENT_METRICS_FLUSH_INTERVAL_MS = 30000;
 const DRAFT_CLIENT_METRICS_MAX_BATCH = 24;
 const DRAFT_CLIENT_METRICS_MAX_QUEUE = 120;
@@ -465,6 +468,7 @@ export const DraftRoom = ({
   const [isMobileQueueSheetOpen, setIsMobileQueueSheetOpen] = useState(false);
   const [timelineHighlightPick, setTimelineHighlightPick] = useState<number | null>(null);
   const [showStatusDetails, setShowStatusDetails] = useState(false);
+  const [realtimeChannelVersion, setRealtimeChannelVersion] = useState(0);
   const [selectionNotice, setSelectionNotice] = useState<string | null>(null);
   const [showShortcutsHelp, setShowShortcutsHelp] = useState(false);
   const [timeoutOutcomeMessage, setTimeoutOutcomeMessage] = useState<string | null>(null);
@@ -484,6 +488,7 @@ export const DraftRoom = ({
   const mobilePlayerSheetTouchStartYRef = useRef<number | null>(null);
   const timeoutExpectedPickRef = useRef<number | null>(null);
   const reconnectStartedAtMsRef = useRef<number | null>(null);
+  const reconnectRetryTimerRef = useRef<number | null>(null);
   const previousAutopickLockedRef = useRef<boolean | null>(null);
   const lastStalenessBucketRef = useRef<number | null>(null);
   const clientMetricsQueueRef = useRef<DraftClientMetricEvent[]>([]);
@@ -892,6 +897,7 @@ export const DraftRoom = ({
 
   useEffect(() => {
     const supabase = getSupabaseBrowserClient();
+    setConnectionStatus("connecting");
     const channel = supabase
       .channel(`draft-room-${draftId}`)
       .on(
@@ -940,7 +946,7 @@ export const DraftRoom = ({
     return () => {
       void supabase.removeChannel(channel);
     };
-  }, [draftId, draftStatus, scheduleDraftRefresh]);
+  }, [draftId, draftStatus, scheduleDraftRefresh, realtimeChannelVersion]);
 
   useEffect(() => {
     const previous = previousConnectionStatusRef.current;
@@ -976,11 +982,21 @@ export const DraftRoom = ({
         setTimeoutOutcomeMessage(null);
       }
       const degradedReason = connectionStatus.toLowerCase().replace("_", " ");
-      const degradedMessage = isCurrentUserClocked
-        ? settings.autoPickFromQueue
-          ? `Realtime degraded: ${degradedReason}. Read-only mode enabled. If your clock expires, timeout fallback uses queue target then server board order.`
-          : `Realtime degraded: ${degradedReason}. Read-only mode enabled. If your clock expires, fallback pick rules apply.`
-        : `Realtime degraded: ${degradedReason}. Read-only mode enabled.`;
+      const pollIntervalMs =
+        draft?.status === "live" ? 3000 : draft?.status === "scheduled" ? 5000 : 10000;
+      const readOnlyStaleSeconds = Math.max(
+        REALTIME_READ_ONLY_MIN_STALE_SECONDS,
+        Math.ceil((pollIntervalMs * REALTIME_READ_ONLY_STALE_MULTIPLIER) / 1000),
+      );
+      const shouldEnforceReadOnly =
+        (Date.now() - lastDraftSyncMs) / 1000 >= readOnlyStaleSeconds;
+      const degradedMessage = shouldEnforceReadOnly
+        ? isCurrentUserClocked
+          ? settings.autoPickFromQueue
+            ? `Realtime degraded: ${degradedReason}. Read-only mode enabled. If your clock expires, timeout fallback uses queue target then server board order.`
+            : `Realtime degraded: ${degradedReason}. Read-only mode enabled. If your clock expires, fallback pick rules apply.`
+          : `Realtime degraded: ${degradedReason}. Read-only mode enabled.`
+        : `Realtime degraded: ${degradedReason}. Polling fallback active until websocket recovers.`;
       pushSystemFeedEvent(
         degradedMessage,
         draft?.nextPick?.overallPick ?? undefined,
@@ -1005,12 +1021,46 @@ export const DraftRoom = ({
     draft?.nextPick?.overallPick,
     draft?.status,
     jumpToTimelinePick,
+    lastDraftSyncMs,
     pushSystemFeedEvent,
     pushToast,
     queueClientMetric,
     settings.autoPickFromQueue,
     trackDraftEvent,
   ]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    if (connectionStatus === "SUBSCRIBED" || connectionStatus === "connecting") {
+      if (reconnectRetryTimerRef.current !== null) {
+        window.clearTimeout(reconnectRetryTimerRef.current);
+        reconnectRetryTimerRef.current = null;
+      }
+      return;
+    }
+    const shouldRetry =
+      connectionStatus === "CHANNEL_ERROR" ||
+      connectionStatus === "TIMED_OUT" ||
+      connectionStatus === "CLOSED";
+    if (!shouldRetry || reconnectRetryTimerRef.current !== null) {
+      return;
+    }
+    reconnectRetryTimerRef.current = window.setTimeout(() => {
+      reconnectRetryTimerRef.current = null;
+      setRealtimeChannelVersion((version) => version + 1);
+    }, REALTIME_RESUBSCRIBE_DELAY_MS);
+  }, [connectionStatus]);
+
+  useEffect(() => {
+    return () => {
+      if (reconnectRetryTimerRef.current !== null) {
+        window.clearTimeout(reconnectRetryTimerRef.current);
+        reconnectRetryTimerRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     const expectedPick = timeoutExpectedPickRef.current;
@@ -1291,10 +1341,17 @@ export const DraftRoom = ({
     Boolean(draft?.nextPick) &&
     onClockUserId === currentUserId;
   const canEditPickQueue = isCurrentUserParticipant && draft?.status !== "completed";
-  const isRealtimeReadOnly = connectionStatus !== "SUBSCRIBED";
+  const secondsSinceLastSync = Math.max(0, Math.floor((clientNowMs - lastDraftSyncMs) / 1000));
+  const realtimePollIntervalMs =
+    draft?.status === "live" ? 3000 : draft?.status === "scheduled" ? 5000 : 10000;
+  const realtimeReadOnlyStaleSeconds = Math.max(
+    REALTIME_READ_ONLY_MIN_STALE_SECONDS,
+    Math.ceil((realtimePollIntervalMs * REALTIME_READ_ONLY_STALE_MULTIPLIER) / 1000),
+  );
+  const isRealtimeReadOnly =
+    connectionStatus !== "SUBSCRIBED" && secondsSinceLastSync >= realtimeReadOnlyStaleSeconds;
   const canQueueActions = canEditPickQueue && !isRealtimeReadOnly;
   const canDraftActions = canCurrentUserPick && !isRealtimeReadOnly;
-  const secondsSinceLastSync = Math.max(0, Math.floor((clientNowMs - lastDraftSyncMs) / 1000));
   const connectionLabel = connectionStatus.toLowerCase().replaceAll("_", " ");
   const currentPresence = presenceByUserId.get(currentUserId) ?? null;
   const availablePlayersByName = useMemo(
@@ -1542,12 +1599,6 @@ export const DraftRoom = ({
     }
     return deadlineMs - (clientNowMs + serverOffsetMs);
   }, [clientNowMs, draft?.currentPickDeadlineAt, serverOffsetMs]);
-  const currentPickRemainingSeconds = useMemo(() => {
-    if (currentPickRemainingMs === null) {
-      return null;
-    }
-    return Math.max(0, Math.ceil(currentPickRemainingMs / 1000));
-  }, [currentPickRemainingMs]);
   const liveTimeLeftLabel = useMemo(
     () => formatCountdown(draft?.currentPickDeadlineAt ?? null, clientNowMs + serverOffsetMs),
     [clientNowMs, draft?.currentPickDeadlineAt, serverOffsetMs],
@@ -2519,10 +2570,11 @@ export const DraftRoom = ({
     };
   }, [draft?.picks, pickQueue, roleCounts, rosterNeeds, selectedPlayer]);
   const stateBanner = useMemo(() => {
-    const isRedConnectionState =
+    const isRealtimeDisconnected =
       connectionStatus === "TIMED_OUT" ||
       connectionStatus === "CHANNEL_ERROR" ||
       connectionStatus === "CLOSED";
+    const isRedConnectionState = isRealtimeDisconnected && isRealtimeReadOnly;
     const isYellowConnectionState = !isRedConnectionState && connectionStatus !== "SUBSCRIBED";
     if (timeoutOutcomeMessage?.startsWith("Clock expired ->")) {
       return {
@@ -2539,10 +2591,17 @@ export const DraftRoom = ({
       };
     }
     if (isYellowConnectionState) {
+      if (connectionStatus === "connecting") {
+        return {
+          label: "Connecting realtime...",
+          detail: `Last synced ${secondsSinceLastSync}s ago.`,
+          color: "default" as const,
+        };
+      }
       return {
-        label: "Degraded (high latency)",
-        detail: `Last synced ${secondsSinceLastSync}s ago.`,
-        color: "warning" as const,
+        label: "Live (polling fallback)",
+        detail: `Realtime ${connectionLabel}. Last synced ${secondsSinceLastSync}s ago.`,
+        color: "default" as const,
       };
     }
     if (pickPending) {
@@ -2578,10 +2637,12 @@ export const DraftRoom = ({
   }, [
     autopickPreviewLine,
     canCurrentUserPick,
+    connectionLabel,
     connectionStatus,
     draftStatusValue,
     isLiveState,
     isLobbyState,
+    isRealtimeReadOnly,
     isUpNext,
     pickPending,
     secondsSinceLastSync,
@@ -2589,16 +2650,16 @@ export const DraftRoom = ({
   ]);
   const statusBannerToneClass = useMemo(() => {
     if (stateBanner.color === "danger") {
-      return "border-danger-300/60 bg-danger-500/12";
+      return "border-danger-300/35 bg-danger-500/8";
     }
     if (stateBanner.color === "warning") {
-      return "border-warning-300/60 bg-warning-500/12";
+      return "border-warning-300/35 bg-warning-500/8";
     }
     if (stateBanner.color === "success") {
-      return "border-success-300/60 bg-success-500/12";
+      return "border-success-300/35 bg-success-500/8";
     }
     if (stateBanner.color === "primary") {
-      return "border-primary-300/60 bg-primary-500/12";
+      return "border-primary-300/35 bg-primary-500/8";
     }
     return "border-default-200/45 bg-content2/30";
   }, [stateBanner.color]);
@@ -2806,13 +2867,15 @@ export const DraftRoom = ({
           </div>
         </CardHeader>
         <CardBody className="space-y-3 pt-0">
-          <div className="overflow-x-auto pb-1 md:overflow-visible md:pb-0">
-            <div className="flex w-max gap-2 md:grid md:w-full md:grid-cols-5">
+          <div className="overflow-x-auto pt-1 pb-1 md:overflow-visible md:pt-0 md:pb-0">
+            <div className="flex w-max items-end gap-1.5 md:w-full md:gap-2">
               {topPickStripSlots.map((item) => {
+              const isNowTile = item.offset === 0;
+              const isPastTile = item.offset < 0;
               const mobileStripLabel =
-                item.offset === 0
+                isNowTile
                   ? "NOW"
-                  : item.offset < 0
+                  : isPastTile
                   ? `${Math.abs(item.offset)} ${Math.abs(item.offset) === 1 ? "PICK" : "PICKS"} AGO`
                   : item.offset === 1
                   ? "NEXT PICK"
@@ -2831,97 +2894,156 @@ export const DraftRoom = ({
               return (
                 <div
                   key={item.key}
-                  className={`relative h-28 w-28 shrink-0 overflow-hidden rounded-large border p-2.5 md:h-28 md:w-full md:p-3 ${
+                  className={`relative shrink-0 overflow-hidden rounded-large border ${
+                    isNowTile
+                      ? "h-[6.6rem] w-[7.35rem] p-2.5 md:h-[6.8rem] md:min-w-0 md:flex-[1.25] md:p-3"
+                      : "h-[4.9rem] w-[6rem] p-2 md:h-[5rem] md:min-w-0 md:flex-1 md:p-2.5"
+                  } ${
                     item.slot?.pickedPlayerName
                       ? roleTileClassName(item.slot.pickedPlayerRole)
-                      : item.offset === 0
+                      : isNowTile
                       ? item.slot
-                        ? "border-primary-300/70 bg-primary-500/18 shadow-[0_0_0_1px_rgba(147,197,253,0.35)]"
-                        : "border-default-200/40 bg-content2/40"
-                      : item.offset < 0
-                      ? "border-default-200/35 bg-content2/30"
-                      : "border-default-200/25 bg-content2/20"
+                        ? "border-primary-300/70 bg-primary-500/14 shadow-[0_0_0_1px_rgba(147,197,253,0.35)]"
+                        : "border-default-200/35 bg-content2/24"
+                      : isPastTile
+                      ? "border-default-200/30 bg-content2/18"
+                      : "border-default-200/25 bg-content2/14"
                   } ${
-                    item.offset === 0
-                      ? "ring-1 ring-primary-300/75 shadow-[0_0_0_1px_rgba(147,197,253,0.4),0_0_16px_rgba(59,130,246,0.2)] md:scale-[1.02]"
+                    isNowTile
+                      ? "ring-1 ring-primary-300/75 shadow-[0_0_0_1px_rgba(147,197,253,0.4),0_0_18px_rgba(59,130,246,0.24)]"
                       : ""
                   }`}
                 >
                   <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-black/28 via-black/16 to-black/30" />
                   {item.slot && (item.slot.pickedPlayerImageUrl || item.slot.pickedTeamIconUrl || roleBackgroundIconUrl) ? (
-                    <div className="pointer-events-none absolute inset-y-1.5 right-1.5 z-20 flex flex-col items-end justify-between md:inset-y-2 md:right-2">
+                    <div className="pointer-events-none absolute inset-y-1.5 right-1.5 z-20 flex flex-col items-end justify-between">
                       {item.slot.pickedPlayerImageUrl ? (
                         <Image
                           alt={`${item.slot.pickedPlayerName ?? "Picked player"} portrait`}
-                          className="h-9 w-9 rounded-full border border-white/35 object-cover shadow-[0_2px_8px_rgba(0,0,0,0.45)] md:h-11 md:w-11"
-                          height={44}
+                          className={`rounded-full border border-white/35 object-cover shadow-[0_2px_8px_rgba(0,0,0,0.45)] ${
+                            isNowTile ? "h-9 w-9 md:h-10 md:w-10" : "h-7 w-7 md:h-8 md:w-8"
+                          }`}
+                          height={40}
                           src={item.slot.pickedPlayerImageUrl}
-                          width={44}
+                          width={40}
                         />
                       ) : item.slot.pickedTeamIconUrl ? (
                         <Image
                           alt={`${item.slot.pickedPlayerName ?? "Picked player"} team logo`}
-                          className="h-8 w-12 translate-x-2.5 -translate-y-1.5 object-contain opacity-90 drop-shadow-[0_1px_2px_rgba(0,0,0,0.55)] md:h-10 md:w-14 md:translate-x-3 md:-translate-y-2"
-                          height={40}
+                          className={`translate-x-1.5 -translate-y-1 object-contain opacity-90 drop-shadow-[0_1px_2px_rgba(0,0,0,0.55)] ${
+                            isNowTile ? "h-7 w-11 md:h-8 md:w-12" : "h-6 w-9 md:h-7 md:w-10"
+                          }`}
+                          height={32}
                           src={item.slot.pickedTeamIconUrl}
-                          width={56}
+                          width={48}
                         />
                       ) : (
-                        <span className="h-10 w-14" />
+                        <span className="h-8 w-8" />
                       )}
                       {roleBackgroundIconUrl ? (
                         <Image
                           alt={`${formatRoleLabel(item.slot.pickedPlayerRole)} role icon`}
-                          className="h-6 w-6 -translate-x-0.5 object-contain opacity-95 drop-shadow-[0_1px_2px_rgba(0,0,0,0.55)] md:h-8 md:w-8 md:translate-x-0"
-                          height={32}
+                          className={`-translate-x-0.5 object-contain opacity-95 drop-shadow-[0_1px_2px_rgba(0,0,0,0.55)] ${
+                            isNowTile ? "h-5 w-5 md:h-6 md:w-6" : "h-4 w-4 md:h-5 md:w-5"
+                          }`}
+                          height={24}
                           src={roleBackgroundIconUrl}
-                          width={32}
+                          width={24}
                         />
                       ) : null}
                     </div>
                   ) : null}
                   <div className="relative z-10">
-                    <p className="truncate whitespace-nowrap text-[9px] font-semibold uppercase tracking-wide text-white/85 drop-shadow-[0_1px_1px_rgba(0,0,0,0.65)] md:text-[10px]">
+                    <p
+                      className={`truncate whitespace-nowrap text-[8px] font-semibold uppercase tracking-wide drop-shadow-[0_1px_1px_rgba(0,0,0,0.65)] ${
+                        isNowTile ? "text-white/72" : "text-white/55"
+                      }`}
+                    >
                       <span className="md:hidden">{mobileStripLabel}</span>
                       <span className="hidden md:inline">{item.label}</span>
                     </p>
-                    <p className="mt-1 truncate text-xs font-semibold text-white/95 drop-shadow-[0_1px_1px_rgba(0,0,0,0.7)] md:text-sm">
+                    <p className={`mt-0.5 truncate font-semibold text-white/92 drop-shadow-[0_1px_1px_rgba(0,0,0,0.7)] ${
+                      isNowTile ? "text-xs md:text-sm" : "text-[11px] md:text-xs"
+                    }`}>
                       {teamLabel}
                     </p>
-                    <p className="hidden text-xs text-white/80 drop-shadow-[0_1px_1px_rgba(0,0,0,0.65)] md:block">
-                      {item.slot ? `#${item.slot.overallPick} • Round ${item.slot.roundNumber}` : "—"}
-                    </p>
-                    <p className="mt-1 truncate text-xs text-white/90 drop-shadow-[0_1px_1px_rgba(0,0,0,0.7)] md:mt-2 md:text-sm">
+                    <p
+                      className={`mt-0.5 truncate text-[10px] drop-shadow-[0_1px_1px_rgba(0,0,0,0.65)] ${
+                        item.slot?.pickedPlayerName ? "text-white/86" : "text-white/62"
+                      }`}
+                    >
                       {shortPlayerLabel}
                     </p>
+                    {isNowTile ? (
+                      <p className="mt-0.5 hidden text-[10px] text-white/72 drop-shadow-[0_1px_1px_rgba(0,0,0,0.65)] md:block">
+                        {item.slot ? `#${item.slot.overallPick} • Round ${item.slot.roundNumber}` : "—"}
+                      </p>
+                    ) : null}
                   </div>
                 </div>
               );
               })}
             </div>
           </div>
-          <div className="grid grid-cols-1 gap-2 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)]">
-            <div className="rounded-large border border-default-200/40 bg-content2/35 p-3">
-              <p className="text-[10px] font-semibold uppercase tracking-wide text-default-500">
-                {canCurrentUserPick ? "Your pick" : "Your next pick"}
-              </p>
+          <div className="grid grid-cols-1 gap-2 lg:grid-cols-[minmax(0,1.05fr)_minmax(0,1.55fr)]">
+            <div className="rounded-large border border-primary-300/35 bg-gradient-to-br from-primary-500/10 via-content2/40 to-content2/30 p-3.5">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-default-500">
+                  {canCurrentUserPick ? "On the clock" : "Your next pick"}
+                </p>
+                {isRealtimeReadOnly && isLiveState ? (
+                  <span className="inline-flex items-center gap-1 rounded-medium border border-warning-300/40 bg-warning-500/10 px-2 py-1 text-[10px] font-semibold text-warning-100">
+                    <WifiOff className="h-3 w-3" />
+                    Read-only
+                  </span>
+                ) : null}
+              </div>
               {canCurrentUserPick && draft.nextPick ? (
-                <>
-                  <p className="mt-1 text-sm font-semibold">
-                    #{draft.nextPick.overallPick} • Round {draft.nextPick.roundNumber}
-                  </p>
-                  <div className="mt-2 rounded-medium bg-black/55 px-3 py-2">
-                    <p className="text-4xl font-black leading-none text-white sm:text-5xl">
-                      {currentPickRemainingSeconds !== null
-                        ? `${currentPickRemainingSeconds}s`
-                        : "—"}
+                <div className="mt-2 grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3">
+                  <div className="grid h-28 w-28 place-items-center rounded-large border border-white/25 bg-black/62 shadow-[0_8px_22px_rgba(0,0,0,0.35)]">
+                    <p className="text-3xl font-black leading-none text-white tabular-nums sm:text-4xl">
+                      {liveTimeLeftLabel}
                     </p>
                   </div>
-                  <p className="mt-2 text-xs text-default-500">Time left: {liveTimeLeftLabel}</p>
-                </>
+                  <div className="min-w-0 space-y-2">
+                    <div>
+                      <p className="text-[10px] font-semibold uppercase tracking-wide text-default-400">
+                        On the clock
+                      </p>
+                      <p className="mt-1 text-sm font-semibold">
+                        #{draft.nextPick.overallPick} • Round {draft.nextPick.roundNumber}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] font-semibold uppercase tracking-wide text-default-500">
+                        Position needs
+                      </p>
+                      {rosterNeeds.length > 0 ? (
+                        <div className="mt-1 flex flex-wrap gap-1">
+                          {rosterNeeds.map((role) => (
+                            <Button
+                              key={`next-pick-need-${role}`}
+                              className={`h-6 min-w-0 px-2 ${roleChipClassName(role)}`}
+                              size="sm"
+                              variant="flat"
+                              onPress={() => {
+                                applyRoleFilter(role);
+                                setShowNeededRolesOnly(true);
+                              }}
+                            >
+                              {role}
+                            </Button>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="mt-1 text-xs text-default-500">All core slots filled.</p>
+                      )}
+                    </div>
+                  </div>
+                </div>
               ) : yourNextPickMeta ? (
                 <>
-                  <p className="mt-1 text-sm font-semibold">
+                  <p className="mt-2 text-sm font-semibold">
                     #{yourNextPickMeta.overallPick} • Round {yourNextPickMeta.roundNumber}
                   </p>
                   <p className="text-xs text-default-500">
@@ -2929,57 +3051,59 @@ export const DraftRoom = ({
                       ? "On the clock now"
                       : `${yourNextPickMeta.picksAway} pick(s) away`}
                   </p>
-                  <p className="mt-2 text-xs text-default-500">
+                  <p className="mt-1 text-xs text-default-500">
                     Estimated time: ~{formatEtaFromMs(yourNextPickMeta.etaMs)}
                   </p>
+                  <div className="mt-2">
+                    <p className="text-[10px] font-semibold uppercase tracking-wide text-default-500">
+                      Position needs
+                    </p>
+                    {rosterNeeds.length > 0 ? (
+                      <div className="mt-1 flex flex-wrap gap-1">
+                        {rosterNeeds.map((role) => (
+                          <Button
+                            key={`next-pick-need-${role}`}
+                            className={`h-6 min-w-0 px-2 ${roleChipClassName(role)}`}
+                            size="sm"
+                            variant="flat"
+                            onPress={() => {
+                              applyRoleFilter(role);
+                              setShowNeededRolesOnly(true);
+                            }}
+                          >
+                            {role}
+                          </Button>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="mt-1 text-xs text-default-500">All core slots filled.</p>
+                    )}
+                  </div>
                 </>
               ) : (
                 <p className="mt-2 text-xs text-default-500">No upcoming turn</p>
               )}
-              <div className="mt-2">
-                <p className="text-[10px] font-semibold uppercase tracking-wide text-default-500">
-                  Position needs
-                </p>
-                {rosterNeeds.length > 0 ? (
-                  <div className="mt-1 flex flex-wrap gap-1">
-                    {rosterNeeds.map((role) => (
-                      <Button
-                        key={`next-pick-need-${role}`}
-                        className={`h-7 min-w-0 px-2 ${roleChipClassName(role)}`}
-                        size="sm"
-                        variant="flat"
-                        onPress={() => {
-                          applyRoleFilter(role);
-                          setShowNeededRolesOnly(true);
-                        }}
-                      >
-                        {role}
-                      </Button>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="mt-1 text-xs text-default-500">All core slots filled.</p>
-                )}
-              </div>
             </div>
-            <div className="rounded-large border border-default-200/40 bg-content2/35 p-3">
+            <div className="rounded-large border border-default-200/35 bg-content2/30 p-3.5">
               <div className="flex items-center justify-between gap-2">
                 <p className="text-[10px] font-semibold uppercase tracking-wide text-default-500">
                   Roster slots
                 </p>
-                <Chip size="sm" variant="flat">
+                <Chip className="font-semibold" size="sm" variant="flat">
                   {userPicks.length}/5
                 </Chip>
               </div>
-              <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-5">
+              <div className="mt-2 grid grid-cols-2 gap-1.5 sm:grid-cols-5 sm:gap-2">
                 {PRIMARY_ROLE_FILTERS.map((role) => {
                   const pick = rosterSlots.byRole.get(role);
                   const pickImageUrl = pickPlayerImageUrl(pick);
                   return (
                     <button
                       key={`roster-slot-${role}`}
-                      className={`h-24 overflow-hidden rounded-medium border text-left ${
-                        pick ? roleTileClassName(role) : "border-default-200/30 bg-content1/35"
+                      className={`h-24 overflow-hidden rounded-large border text-left transition ${
+                        pick
+                          ? `border-default-200/50 bg-content1/45 ${roleTileClassName(role)}`
+                          : "border-default-200/25 bg-content1/18"
                       }`}
                       type="button"
                       onClick={() => {
@@ -2989,13 +3113,13 @@ export const DraftRoom = ({
                     >
                       <div className="grid h-full grid-cols-2">
                         <div className="flex min-w-0 flex-col justify-between p-2">
-                          <p className="text-[10px] font-semibold uppercase tracking-wide text-default-500">
+                          <p className="text-[9px] font-semibold uppercase tracking-wide text-default-500">
                             {role}
                           </p>
                           <div className="min-w-0">
                             <p className="truncate text-xs font-semibold">{pick?.playerName ?? "Open"}</p>
                             <p className="truncate text-[10px] text-default-500">
-                              {pick?.playerTeam ?? "Add player"}
+                              {pick?.playerTeam ?? "Add player..."}
                             </p>
                           </div>
                         </div>
@@ -3046,20 +3170,27 @@ export const DraftRoom = ({
             </div>
           </div>
           {isUpNext && !canCurrentUserPick ? (
-            <p className="rounded-medium border border-primary-300/40 bg-primary-500/10 px-3 py-2 text-xs text-primary-200">
+            <p className="rounded-large border border-primary-300/30 bg-primary-500/8 px-3 py-2 text-[11px] text-white/95">
               You are up next. Finalize your target before the current pick locks.
             </p>
           ) : null}
           {canCurrentUserPick && autopickPreviewLine ? (
-            <p
-              className={`rounded-medium border px-3 py-2 text-xs ${
+            <div
+              className={`flex items-center justify-between gap-2 rounded-large border px-3 py-2 text-[11px] ${
                 isLowTimerWarning
-                  ? "animate-pulse border-warning-300/60 bg-warning-500/14 text-warning-200"
-                  : "border-primary-300/35 bg-primary-500/10 text-primary-200"
+                  ? "animate-pulse border-warning-300/45 bg-warning-500/10 text-white"
+                  : "border-default-200/30 bg-content2/25 text-default-100"
               }`}
             >
-              {autopickPreviewLine}
-            </p>
+              <p className="truncate">
+                {autopickPreviewLine}
+              </p>
+              <span
+                className={`h-2.5 w-2.5 shrink-0 rounded-full ${
+                  isLowTimerWarning ? "bg-warning-300" : "bg-primary-300"
+                }`}
+              />
+            </div>
           ) : null}
 
           {showDraftSettings ? (
