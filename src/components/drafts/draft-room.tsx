@@ -942,54 +942,84 @@ export const DraftRoom = ({
 
   useEffect(() => {
     const supabase = getSupabaseBrowserClient();
-    setConnectionStatus("connecting");
-    const channel = supabase
-      .channel(`draft-room-${draftId}`)
-      .on(
-        "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "fantasy_drafts",
-          filter: `id=eq.${draftId}`,
-        },
-        () => {
-          scheduleDraftRefresh();
-        },
-      )
-      .on(
-        "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "fantasy_draft_picks",
-          filter: `draft_id=eq.${draftId}`,
-        },
-        () => {
-          scheduleDraftRefresh();
-        },
-      )
-      .on(
-        "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "fantasy_draft_presence",
-          filter: `draft_id=eq.${draftId}`,
-        },
-        () => {
-          if (draftStatus === "live" || draftStatus === "paused" || draftStatus === "completed") {
-            return;
-          }
-          scheduleDraftRefresh(PRESENCE_REFRESH_DEBOUNCE_MS);
-        },
-      )
-      .subscribe((status) => {
-        setConnectionStatus(status);
-      });
+    let isActive = true;
+    let channel: ReturnType<typeof supabase.channel> | null = null;
+
+    const authStateSubscription = supabase.auth.onAuthStateChange((_event, session) => {
+      if (!session?.access_token) {
+        return;
+      }
+      supabase.realtime.setAuth(session.access_token);
+    });
+
+    const connectRealtime = async () => {
+      try {
+        const { data } = await supabase.auth.getSession();
+        if (data.session?.access_token) {
+          supabase.realtime.setAuth(data.session.access_token);
+        }
+      } catch {
+        // no-op: polling fallback still keeps draft state in sync.
+      }
+
+      if (!isActive) {
+        return;
+      }
+
+      channel = supabase
+        .channel(`draft-room-${draftId}`)
+        .on(
+          "postgres_changes",
+          {
+            event: "*",
+            schema: "public",
+            table: "fantasy_drafts",
+            filter: `id=eq.${draftId}`,
+          },
+          () => {
+            scheduleDraftRefresh();
+          },
+        )
+        .on(
+          "postgres_changes",
+          {
+            event: "*",
+            schema: "public",
+            table: "fantasy_draft_picks",
+            filter: `draft_id=eq.${draftId}`,
+          },
+          () => {
+            scheduleDraftRefresh();
+          },
+        )
+        .on(
+          "postgres_changes",
+          {
+            event: "*",
+            schema: "public",
+            table: "fantasy_draft_presence",
+            filter: `draft_id=eq.${draftId}`,
+          },
+          () => {
+            if (draftStatus === "live" || draftStatus === "paused" || draftStatus === "completed") {
+              return;
+            }
+            scheduleDraftRefresh(PRESENCE_REFRESH_DEBOUNCE_MS);
+          },
+        )
+        .subscribe((status) => {
+          setConnectionStatus(status);
+        });
+    };
+
+    void connectRealtime();
 
     return () => {
-      void supabase.removeChannel(channel);
+      isActive = false;
+      authStateSubscription.data.subscription.unsubscribe();
+      if (channel) {
+        void supabase.removeChannel(channel);
+      }
     };
   }, [draftId, draftStatus, scheduleDraftRefresh, realtimeChannelVersion]);
 
