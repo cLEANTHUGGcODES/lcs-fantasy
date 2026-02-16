@@ -28,7 +28,8 @@ create table if not exists public.fantasy_global_chat_messages (
   sender_label text not null,
   sender_avatar_url text null,
   sender_avatar_border_color text null,
-  message text not null check (char_length(message) > 0 and char_length(message) <= 320),
+  message text not null check (char_length(message) <= 320),
+  image_url text null,
   idempotency_key text null,
   created_at timestamptz not null default timezone('utc', now())
 );
@@ -41,6 +42,23 @@ alter table if exists public.fantasy_global_chat_messages
 
 alter table if exists public.fantasy_global_chat_messages
   add column if not exists idempotency_key text null;
+
+alter table if exists public.fantasy_global_chat_messages
+  add column if not exists image_url text null;
+
+alter table if exists public.fantasy_global_chat_messages
+  drop constraint if exists fantasy_global_chat_messages_message_check;
+
+alter table if exists public.fantasy_global_chat_messages
+  drop constraint if exists fantasy_global_chat_messages_message_or_image_check;
+
+alter table if exists public.fantasy_global_chat_messages
+  add constraint fantasy_global_chat_messages_message_or_image_check
+  check (
+    char_length(message) <= 320
+    and (char_length(btrim(message)) > 0 or image_url is not null)
+    and (image_url is null or char_length(image_url) <= 2048)
+  );
 
 create index if not exists fantasy_global_chat_messages_created_at_idx
   on public.fantasy_global_chat_messages (created_at desc, id desc);
@@ -713,6 +731,7 @@ $$;
 create or replace function public.fantasy_chat_post_message(
   p_sender_label text,
   p_message text,
+  p_image_url text default null,
   p_sender_avatar_url text default null,
   p_sender_avatar_border_color text default null,
   p_idempotency_key text default null
@@ -725,6 +744,7 @@ declare
   v_user_id uuid := auth.uid();
   v_sender_label text := btrim(coalesce(p_sender_label, ''));
   v_message text := btrim(regexp_replace(coalesce(p_message, ''), '\s+', ' ', 'g'));
+  v_image_url text := nullif(btrim(coalesce(p_image_url, '')), '');
   v_sender_avatar_url text := nullif(btrim(coalesce(p_sender_avatar_url, '')), '');
   v_sender_avatar_border_color text := nullif(btrim(coalesce(p_sender_avatar_border_color, '')), '');
   v_idempotency_key text := nullif(btrim(coalesce(p_idempotency_key, '')), '');
@@ -748,10 +768,10 @@ begin
     );
   end if;
 
-  if v_message = '' then
+  if v_message = '' and v_image_url is null then
     return jsonb_build_object(
       'ok', false,
-      'error', 'Message cannot be empty.',
+      'error', 'Message or image is required.',
       'code', 'EMPTY_MESSAGE'
     );
   end if;
@@ -761,6 +781,22 @@ begin
       'ok', false,
       'error', 'Message must be 320 characters or fewer.',
       'code', 'MESSAGE_TOO_LONG'
+    );
+  end if;
+
+  if v_image_url is not null and char_length(v_image_url) > 2048 then
+    return jsonb_build_object(
+      'ok', false,
+      'error', 'Image URL must be 2048 characters or fewer.',
+      'code', 'INVALID_IMAGE_URL'
+    );
+  end if;
+
+  if v_image_url is not null and v_image_url !~* '^https?://' then
+    return jsonb_build_object(
+      'ok', false,
+      'error', 'Image URL must be a valid HTTP(S) URL.',
+      'code', 'INVALID_IMAGE_URL'
     );
   end if;
 
@@ -792,6 +828,7 @@ begin
           'sender_avatar_url', v_message_row.sender_avatar_url,
           'sender_avatar_border_color', v_message_row.sender_avatar_border_color,
           'message', v_message_row.message,
+          'image_url', v_message_row.image_url,
           'created_at', v_message_row.created_at
         )
       );
@@ -833,6 +870,7 @@ begin
       sender_avatar_url,
       sender_avatar_border_color,
       message,
+      image_url,
       idempotency_key
     )
     values (
@@ -841,6 +879,7 @@ begin
       v_sender_avatar_url,
       v_sender_avatar_border_color,
       v_message,
+      v_image_url,
       v_idempotency_key
     )
     returning *
@@ -867,6 +906,7 @@ begin
               'sender_avatar_url', v_message_row.sender_avatar_url,
               'sender_avatar_border_color', v_message_row.sender_avatar_border_color,
               'message', v_message_row.message,
+              'image_url', v_message_row.image_url,
               'created_at', v_message_row.created_at
             )
           );
@@ -885,6 +925,7 @@ begin
       'sender_avatar_url', v_message_row.sender_avatar_url,
       'sender_avatar_border_color', v_message_row.sender_avatar_border_color,
       'message', v_message_row.message,
+      'image_url', v_message_row.image_url,
       'created_at', v_message_row.created_at
     )
   );
@@ -984,7 +1025,7 @@ $$;
 grant select on public.fantasy_global_chat_messages to authenticated;
 grant insert on public.fantasy_global_chat_messages to authenticated;
 grant usage, select on sequence public.fantasy_global_chat_messages_id_seq to authenticated;
-grant execute on function public.fantasy_chat_post_message(text, text, text, text, text) to authenticated;
+grant execute on function public.fantasy_chat_post_message(text, text, text, text, text, text) to authenticated;
 grant insert on public.fantasy_chat_observability_events to authenticated;
 grant usage, select on sequence public.fantasy_chat_observability_events_id_seq to authenticated;
 grant select on public.fantasy_drafts to authenticated;
@@ -1275,6 +1316,100 @@ begin
       to authenticated
       using (
         bucket_id = 'profile-images'
+        and auth.uid()::text = (storage.foldername(name))[1]
+      );
+  end if;
+end $$;
+
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values (
+  'chat-images',
+  'chat-images',
+  true,
+  3145728,
+  array['image/jpeg', 'image/png', 'image/webp']
+)
+on conflict (id)
+do update set
+  public = excluded.public,
+  file_size_limit = excluded.file_size_limit,
+  allowed_mime_types = excluded.allowed_mime_types;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_policies
+    where schemaname = 'storage'
+      and tablename = 'objects'
+      and policyname = 'Chat images are public'
+  ) then
+    create policy "Chat images are public"
+      on storage.objects
+      for select
+      using (bucket_id = 'chat-images');
+  end if;
+end $$;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_policies
+    where schemaname = 'storage'
+      and tablename = 'objects'
+      and policyname = 'Users upload own chat images'
+  ) then
+    create policy "Users upload own chat images"
+      on storage.objects
+      for insert
+      to authenticated
+      with check (
+        bucket_id = 'chat-images'
+        and auth.uid()::text = (storage.foldername(name))[1]
+      );
+  end if;
+end $$;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_policies
+    where schemaname = 'storage'
+      and tablename = 'objects'
+      and policyname = 'Users update own chat images'
+  ) then
+    create policy "Users update own chat images"
+      on storage.objects
+      for update
+      to authenticated
+      using (
+        bucket_id = 'chat-images'
+        and auth.uid()::text = (storage.foldername(name))[1]
+      )
+      with check (
+        bucket_id = 'chat-images'
+        and auth.uid()::text = (storage.foldername(name))[1]
+      );
+  end if;
+end $$;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_policies
+    where schemaname = 'storage'
+      and tablename = 'objects'
+      and policyname = 'Users delete own chat images'
+  ) then
+    create policy "Users delete own chat images"
+      on storage.objects
+      for delete
+      to authenticated
+      using (
+        bucket_id = 'chat-images'
         and auth.uid()::text = (storage.foldername(name))[1]
       );
   end if;

@@ -5,5 +5,6 @@ export interface GlobalChatMessage {
   senderAvatarUrl: string | null;
   senderAvatarBorderColor: string | null;
   message: string;
+  imageUrl: string | null;
   createdAt: string;
 }

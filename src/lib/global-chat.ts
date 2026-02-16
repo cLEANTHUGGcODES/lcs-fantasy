@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { MAX_CHAT_IMAGE_URL_LENGTH, normalizeChatImageUrl } from "@/lib/chat-image";
 import { getSupabaseAuthEnv } from "@/lib/supabase-auth-env";
 import { getSupabaseServerClient } from "@/lib/supabase-server";
 import { getUserAvatarBorderColor, getUserAvatarUrl } from "@/lib/user-profile";
@@ -12,6 +13,7 @@ const CHAT_OBSERVABILITY_SUMMARY_RPC_NAME = "fantasy_chat_observability_summary"
 const DEFAULT_GLOBAL_CHAT_LIMIT = 120;
 const MAX_GLOBAL_CHAT_LIMIT = 200;
 export const MAX_GLOBAL_CHAT_MESSAGE_LENGTH = 320;
+export const MAX_GLOBAL_CHAT_IMAGE_URL_LENGTH = MAX_CHAT_IMAGE_URL_LENGTH;
 const AVATAR_CACHE_TTL_MS = 5 * 60 * 1000;
 
 const GLOBAL_CHAT_SELECT_COLUMNS = [
@@ -21,6 +23,7 @@ const GLOBAL_CHAT_SELECT_COLUMNS = [
   "sender_avatar_url",
   "sender_avatar_border_color",
   "message",
+  "image_url",
   "created_at",
 ].join(",");
 
@@ -31,6 +34,7 @@ type GlobalChatRow = {
   sender_avatar_url: string | null;
   sender_avatar_border_color: string | null;
   message: string;
+  image_url: string | null;
   created_at: string;
 };
 
@@ -74,6 +78,7 @@ const toGlobalChatMessage = (row: GlobalChatRow): GlobalChatMessage => ({
   senderAvatarUrl: row.sender_avatar_url,
   senderAvatarBorderColor: row.sender_avatar_border_color,
   message: row.message,
+  imageUrl: row.image_url,
   createdAt: row.created_at,
 });
 
@@ -175,8 +180,16 @@ const toRpcGlobalChatMessage = (value: unknown): GlobalChatMessage | null => {
   const userId = asStringOrNull(payload.user_id);
   const senderLabel = asStringOrNull(payload.sender_label);
   const message = asStringOrNull(payload.message);
+  const imageUrl = asStringOrNull(payload.image_url);
   const createdAt = asStringOrNull(payload.created_at);
-  if (!id || !userId || !senderLabel || !message || !createdAt) {
+  if (
+    !id ||
+    !userId ||
+    !senderLabel ||
+    message === null ||
+    (!message.trim() && !imageUrl) ||
+    !createdAt
+  ) {
     return null;
   }
 
@@ -187,6 +200,7 @@ const toRpcGlobalChatMessage = (value: unknown): GlobalChatMessage | null => {
     senderAvatarUrl: asStringOrNull(payload.sender_avatar_url),
     senderAvatarBorderColor: asStringOrNull(payload.sender_avatar_border_color),
     message,
+    imageUrl,
     createdAt,
   };
 };
@@ -293,6 +307,7 @@ export const submitGlobalChatMessage = async ({
   senderAvatarUrl,
   senderAvatarBorderColor,
   message,
+  imageUrl,
   idempotencyKey,
 }: {
   supabase: SupabaseClient;
@@ -300,16 +315,19 @@ export const submitGlobalChatMessage = async ({
   senderAvatarUrl: string | null;
   senderAvatarBorderColor: string | null;
   message: string;
+  imageUrl?: string | null;
   idempotencyKey?: string | null;
 }): Promise<{ message: GlobalChatMessage; duplicate: boolean }> => {
   const normalizedMessage = normalizeGlobalChatMessage(message);
   const normalizedSenderLabel = senderLabel.trim();
+  const normalizedImageUrl = normalizeChatImageUrl(imageUrl);
+  const hasRawImageUrl = typeof imageUrl === "string" && imageUrl.trim().length > 0;
   const normalizedIdempotencyKey = idempotencyKey?.trim() || null;
 
   if (!normalizedSenderLabel) {
     throw new GlobalChatError("Chat sender label is required.", "INVALID_SENDER_LABEL");
   }
-  if (!normalizedMessage) {
+  if (!normalizedMessage && !normalizedImageUrl) {
     throw new GlobalChatError("Message cannot be empty.", "EMPTY_MESSAGE");
   }
   if (normalizedMessage.length > MAX_GLOBAL_CHAT_MESSAGE_LENGTH) {
@@ -318,10 +336,17 @@ export const submitGlobalChatMessage = async ({
       "MESSAGE_TOO_LONG",
     );
   }
+  if (hasRawImageUrl && !normalizedImageUrl) {
+    throw new GlobalChatError(
+      `Image URL must be a valid HTTP(S) URL with length ${MAX_GLOBAL_CHAT_IMAGE_URL_LENGTH} characters or fewer.`,
+      "INVALID_IMAGE_URL",
+    );
+  }
 
   const { data, error } = await supabase.rpc(CHAT_POST_RPC_NAME, {
     p_sender_label: normalizedSenderLabel,
     p_message: normalizedMessage,
+    p_image_url: normalizedImageUrl,
     p_sender_avatar_url: senderAvatarUrl,
     p_sender_avatar_border_color: senderAvatarBorderColor,
     p_idempotency_key: normalizedIdempotencyKey,

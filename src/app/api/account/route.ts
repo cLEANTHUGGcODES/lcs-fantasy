@@ -1,6 +1,6 @@
 import { requireAuthUser } from "@/lib/draft-auth";
 import { getSupabaseAuthServerClient } from "@/lib/supabase-auth-server";
-import { PROFILE_IMAGES_BUCKET } from "@/lib/supabase-storage";
+import { CHAT_IMAGES_BUCKET, PROFILE_IMAGES_BUCKET } from "@/lib/supabase-storage";
 import { getSupabaseServerClient } from "@/lib/supabase-server";
 import { getUserAvatarPath } from "@/lib/user-profile";
 
@@ -21,25 +21,27 @@ const runDeleteStep = async ({
   }
 };
 
-const removeProfileImages = async ({
+const removeUserBucketFiles = async ({
+  bucket,
   userId,
-  avatarPath,
+  seededPath,
 }: {
+  bucket: string;
   userId: string;
-  avatarPath: string | null;
+  seededPath: string | null;
 }) => {
   const supabase = getSupabaseServerClient();
   const pathsToRemove = new Set<string>();
 
-  if (avatarPath) {
-    pathsToRemove.add(avatarPath);
+  if (seededPath) {
+    pathsToRemove.add(seededPath);
   }
 
   const { data: listedFiles, error: listError } = await supabase.storage
-    .from(PROFILE_IMAGES_BUCKET)
+    .from(bucket)
     .list(userId, { limit: 1000 });
   if (listError) {
-    throw new Error(`profile image list failed: ${listError.message}`);
+    throw new Error(`${bucket} list failed: ${listError.message}`);
   }
 
   for (const entry of listedFiles ?? []) {
@@ -53,10 +55,10 @@ const removeProfileImages = async ({
   }
 
   const { error: removeError } = await supabase.storage
-    .from(PROFILE_IMAGES_BUCKET)
+    .from(bucket)
     .remove([...pathsToRemove]);
   if (removeError) {
-    throw new Error(`profile image delete failed: ${removeError.message}`);
+    throw new Error(`${bucket} delete failed: ${removeError.message}`);
   }
 };
 
@@ -160,9 +162,15 @@ export async function DELETE(request: Request) {
     authClient = await getSupabaseAuthServerClient();
     const user = await requireAuthUser(authClient);
 
-    await removeProfileImages({
+    await removeUserBucketFiles({
+      bucket: PROFILE_IMAGES_BUCKET,
       userId: user.id,
-      avatarPath: getUserAvatarPath(user),
+      seededPath: getUserAvatarPath(user),
+    });
+    await removeUserBucketFiles({
+      bucket: CHAT_IMAGES_BUCKET,
+      userId: user.id,
+      seededPath: null,
     });
 
     await deleteUserData(user.id);

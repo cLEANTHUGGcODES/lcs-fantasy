@@ -3,9 +3,14 @@
 import { Button } from "@heroui/button";
 import { Card, CardBody, CardHeader } from "@heroui/card";
 import { Spinner } from "@heroui/spinner";
-import { ChevronDown, ChevronLeft, MessageCircle, Send, X } from "lucide-react";
+import { ChevronDown, ChevronLeft, ImagePlus, MessageCircle, Send, X } from "lucide-react";
 import Image from "next/image";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, ClipboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  MAX_CHAT_IMAGE_BYTES,
+  isSupportedChatImageMimeType,
+  normalizeChatImageUrl,
+} from "@/lib/chat-image";
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 import type { GlobalChatMessage } from "@/types/chat";
 
@@ -18,6 +23,18 @@ type GlobalChatResponse = {
   error?: string;
 };
 
+type GlobalChatUploadResponse = {
+  imageUrl?: string;
+  path?: string;
+  error?: string;
+};
+
+type AttachedChatImage = {
+  imageUrl: string;
+  path: string;
+  fileName: string;
+};
+
 const MAX_GLOBAL_CHAT_MESSAGE_LENGTH = 320;
 const CHAT_INITIAL_FETCH_LIMIT = 120;
 const CHAT_INCREMENTAL_FETCH_LIMIT = 60;
@@ -28,8 +45,16 @@ const CHAT_METRICS_FLUSH_INTERVAL_MS = 60000;
 const CHAT_AUTO_SCROLL_THRESHOLD_PX = 96;
 const CHAT_COMPOSER_MIN_HEIGHT_PX = 36;
 const CHAT_COMPOSER_MAX_HEIGHT_PX = 96;
+const CHAT_UPLOAD_IMAGE_MAX_DIMENSION_PX = 1600;
+const CHAT_UPLOAD_IMAGE_SCALE_STEPS = [1, 0.9, 0.8, 0.7, 0.6, 0.5] as const;
+const CHAT_UPLOAD_IMAGE_QUALITY_STEPS = [0.92, 0.84, 0.76, 0.68] as const;
 const CHAT_COMPOSER_FIELD_ID = "x_91f3";
 const CHAT_COMPOSER_FIELD_NAME = "x_91f3";
+const CHAT_IMAGE_ACCEPT_VALUE = "image/jpeg,image/png,image/webp";
+const CHAT_EXTERNAL_IMAGE_PATH = "__external__";
+const IMAGE_URL_EXTENSION_PATTERN = /\.(avif|bmp|gif|jpe?g|png|svg|webp)(?:[?#].*)?$/i;
+
+type UploadableImageMimeType = "image/jpeg" | "image/png" | "image/webp";
 
 const isNearBottom = (element: HTMLDivElement): boolean => {
   const distanceFromBottom = element.scrollHeight - element.scrollTop - element.clientHeight;
@@ -113,6 +138,255 @@ const generateIdempotencyKey = (): string => {
   return `chat-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 };
 
+const validateChatImageFileBase = (file: File): string | null => {
+  const mimeType = file.type.trim().toLowerCase();
+  if (!isSupportedChatImageMimeType(mimeType)) {
+    return "Use a JPG, PNG, or WEBP image.";
+  }
+  if (file.size <= 0) {
+    return "Image file is empty.";
+  }
+  return null;
+};
+
+const validateChatImageFile = (file: File): string | null => {
+  const baseError = validateChatImageFileBase(file);
+  if (baseError) {
+    return baseError;
+  }
+  if (file.size > MAX_CHAT_IMAGE_BYTES) {
+    return "Image must be 3MB or smaller.";
+  }
+  return null;
+};
+
+const toUploadableImageMimeType = (mimeType: string): UploadableImageMimeType => {
+  if (mimeType === "image/png") {
+    return "image/png";
+  }
+  if (mimeType === "image/webp") {
+    return "image/webp";
+  }
+  return "image/jpeg";
+};
+
+const extensionFromUploadableMimeType = (mimeType: UploadableImageMimeType): string => {
+  if (mimeType === "image/png") {
+    return "png";
+  }
+  if (mimeType === "image/webp") {
+    return "webp";
+  }
+  return "jpg";
+};
+
+const deriveChatImageFileName = ({
+  originalName,
+  mimeType,
+}: {
+  originalName: string;
+  mimeType: UploadableImageMimeType;
+}): string => {
+  const fallbackName = "chat-image";
+  const baseName = originalName.replace(/\.[^/.]+$/, "").trim() || fallbackName;
+  return `${baseName}.${extensionFromUploadableMimeType(mimeType)}`;
+};
+
+const loadImageElement = (blob: Blob): Promise<HTMLImageElement> =>
+  new Promise((resolve, reject) => {
+    const objectUrl = URL.createObjectURL(blob);
+    const image = document.createElement("img");
+    image.onload = () => {
+      URL.revokeObjectURL(objectUrl);
+      resolve(image);
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      reject(new Error("Unable to process image."));
+    };
+    image.src = objectUrl;
+  });
+
+const renderImageBlob = ({
+  image,
+  width,
+  height,
+  mimeType,
+  quality,
+}: {
+  image: HTMLImageElement;
+  width: number;
+  height: number;
+  mimeType: UploadableImageMimeType;
+  quality?: number;
+}): Promise<Blob> =>
+  new Promise((resolve, reject) => {
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d");
+    if (!context) {
+      reject(new Error("Unable to process image."));
+      return;
+    }
+
+    context.drawImage(image, 0, 0, width, height);
+    canvas.toBlob(
+      (blob) => {
+        if (!blob) {
+          reject(new Error("Unable to process image."));
+          return;
+        }
+        resolve(blob);
+      },
+      mimeType,
+      quality,
+    );
+  });
+
+const optimizeChatImageFileForUpload = async (file: File): Promise<File> => {
+  if (typeof document === "undefined") {
+    return file;
+  }
+
+  const originalMimeType = toUploadableImageMimeType(file.type.trim().toLowerCase());
+  const targetMimeType: UploadableImageMimeType =
+    originalMimeType === "image/png" && file.size > MAX_CHAT_IMAGE_BYTES ? "image/webp" : originalMimeType;
+
+  let image: HTMLImageElement;
+  try {
+    image = await loadImageElement(file);
+  } catch {
+    return file;
+  }
+
+  const originalWidth = image.naturalWidth || image.width;
+  const originalHeight = image.naturalHeight || image.height;
+  if (originalWidth <= 0 || originalHeight <= 0) {
+    return file;
+  }
+
+  const longestEdge = Math.max(originalWidth, originalHeight);
+  const baseScale = longestEdge > CHAT_UPLOAD_IMAGE_MAX_DIMENSION_PX
+    ? CHAT_UPLOAD_IMAGE_MAX_DIMENSION_PX / longestEdge
+    : 1;
+
+  const baseWidth = Math.max(1, Math.round(originalWidth * baseScale));
+  const baseHeight = Math.max(1, Math.round(originalHeight * baseScale));
+  const shouldTransform = baseScale < 1 || file.size > MAX_CHAT_IMAGE_BYTES || targetMimeType !== originalMimeType;
+  if (!shouldTransform) {
+    return file;
+  }
+
+  const qualitySteps: Array<number | undefined> = targetMimeType === "image/png"
+    ? [undefined]
+    : [...CHAT_UPLOAD_IMAGE_QUALITY_STEPS];
+  let bestCandidate: Blob | null = null;
+
+  for (const scaleStep of CHAT_UPLOAD_IMAGE_SCALE_STEPS) {
+    const width = Math.max(1, Math.round(baseWidth * scaleStep));
+    const height = Math.max(1, Math.round(baseHeight * scaleStep));
+    for (const quality of qualitySteps) {
+      let blob: Blob;
+      try {
+        blob = await renderImageBlob({
+          image,
+          width,
+          height,
+          mimeType: targetMimeType,
+          quality,
+        });
+      } catch {
+        continue;
+      }
+
+      if (!bestCandidate || blob.size < bestCandidate.size) {
+        bestCandidate = blob;
+      }
+      if (blob.size <= MAX_CHAT_IMAGE_BYTES) {
+        return new File([blob], deriveChatImageFileName({
+          originalName: file.name,
+          mimeType: targetMimeType,
+        }), {
+          type: targetMimeType,
+          lastModified: Date.now(),
+        });
+      }
+    }
+  }
+
+  if (!bestCandidate) {
+    return file;
+  }
+
+  return new File([bestCandidate], deriveChatImageFileName({
+    originalName: file.name,
+    mimeType: targetMimeType,
+  }), {
+    type: targetMimeType,
+    lastModified: Date.now(),
+  });
+};
+
+const extractImageFileFromClipboard = (clipboardData: DataTransfer): File | null => {
+  const items = Array.from(clipboardData.items);
+  for (const item of items) {
+    if (item.kind !== "file") {
+      continue;
+    }
+    const file = item.getAsFile();
+    if (file && file.type.toLowerCase().startsWith("image/")) {
+      return file;
+    }
+  }
+  return null;
+};
+
+const normalizeClipboardImageUrl = (value: string): string | null => {
+  const normalized = normalizeChatImageUrl(value);
+  if (!normalized) {
+    return null;
+  }
+  return IMAGE_URL_EXTENSION_PATTERN.test(normalized) ? normalized : null;
+};
+
+const extractImageUrlFromClipboard = (clipboardData: DataTransfer): string | null => {
+  const html = clipboardData.getData("text/html").trim();
+  if (html && typeof DOMParser !== "undefined") {
+    try {
+      const parser = new DOMParser();
+      const documentNode = parser.parseFromString(html, "text/html");
+      const rawImageUrl = documentNode.querySelector("img")?.getAttribute("src") ?? "";
+      const normalized = normalizeChatImageUrl(rawImageUrl);
+      if (normalized) {
+        return normalized;
+      }
+    } catch {
+      // Ignore malformed clipboard html.
+    }
+  }
+
+  const plainText = clipboardData.getData("text/plain").trim();
+  if (!plainText) {
+    return null;
+  }
+  return normalizeClipboardImageUrl(plainText);
+};
+
+const getImageFileNameFromUrl = (imageUrl: string): string => {
+  try {
+    const parsed = new URL(imageUrl);
+    const segment = parsed.pathname.split("/").filter(Boolean).at(-1)?.trim() ?? "";
+    if (!segment) {
+      return "pasted-image";
+    }
+    const decoded = decodeURIComponent(segment).replace(/[?#].*$/, "");
+    return decoded || "pasted-image";
+  } catch {
+    return "pasted-image";
+  }
+};
+
 const formatTime = (value: string): string =>
   new Date(value).toLocaleTimeString(undefined, {
     hour: "numeric",
@@ -187,6 +461,8 @@ export const GlobalChatPanel = ({
   const [hasOlderMessages, setHasOlderMessages] = useState(false);
   const [oldestCursorId, setOldestCursorId] = useState<number | null>(null);
   const [messageInput, setMessageInput] = useState("");
+  const [attachedImage, setAttachedImage] = useState<AttachedChatImage | null>(null);
+  const [pendingImageUpload, setPendingImageUpload] = useState(false);
   const [pendingSend, setPendingSend] = useState(false);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [hasInitializedUnreadState, setHasInitializedUnreadState] = useState(false);
@@ -195,6 +471,7 @@ export const GlobalChatPanel = ({
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const messageContentRef = useRef<HTMLDivElement | null>(null);
   const chatInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const chatImageInputRef = useRef<HTMLInputElement | null>(null);
   const composerResizeFrameRef = useRef<number | null>(null);
   const viewportSettleTimeoutRef = useRef<number | null>(null);
   const shouldStickToBottomRef = useRef(true);
@@ -828,6 +1105,125 @@ export const GlobalChatPanel = ({
     }
   }, [hasOlderMessages, loadMessages, loadingOlder, oldestCursorId]);
 
+  const clearComposerIdempotency = useCallback(() => {
+    composerIdempotencyKeyRef.current = null;
+    composerIdempotencyMessageRef.current = "";
+  }, []);
+
+  const openChatImagePicker = useCallback(() => {
+    if (pendingImageUpload || pendingSend) {
+      return;
+    }
+    chatImageInputRef.current?.click();
+  }, [pendingImageUpload, pendingSend]);
+
+  const removeAttachedImage = useCallback(() => {
+    setAttachedImage(null);
+    clearComposerIdempotency();
+    if (chatImageInputRef.current) {
+      chatImageInputRef.current.value = "";
+    }
+  }, [clearComposerIdempotency]);
+
+  const attachImageFile = useCallback(
+    async (sourceFile: File) => {
+      const baseValidationError = validateChatImageFileBase(sourceFile);
+      if (baseValidationError) {
+        setError(baseValidationError);
+        return;
+      }
+
+      setError(null);
+      setPendingImageUpload(true);
+      try {
+        const uploadFile = await optimizeChatImageFileForUpload(sourceFile);
+        const validationError = validateChatImageFile(uploadFile);
+        if (validationError) {
+          throw new Error(validationError);
+        }
+
+        const formData = new FormData();
+        formData.append("file", uploadFile);
+        const response = await fetch("/api/chat/upload", {
+          method: "POST",
+          body: formData,
+        });
+        const payload = (await response.json()) as GlobalChatUploadResponse;
+        if (!response.ok || !payload.imageUrl || !payload.path) {
+          throw new Error(payload.error ?? "Unable to upload chat image.");
+        }
+        setAttachedImage({
+          imageUrl: payload.imageUrl,
+          path: payload.path,
+          fileName: uploadFile.name,
+        });
+        clearComposerIdempotency();
+      } catch (uploadError) {
+        setError(uploadError instanceof Error ? uploadError.message : "Unable to upload chat image.");
+      } finally {
+        setPendingImageUpload(false);
+      }
+    },
+    [clearComposerIdempotency],
+  );
+
+  const attachImageUrl = useCallback(
+    (imageUrl: string) => {
+      const normalizedImageUrl = normalizeChatImageUrl(imageUrl);
+      if (!normalizedImageUrl) {
+        setError("Invalid image URL.");
+        return;
+      }
+
+      setError(null);
+      setAttachedImage({
+        imageUrl: normalizedImageUrl,
+        path: CHAT_EXTERNAL_IMAGE_PATH,
+        fileName: getImageFileNameFromUrl(normalizedImageUrl),
+      });
+      clearComposerIdempotency();
+    },
+    [clearComposerIdempotency],
+  );
+
+  const handleImageInputChange = useCallback(
+    async (event: ChangeEvent<HTMLInputElement>) => {
+      const file = event.currentTarget.files?.[0] ?? null;
+      event.currentTarget.value = "";
+      if (!file) {
+        return;
+      }
+      await attachImageFile(file);
+    },
+    [attachImageFile],
+  );
+
+  const handleComposerPaste = useCallback(
+    (event: ClipboardEvent<HTMLTextAreaElement>) => {
+      if (pendingImageUpload || pendingSend) {
+        return;
+      }
+      const clipboardData = event.clipboardData;
+      if (!clipboardData) {
+        return;
+      }
+
+      const pastedImageFile = extractImageFileFromClipboard(clipboardData);
+      if (pastedImageFile) {
+        event.preventDefault();
+        void attachImageFile(pastedImageFile);
+        return;
+      }
+
+      const pastedImageUrl = extractImageUrlFromClipboard(clipboardData);
+      if (pastedImageUrl) {
+        event.preventDefault();
+        attachImageUrl(pastedImageUrl);
+      }
+    },
+    [attachImageFile, attachImageUrl, pendingImageUpload, pendingSend],
+  );
+
   const renderedMessageList = useMemo(
     () => (
       <div
@@ -934,17 +1330,37 @@ export const GlobalChatPanel = ({
                           <p className={`${isEmbedded ? "text-[9px]" : "text-[10px]"} ${group.isCurrentUser ? "text-[#c9d7ef]" : "text-[#9fb3d6]"}`}>
                             {formatTime(entry.createdAt)}
                           </p>
-                          <p
-                            className={`mt-0.5 whitespace-pre-wrap break-words ${
-                              isEmbedded
-                                ? "text-[12px] leading-[1.15rem] sm:text-[12px]"
-                                : "text-[13px] leading-[1.35rem] sm:mt-0.5 sm:text-sm"
-                            } ${
-                              group.isCurrentUser ? "text-[#f7faff]" : "text-[#edf2ff]"
-                            }`}
-                          >
-                            {entry.message}
-                          </p>
+                          {entry.imageUrl ? (
+                            <a
+                              className="mt-1 block"
+                              href={entry.imageUrl}
+                              rel="noreferrer"
+                              target="_blank"
+                            >
+                              {/* eslint-disable-next-line @next/next/no-img-element */}
+                              <img
+                                alt="Chat attachment"
+                                className={`max-h-56 w-auto max-w-full rounded-xl border border-[#4e678f]/65 object-cover ${
+                                  group.isCurrentUser ? "bg-[#172844]" : "bg-[#0f1c31]"
+                                }`}
+                                loading="lazy"
+                                src={entry.imageUrl}
+                              />
+                            </a>
+                          ) : null}
+                          {entry.message.trim() ? (
+                            <p
+                              className={`mt-0.5 whitespace-pre-wrap break-words ${
+                                isEmbedded
+                                  ? "text-[12px] leading-[1.15rem] sm:text-[12px]"
+                                  : "text-[13px] leading-[1.35rem] sm:mt-0.5 sm:text-sm"
+                              } ${
+                                group.isCurrentUser ? "text-[#f7faff]" : "text-[#edf2ff]"
+                              }`}
+                            >
+                              {entry.message}
+                            </p>
+                          ) : null}
                         </div>
                       );
 
@@ -979,15 +1395,17 @@ export const GlobalChatPanel = ({
 
   const submitMessage = useCallback(async () => {
     const trimmed = messageInput.trim();
-    if (!trimmed) {
+    const attachedImageUrl = attachedImage?.imageUrl ?? null;
+    if ((!trimmed && !attachedImageUrl) || pendingImageUpload) {
       return;
     }
+    const composerSignature = `${trimmed}::${attachedImageUrl ?? ""}`;
 
     let idempotencyKey = composerIdempotencyKeyRef.current;
-    if (!idempotencyKey || composerIdempotencyMessageRef.current !== trimmed) {
+    if (!idempotencyKey || composerIdempotencyMessageRef.current !== composerSignature) {
       idempotencyKey = generateIdempotencyKey();
       composerIdempotencyKeyRef.current = idempotencyKey;
-      composerIdempotencyMessageRef.current = trimmed;
+      composerIdempotencyMessageRef.current = composerSignature;
     }
 
     setPendingSend(true);
@@ -1001,6 +1419,7 @@ export const GlobalChatPanel = ({
         },
         body: JSON.stringify({
           message: trimmed,
+          imageUrl: attachedImageUrl,
         }),
       });
       const payload = (await response.json()) as GlobalChatResponse;
@@ -1009,8 +1428,10 @@ export const GlobalChatPanel = ({
       }
       const createdMessage = payload.message;
       setMessageInput((current) => (current.trim() === trimmed ? "" : current));
-      composerIdempotencyKeyRef.current = null;
-      composerIdempotencyMessageRef.current = "";
+      setAttachedImage((current) =>
+        current?.imageUrl && current.imageUrl === attachedImageUrl ? null : current,
+      );
+      clearComposerIdempotency();
       setMessages((currentMessages) => {
         const mergeResult = mergeIncomingMessages(currentMessages, [createdMessage]);
         latestMessageIdRef.current = toMessageId(mergeResult.messages[mergeResult.messages.length - 1]?.id ?? 0);
@@ -1029,7 +1450,15 @@ export const GlobalChatPanel = ({
         });
       }
     }
-  }, [focusChatInput, incrementClientMetric, isPanelOpen, messageInput]);
+  }, [
+    attachedImage?.imageUrl,
+    clearComposerIdempotency,
+    focusChatInput,
+    incrementClientMetric,
+    isPanelOpen,
+    messageInput,
+    pendingImageUpload,
+  ]);
 
   useEffect(() => {
     const latestMessageId = sortedMessages[sortedMessages.length - 1]?.id ?? 0;
@@ -1226,6 +1655,49 @@ export const GlobalChatPanel = ({
                     }
               }
             >
+              <input
+                ref={chatImageInputRef}
+                accept={CHAT_IMAGE_ACCEPT_VALUE}
+                className="hidden"
+                type="file"
+                onChange={handleImageInputChange}
+              />
+              {attachedImage ? (
+                <div className="mb-2 rounded-large border border-[#4d658c]/55 bg-[#0d1b31]/85 p-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="truncate text-[11px] text-[#c7d5ef]">
+                      Attached image: {attachedImage.fileName}
+                    </p>
+                    <Button
+                      isIconOnly
+                      aria-label="Remove attached image"
+                      className="h-6 w-6 min-h-6 min-w-6 text-[#c7d5ef] data-[hover=true]:text-[#e8f0ff]"
+                      isDisabled={pendingSend || pendingImageUpload}
+                      size="sm"
+                      variant="light"
+                      onPress={removeAttachedImage}
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                  <a
+                    className="mt-2 block"
+                    href={attachedImage.imageUrl}
+                    rel="noreferrer"
+                    target="_blank"
+                  >
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      alt="Attached chat image preview"
+                      className="max-h-40 w-auto max-w-full rounded-medium border border-[#4f678f]/65 object-cover"
+                      src={attachedImage.imageUrl}
+                    />
+                  </a>
+                </div>
+              ) : null}
+              {pendingImageUpload ? (
+                <p className="mb-2 text-xs text-[#9fb3d6]">Uploading image...</p>
+              ) : null}
               <form
                 autoComplete="off"
                 className="flex items-center gap-2"
@@ -1234,6 +1706,17 @@ export const GlobalChatPanel = ({
                   void submitMessage();
                 }}
               >
+                <Button
+                  isIconOnly
+                  aria-label="Attach image"
+                  className="h-11 w-11 min-h-11 min-w-11 self-center text-[#c7d5ef] data-[hover=true]:text-[#C79B3B] data-[disabled=true]:opacity-45 sm:h-9 sm:w-9 sm:min-h-9 sm:min-w-9"
+                  isDisabled={pendingSend || pendingImageUpload}
+                  type="button"
+                  variant="light"
+                  onPress={openChatImagePicker}
+                >
+                  <ImagePlus className="h-4 w-4" />
+                </Button>
                 <label className="sr-only" htmlFor={CHAT_COMPOSER_FIELD_ID}>
                   Type text
                 </label>
@@ -1255,15 +1738,15 @@ export const GlobalChatPanel = ({
                     enterKeyHint="send"
                     inputMode="text"
                     maxLength={MAX_GLOBAL_CHAT_MESSAGE_LENGTH}
-                    placeholder="Type here"
+                    placeholder="Type a message or add image"
                     rows={1}
                     spellCheck={false}
                     value={messageInput}
                     onChange={(event) => {
                       const nextValue = event.currentTarget.value.replace(/\u00a0/g, " ");
-                      if (nextValue.trim() !== composerIdempotencyMessageRef.current) {
-                        composerIdempotencyKeyRef.current = null;
-                        composerIdempotencyMessageRef.current = "";
+                      const signature = `${nextValue.trim()}::${attachedImage?.imageUrl ?? ""}`;
+                      if (signature !== composerIdempotencyMessageRef.current) {
+                        clearComposerIdempotency();
                       }
                       setMessageInput(nextValue);
                       queueComposerHeightSync(event.currentTarget);
@@ -1289,6 +1772,7 @@ export const GlobalChatPanel = ({
                         void submitMessage();
                       }
                     }}
+                    onPaste={handleComposerPaste}
                   />
                 </div>
                 {!isEmbedded ? (
@@ -1307,7 +1791,11 @@ export const GlobalChatPanel = ({
                   aria-label="Send message"
                   className="h-11 w-11 min-h-11 min-w-11 self-center bg-transparent text-[#C79B3B] shadow-none hover:bg-transparent active:bg-transparent data-[hover=true]:bg-transparent data-[hover=true]:text-[#C79B3B] data-[pressed=true]:bg-transparent data-[disabled=true]:opacity-45 sm:h-9 sm:w-9 sm:min-h-9 sm:min-w-9"
                   isIconOnly
-                  isDisabled={pendingSend || messageInput.trim().length === 0}
+                  isDisabled={
+                    pendingSend ||
+                    pendingImageUpload ||
+                    (messageInput.trim().length === 0 && !attachedImage)
+                  }
                   isLoading={pendingSend}
                   type="submit"
                   variant="light"

@@ -1,4 +1,5 @@
 export const PROFILE_IMAGES_BUCKET = "profile-images";
+export const CHAT_IMAGES_BUCKET = "chat-images";
 
 const trimSlash = (value: string): string => value.replace(/\/+$/, "");
 

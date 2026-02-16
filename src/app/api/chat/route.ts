@@ -1,6 +1,8 @@
 import { requireAuthUser } from "@/lib/draft-auth";
+import { normalizeChatImageUrl } from "@/lib/chat-image";
 import {
   GlobalChatError,
+  MAX_GLOBAL_CHAT_IMAGE_URL_LENGTH,
   MAX_GLOBAL_CHAT_MESSAGE_LENGTH,
   listGlobalChatMessages,
   normalizeGlobalChatMessage,
@@ -18,6 +20,7 @@ import { getSupabaseAuthEnv } from "@/lib/supabase-auth-env";
 
 type PostChatBody = {
   message?: string;
+  imageUrl?: string | null;
 };
 
 const RATE_LIMIT_ERROR_CODES = new Set(["RATE_LIMIT_SHORT", "RATE_LIMIT_MINUTE"]);
@@ -25,6 +28,7 @@ const BAD_REQUEST_ERROR_CODES = new Set([
   "INVALID_SENDER_LABEL",
   "EMPTY_MESSAGE",
   "MESSAGE_TOO_LONG",
+  "INVALID_IMAGE_URL",
   "INVALID_IDEMPOTENCY_KEY",
 ]);
 
@@ -132,15 +136,28 @@ export async function POST(request: Request) {
     const idempotencyKey = parseIdempotencyKey(request);
     const body = (await request.json()) as PostChatBody;
     const message = normalizeGlobalChatMessage(body.message ?? "");
-    if (!message) {
+    const imageUrl = normalizeChatImageUrl(body.imageUrl);
+    const hasRawImageUrl = typeof body.imageUrl === "string" && body.imageUrl.trim().length > 0;
+
+    if (!message && !imageUrl) {
       metricStatusCode = 400;
-      return Response.json({ error: "Message cannot be empty." }, { status: 400 });
+      return Response.json({ error: "Message or image is required." }, { status: 400 });
     }
     if (message.length > MAX_GLOBAL_CHAT_MESSAGE_LENGTH) {
       metricStatusCode = 400;
       return Response.json(
         {
           error: `Message must be ${MAX_GLOBAL_CHAT_MESSAGE_LENGTH} characters or fewer.`,
+        },
+        { status: 400 },
+      );
+    }
+    if (hasRawImageUrl && !imageUrl) {
+      metricStatusCode = 400;
+      return Response.json(
+        {
+          error: `Image URL must be a valid HTTP(S) URL with length ${MAX_GLOBAL_CHAT_IMAGE_URL_LENGTH} characters or fewer.`,
+          code: "INVALID_IMAGE_URL",
         },
         { status: 400 },
       );
@@ -161,6 +178,7 @@ export async function POST(request: Request) {
       senderAvatarUrl,
       senderAvatarBorderColor,
       message,
+      imageUrl,
       idempotencyKey,
     });
 
