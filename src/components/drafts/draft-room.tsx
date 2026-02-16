@@ -1542,6 +1542,12 @@ export const DraftRoom = ({
     }
     return deadlineMs - (clientNowMs + serverOffsetMs);
   }, [clientNowMs, draft?.currentPickDeadlineAt, serverOffsetMs]);
+  const currentPickRemainingSeconds = useMemo(() => {
+    if (currentPickRemainingMs === null) {
+      return null;
+    }
+    return Math.max(0, Math.ceil(currentPickRemainingMs / 1000));
+  }, [currentPickRemainingMs]);
   const liveTimeLeftLabel = useMemo(
     () => formatCountdown(draft?.currentPickDeadlineAt ?? null, clientNowMs + serverOffsetMs),
     [clientNowMs, draft?.currentPickDeadlineAt, serverOffsetMs],
@@ -2904,6 +2910,13 @@ export const DraftRoom = ({
                   <p className="mt-1 text-sm font-semibold">
                     #{draft.nextPick.overallPick} • Round {draft.nextPick.roundNumber}
                   </p>
+                  <div className="mt-2 rounded-medium bg-black/55 px-3 py-2">
+                    <p className="text-4xl font-black leading-none text-white sm:text-5xl">
+                      {currentPickRemainingSeconds !== null
+                        ? `${currentPickRemainingSeconds}s`
+                        : "—"}
+                    </p>
+                  </div>
                   <p className="mt-2 text-xs text-default-500">Time left: {liveTimeLeftLabel}</p>
                 </>
               ) : yourNextPickMeta ? (
