@@ -3,34 +3,53 @@
 import { Button } from "@heroui/button";
 import { Card, CardBody, CardHeader } from "@heroui/card";
 import { Chip } from "@heroui/chip";
+import { Drawer, DrawerBody, DrawerContent, DrawerHeader } from "@heroui/drawer";
 import { Input } from "@heroui/input";
+import { Popover, PopoverContent, PopoverTrigger } from "@heroui/popover";
 import { Spinner } from "@heroui/spinner";
+import {
+  Table as HeroTable,
+  TableBody,
+  TableCell,
+  TableColumn,
+  TableHeader,
+  TableRow,
+} from "@heroui/table";
 import { Tab, Tabs } from "@heroui/tabs";
 import { Tooltip } from "@heroui/tooltip";
 import {
-  ClipboardList,
   CircleCheckBig,
-  Clock3,
+  Cog,
+  MoreHorizontal,
+  ArrowDown,
+  ArrowUp,
   Gauge,
   GripVertical,
   Pause,
   Play,
-  Plus,
   Search,
   Shield,
   ShieldAlert,
   SkipForward,
   SquareCheckBig,
-  Table,
+  Table as TableIcon,
   TableProperties,
-  Target,
   UserCheck,
+  Volume2,
+  VolumeX,
   Wifi,
   WifiOff,
   X,
 } from "lucide-react";
 import Image from "next/image";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { GlobalChatPanel } from "@/components/chat/global-chat-panel";
 import { CroppedTeamLogo } from "@/components/cropped-team-logo";
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 import type { DraftDetail, DraftParticipant, DraftStatus } from "@/types/draft";
@@ -38,6 +57,7 @@ import type { DraftDetail, DraftParticipant, DraftStatus } from "@/types/draft";
 type DraftDetailResponse = {
   draft?: DraftDetail;
   error?: string;
+  code?: string;
 };
 
 const statusColor = (status: DraftStatus) => {
@@ -53,9 +73,6 @@ const statusColor = (status: DraftStatus) => {
   return "default";
 };
 
-const formatDate = (value: string | null): string =>
-  value ? new Date(value).toLocaleString() : "N/A";
-
 const formatCountdown = (targetIso: string | null, nowMs: number): string => {
   if (!targetIso) {
     return "N/A";
@@ -66,6 +83,30 @@ const formatCountdown = (targetIso: string | null, nowMs: number): string => {
   const minutes = Math.floor(deltaSeconds / 60);
   const seconds = deltaSeconds % 60;
   return `${minutes}:${`${seconds}`.padStart(2, "0")}`;
+};
+
+const formatEtaFromMs = (ms: number | null): string => {
+  if (ms === null) {
+    return "N/A";
+  }
+  const totalSeconds = Math.max(0, Math.round(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${`${seconds}`.padStart(2, "0")}`;
+};
+
+const formatShortPlayerName = (value: string | null | undefined): string => {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return "Pending";
+  }
+  const parts = trimmed.split(/\s+/).filter(Boolean);
+  if (parts.length < 2) {
+    return trimmed;
+  }
+  const firstName = parts[0];
+  const lastInitial = parts[parts.length - 1]?.[0]?.toUpperCase();
+  return lastInitial ? `${firstName} ${lastInitial}.` : firstName;
 };
 
 const boardPickForSlot = ({
@@ -86,8 +127,9 @@ const boardPickForSlot = ({
   return picksByOverallPick.get(overallPick) ?? null;
 };
 
-const PRIMARY_ROLE_FILTERS = ["TOP", "JNG", "MID", "ADC", "SUP", "FLEX"] as const;
+const PRIMARY_ROLE_FILTERS = ["TOP", "JNG", "MID", "ADC", "SUP"] as const;
 const UNASSIGNED_ROLE = "UNASSIGNED";
+const DRAFT_ROOM_UNASSIGNED_ALIASES = new Set(["FLEX"]);
 const LOL_FANDOM_ROLE_ICONS: Record<string, string> = {
   TOP: "https://static.wikia.nocookie.net/lolesports_gamepedia_en/images/4/44/Toprole_icon.png/revision/latest",
   JNG: "https://static.wikia.nocookie.net/lolesports_gamepedia_en/images/f/fb/Junglerole_icon.png/revision/latest",
@@ -98,7 +140,7 @@ const LOL_FANDOM_ROLE_ICONS: Record<string, string> = {
 
 const normalizeRole = (role: string | null): string => {
   const value = role?.trim().toUpperCase();
-  if (!value) {
+  if (!value || DRAFT_ROOM_UNASSIGNED_ALIASES.has(value)) {
     return UNASSIGNED_ROLE;
   }
   return value;
@@ -129,9 +171,188 @@ const roleChipClassName = (role: string | null): string => {
     return "border border-violet-300/70 bg-violet-100 text-violet-800 dark:border-violet-300/40 dark:bg-violet-500/20 dark:text-violet-200";
   }
   if (normalized === "SUP") {
-    return "border border-pink-300/70 bg-pink-100 text-pink-800 dark:border-pink-300/40 dark:bg-pink-500/20 dark:text-pink-200";
+    return "border border-pink-300/80 bg-pink-100 text-pink-800 dark:border-pink-300/45 dark:bg-pink-500/25 dark:text-pink-100";
   }
   return "border border-default-300/70 bg-default-100 text-default-700 dark:border-default-300/40 dark:bg-default-500/20 dark:text-default-200";
+};
+
+const roleTileClassName = (role: string | null): string => {
+  const normalized = normalizeRole(role);
+  if (normalized === "TOP") {
+    return "border-rose-300/60 bg-rose-500/16";
+  }
+  if (normalized === "JNG") {
+    return "border-emerald-300/60 bg-emerald-500/16";
+  }
+  if (normalized === "MID") {
+    return "border-amber-300/60 bg-amber-500/16";
+  }
+  if (normalized === "ADC") {
+    return "border-violet-300/60 bg-violet-500/16";
+  }
+  if (normalized === "SUP") {
+    return "border-pink-300/60 bg-pink-500/16";
+  }
+  return "border-default-200/35 bg-content2/25";
+};
+
+const DRAFT_SETTINGS_STORAGE_KEY = "draft-room-settings-v1";
+const DRAFT_ROOM_DESKTOP_CHAT_COLLAPSE_KEY = "draft-room-desktop-chat-collapsed-v1";
+const AUTOPICK_TRIGGER_MS = 6000;
+const TOAST_DURATION_MS = 2800;
+const DOUBLE_TAP_WINDOW_MS = 320;
+const ROLE_SCARCITY_THRESHOLD = 2;
+const QUEUE_EMPTY_AUTOPICK_WARNING =
+  "Queue empty - autopick will use Best Available with server constraints.";
+const QUEUE_UNAVAILABLE_AUTOPICK_WARNING =
+  "Queued players are unavailable - autopick will use Best Available with server constraints.";
+const QUEUE_INELIGIBLE_AUTOPICK_WARNING =
+  "Queued players do not match your open roles - autopick will use Best Available with server constraints.";
+const TOP_PICK_STRIP_OFFSETS = [-2, -1, 0, 1, 2] as const;
+
+type PlayerSortKey = "name" | "team" | "role" | "rank" | "pos";
+
+type DraftRoomSettings = {
+  muted: boolean;
+  vibrateOnTurn: boolean;
+  requirePickConfirm: boolean;
+  autoPickFromQueue: boolean;
+};
+
+const DEFAULT_DRAFT_ROOM_SETTINGS: DraftRoomSettings = {
+  muted: false,
+  vibrateOnTurn: true,
+  requirePickConfirm: true,
+  autoPickFromQueue: true,
+};
+
+type ToastNotice = {
+  id: number;
+  message: string;
+};
+
+type DraftSystemFeedEvent = {
+  id: number;
+  label: string;
+  overallPick?: number;
+  createdAtMs: number;
+};
+
+const normalizeForSort = (value: string | null | undefined): string =>
+  value?.trim().toUpperCase() ?? "";
+
+const sortAvailablePlayers = (
+  players: DraftDetail["availablePlayers"],
+  sortKey: PlayerSortKey,
+) => {
+  const next = [...players];
+  next.sort((left, right) => {
+    if (sortKey === "pos") {
+      const leftRole = normalizeForSort(left.playerRole);
+      const rightRole = normalizeForSort(right.playerRole);
+      const leftRank = left.analytics?.positionRank ?? Number.POSITIVE_INFINITY;
+      const rightRank = right.analytics?.positionRank ?? Number.POSITIVE_INFINITY;
+      return (
+        leftRole.localeCompare(rightRole) ||
+        leftRank - rightRank ||
+        normalizeForSort(left.playerName).localeCompare(normalizeForSort(right.playerName))
+      );
+    }
+    if (sortKey === "rank") {
+      const leftRank = left.analytics?.overallRank ?? Number.POSITIVE_INFINITY;
+      const rightRank = right.analytics?.overallRank ?? Number.POSITIVE_INFINITY;
+      return (
+        leftRank - rightRank ||
+        normalizeForSort(left.playerName).localeCompare(normalizeForSort(right.playerName))
+      );
+    }
+    if (sortKey === "team") {
+      return (
+        normalizeForSort(left.playerTeam).localeCompare(normalizeForSort(right.playerTeam)) ||
+        normalizeForSort(left.playerName).localeCompare(normalizeForSort(right.playerName))
+      );
+    }
+    if (sortKey === "role") {
+      return (
+        normalizeForSort(left.playerRole).localeCompare(normalizeForSort(right.playerRole)) ||
+        normalizeForSort(left.playerName).localeCompare(normalizeForSort(right.playerName))
+      );
+    }
+    return normalizeForSort(left.playerName).localeCompare(normalizeForSort(right.playerName));
+  });
+  return next;
+};
+
+const queueStorageKeyFor = (draftId: number, userId: string): string =>
+  `draft-room-queue-v1:${draftId}:${userId}`;
+
+const DraftClockBadge = ({
+  deadlineIso,
+  pickSeconds,
+  draftStatus,
+  serverOffsetMs,
+}: {
+  deadlineIso: string | null;
+  pickSeconds: number;
+  draftStatus: DraftStatus | null;
+  serverOffsetMs: number;
+}) => {
+  const [nowMs, setNowMs] = useState(() => Date.now());
+
+  useEffect(() => {
+    let rafId: number | null = null;
+    let intervalId: number | null = null;
+
+    const tick = () => {
+      setNowMs(Date.now());
+      rafId = window.requestAnimationFrame(tick);
+    };
+
+    if (draftStatus === "live") {
+      rafId = window.requestAnimationFrame(tick);
+    } else {
+      intervalId = window.setInterval(() => {
+        setNowMs(Date.now());
+      }, 500);
+    }
+
+    return () => {
+      if (rafId !== null) {
+        window.cancelAnimationFrame(rafId);
+      }
+      if (intervalId !== null) {
+        window.clearInterval(intervalId);
+      }
+    };
+  }, [draftStatus]);
+
+  const effectiveNowMs = nowMs + serverOffsetMs;
+  const countdownLabel = useMemo(
+    () => formatCountdown(deadlineIso, effectiveNowMs),
+    [deadlineIso, effectiveNowMs],
+  );
+  const progressPercent = useMemo(() => {
+    if (!deadlineIso || draftStatus !== "live") {
+      return 0;
+    }
+    const deadlineMs = new Date(deadlineIso).getTime();
+    const remainingMs = Math.max(0, deadlineMs - effectiveNowMs);
+    const totalMs = Math.max(1, pickSeconds * 1000);
+    return Math.max(0, Math.min(100, (remainingMs / totalMs) * 100));
+  }, [deadlineIso, draftStatus, effectiveNowMs, pickSeconds]);
+
+  return (
+    <div
+      className="grid h-14 w-14 place-items-center rounded-full border border-primary-300/45"
+      style={{
+        background: `conic-gradient(rgba(199,155,59,0.95) ${progressPercent}%, rgba(199,155,59,0.18) 0)`,
+      }}
+    >
+      <div className="grid h-10 w-10 place-items-center rounded-full bg-content1 text-xs font-semibold">
+        {countdownLabel}
+      </div>
+    </div>
+  );
 };
 
 export const DraftRoom = ({
@@ -149,21 +370,149 @@ export const DraftRoom = ({
   const [statusPending, setStatusPending] = useState(false);
   const [statusAction, setStatusAction] = useState<string | null>(null);
   const [pickPending, setPickPending] = useState(false);
+  const [pendingManualDraftPlayerName, setPendingManualDraftPlayerName] = useState<string | null>(null);
   const [readyPending, setReadyPending] = useState(false);
   const [pickQueue, setPickQueue] = useState<string[]>([]);
+  const [isQueueHydrated, setIsQueueHydrated] = useState(false);
   const [draggedQueueIndex, setDraggedQueueIndex] = useState<number | null>(null);
+  const [selectedPlayerName, setSelectedPlayerName] = useState<string | null>(null);
+  const [searchInputValue, setSearchInputValue] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
   const [roleFilter, setRoleFilter] = useState("ALL");
-  const [serverOffsetMs, setServerOffsetMs] = useState(0);
+  const [showNeededRolesOnly, setShowNeededRolesOnly] = useState(false);
+  const [playerSort, setPlayerSort] = useState<PlayerSortKey>("rank");
+  const [mobileLiveTab, setMobileLiveTab] = useState("players");
+  const [desktopRightPanelTab, setDesktopRightPanelTab] = useState<"team" | "activity">("team");
+  const [isDesktopChatCollapsed, setIsDesktopChatCollapsed] = useState(true);
+  const [showDraftSettings, setShowDraftSettings] = useState(false);
+  const [isCommissionerDrawerOpen, setIsCommissionerDrawerOpen] = useState(false);
+  const [settings, setSettings] = useState<DraftRoomSettings>(DEFAULT_DRAFT_ROOM_SETTINGS);
+  const [connectionStatus, setConnectionStatus] = useState("connecting");
+  const [toastNotices, setToastNotices] = useState<ToastNotice[]>([]);
+  const [, setSystemFeedEvents] = useState<DraftSystemFeedEvent[]>([]);
   const [clientNowMs, setClientNowMs] = useState(() => Date.now());
+  const [serverOffsetMs, setServerOffsetMs] = useState(0);
+  const [isMobileViewport, setIsMobileViewport] = useState(false);
+  const [showExpandedPanels, setShowExpandedPanels] = useState(false);
+  const [isPlayerDetailDrawerOpen, setIsPlayerDetailDrawerOpen] = useState(false);
+  const [isQueueDrawerOpen, setIsQueueDrawerOpen] = useState(false);
+  const [isMobileQueueSheetOpen, setIsMobileQueueSheetOpen] = useState(false);
+  const [timelineHighlightPick, setTimelineHighlightPick] = useState<number | null>(null);
+  const [showStatusDetails, setShowStatusDetails] = useState(false);
+  const [selectionNotice, setSelectionNotice] = useState<string | null>(null);
+  const [showShortcutsHelp, setShowShortcutsHelp] = useState(false);
+  const [timeoutOutcomeMessage, setTimeoutOutcomeMessage] = useState<string | null>(null);
+  const latestToastIdRef = useRef(0);
+  const latestSystemFeedEventIdRef = useRef(0);
+  const previousConnectionStatusRef = useRef<string | null>(null);
+  const previousDraftSnapshotRef = useRef<{
+    status: DraftStatus | null;
+    pickCount: number;
+    onClockUserId: string | null;
+    picksUntilTurn: number | null;
+  } | null>(null);
+  const autoPickAttemptedForPickRef = useRef<number | null>(null);
+  const lastPlayerTapRef = useRef<{ playerName: string; atMs: number } | null>(null);
+  const loadDraftInFlightRef = useRef(false);
+  const mobilePlayerSheetTouchStartYRef = useRef<number | null>(null);
+  const timeoutExpectedPickRef = useRef<number | null>(null);
+  const reconnectStartedAtMsRef = useRef<number | null>(null);
+  const previousAutopickLockedRef = useRef<boolean | null>(null);
+  const lastStalenessBucketRef = useRef<number | null>(null);
+  const [lastDraftSyncMs, setLastDraftSyncMs] = useState(() => Date.now());
 
   const applyDraft = useCallback((nextDraft: DraftDetail) => {
     setDraft(nextDraft);
+    setLastDraftSyncMs(Date.now());
     const serverNowMs = new Date(nextDraft.serverNow).getTime();
     if (Number.isFinite(serverNowMs)) {
       setServerOffsetMs(serverNowMs - Date.now());
     }
   }, []);
+
+  const pushToast = useCallback((message: string) => {
+    const id = latestToastIdRef.current + 1;
+    latestToastIdRef.current = id;
+    setToastNotices((prev) => [...prev, { id, message }].slice(-4));
+    window.setTimeout(() => {
+      setToastNotices((prev) => prev.filter((entry) => entry.id !== id));
+    }, TOAST_DURATION_MS);
+  }, []);
+
+  const pushSystemFeedEvent = useCallback((label: string, overallPick?: number) => {
+    const id = latestSystemFeedEventIdRef.current + 1;
+    latestSystemFeedEventIdRef.current = id;
+    const createdAtMs = Date.now();
+    setSystemFeedEvents((previous) =>
+      [...previous, { id, label, overallPick, createdAtMs }].slice(-60),
+    );
+  }, []);
+
+  const trackDraftEvent = useCallback(
+    (event: string, payload: Record<string, unknown> = {}) => {
+      const detail = {
+        event,
+        payload,
+        draftId,
+        occurredAt: new Date().toISOString(),
+      };
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent("draft-room-analytics", { detail }));
+      }
+      if (process.env.NODE_ENV !== "production") {
+        // Keep local instrumentation visible during development and QA.
+        console.info("[draft-room]", detail);
+      }
+    },
+    [draftId],
+  );
+
+  const jumpToTimelinePick = useCallback((overallPick: number | null) => {
+    if (typeof overallPick !== "number") {
+      return;
+    }
+    setTimelineHighlightPick(overallPick);
+    window.requestAnimationFrame(() => {
+      const target = document.getElementById(`timeline-pick-${overallPick}`);
+      if (target) {
+        target.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+    });
+  }, []);
+
+  const playCue = useCallback(
+    (frequency: number, durationMs: number) => {
+      if (settings.muted || typeof window === "undefined") {
+        return;
+      }
+      const AudioContextCtor =
+        window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      if (!AudioContextCtor) {
+        return;
+      }
+
+      try {
+        const audioContext = new AudioContextCtor();
+        const oscillator = audioContext.createOscillator();
+        const gain = audioContext.createGain();
+        oscillator.type = "sine";
+        oscillator.frequency.setValueAtTime(frequency, audioContext.currentTime);
+        gain.gain.setValueAtTime(0.0001, audioContext.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.05, audioContext.currentTime + 0.02);
+        gain.gain.exponentialRampToValueAtTime(
+          0.0001,
+          audioContext.currentTime + durationMs / 1000,
+        );
+        oscillator.connect(gain);
+        gain.connect(audioContext.destination);
+        oscillator.start();
+        oscillator.stop(audioContext.currentTime + durationMs / 1000);
+      } catch {
+        // no-op: audio cue is best effort.
+      }
+    },
+    [settings.muted],
+  );
 
   const loadDraft = useCallback(async () => {
     const response = await fetch(`/api/drafts/${draftId}`, {
@@ -179,6 +528,134 @@ export const DraftRoom = ({
   }, [applyDraft, draftId]);
   const draftStatus = draft?.status ?? null;
 
+  const requestDraftRefresh = useCallback(async () => {
+    if (loadDraftInFlightRef.current) {
+      return;
+    }
+    loadDraftInFlightRef.current = true;
+    try {
+      await loadDraft();
+    } finally {
+      loadDraftInFlightRef.current = false;
+    }
+  }, [loadDraft]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    try {
+      const raw = window.localStorage.getItem(DRAFT_SETTINGS_STORAGE_KEY);
+      if (!raw) {
+        return;
+      }
+      const parsed = JSON.parse(raw) as Partial<DraftRoomSettings>;
+      setSettings((prev) => ({
+        muted: typeof parsed.muted === "boolean" ? parsed.muted : prev.muted,
+        vibrateOnTurn:
+          typeof parsed.vibrateOnTurn === "boolean"
+            ? parsed.vibrateOnTurn
+            : prev.vibrateOnTurn,
+        requirePickConfirm:
+          typeof parsed.requirePickConfirm === "boolean"
+            ? parsed.requirePickConfirm
+            : prev.requirePickConfirm,
+        autoPickFromQueue:
+          typeof parsed.autoPickFromQueue === "boolean"
+            ? parsed.autoPickFromQueue
+            : prev.autoPickFromQueue,
+      }));
+    } catch {
+      // no-op: local setting payload can be safely ignored.
+    }
+  }, []);
+
+  useEffect(() => {
+    if (draftStatus === "live" || draftStatus === "paused") {
+      setShowExpandedPanels(false);
+      return;
+    }
+    setShowExpandedPanels(true);
+  }, [draftId, draftStatus]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    window.localStorage.setItem(DRAFT_SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+  }, [settings]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    const raw = window.localStorage.getItem(DRAFT_ROOM_DESKTOP_CHAT_COLLAPSE_KEY);
+    if (raw === "true") {
+      setIsDesktopChatCollapsed(true);
+      return;
+    }
+    if (raw === "false") {
+      setIsDesktopChatCollapsed(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    window.localStorage.setItem(
+      DRAFT_ROOM_DESKTOP_CHAT_COLLAPSE_KEY,
+      isDesktopChatCollapsed ? "true" : "false",
+    );
+  }, [isDesktopChatCollapsed]);
+
+  useEffect(() => {
+    const id = window.setTimeout(() => {
+      setSearchTerm(searchInputValue);
+    }, 160);
+    return () => {
+      window.clearTimeout(id);
+    };
+  }, [searchInputValue]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    setIsQueueHydrated(false);
+    const storageKey = queueStorageKeyFor(draftId, currentUserId);
+    try {
+      const raw = window.localStorage.getItem(storageKey);
+      if (!raw) {
+        setPickQueue([]);
+        setIsQueueHydrated(true);
+        return;
+      }
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) {
+        setPickQueue([]);
+        setIsQueueHydrated(true);
+        return;
+      }
+      const normalized = parsed
+        .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
+        .filter((entry): entry is string => Boolean(entry));
+      setPickQueue([...new Set(normalized)]);
+      setIsQueueHydrated(true);
+    } catch {
+      setPickQueue([]);
+      setIsQueueHydrated(true);
+    }
+  }, [currentUserId, draftId]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !isQueueHydrated) {
+      return;
+    }
+    const storageKey = queueStorageKeyFor(draftId, currentUserId);
+    window.localStorage.setItem(storageKey, JSON.stringify(pickQueue));
+  }, [currentUserId, draftId, isQueueHydrated, pickQueue]);
+
   useEffect(() => {
     let canceled = false;
 
@@ -186,7 +663,7 @@ export const DraftRoom = ({
       try {
         setLoading(true);
         setError(null);
-        await loadDraft();
+        await requestDraftRefresh();
       } catch (loadError) {
         if (!canceled) {
           setError(loadError instanceof Error ? loadError.message : "Unable to load draft.");
@@ -202,7 +679,7 @@ export const DraftRoom = ({
     return () => {
       canceled = true;
     };
-  }, [loadDraft]);
+  }, [requestDraftRefresh]);
 
   useEffect(() => {
     if (!draftStatus) {
@@ -210,10 +687,10 @@ export const DraftRoom = ({
     }
     const intervalMs = draftStatus === "live" ? 3000 : draftStatus === "scheduled" ? 5000 : 10000;
     const id = window.setInterval(() => {
-      void loadDraft().catch(() => undefined);
+      void requestDraftRefresh().catch(() => undefined);
     }, intervalMs);
     return () => window.clearInterval(id);
-  }, [draftStatus, loadDraft]);
+  }, [draftStatus, requestDraftRefresh]);
 
   useEffect(() => {
     const supabase = getSupabaseBrowserClient();
@@ -228,7 +705,7 @@ export const DraftRoom = ({
           filter: `id=eq.${draftId}`,
         },
         () => {
-          void loadDraft().catch(() => undefined);
+          void requestDraftRefresh().catch(() => undefined);
         },
       )
       .on(
@@ -240,7 +717,7 @@ export const DraftRoom = ({
           filter: `draft_id=eq.${draftId}`,
         },
         () => {
-          void loadDraft().catch(() => undefined);
+          void requestDraftRefresh().catch(() => undefined);
         },
       )
       .on(
@@ -252,22 +729,185 @@ export const DraftRoom = ({
           filter: `draft_id=eq.${draftId}`,
         },
         () => {
-          void loadDraft().catch(() => undefined);
+          void requestDraftRefresh().catch(() => undefined);
         },
       )
-      .subscribe();
+      .subscribe((status) => {
+        setConnectionStatus(status);
+      });
 
     return () => {
       void supabase.removeChannel(channel);
     };
-  }, [draftId, loadDraft]);
+  }, [draftId, requestDraftRefresh]);
 
   useEffect(() => {
+    const previous = previousConnectionStatusRef.current;
+    if (previous === null) {
+      previousConnectionStatusRef.current = connectionStatus;
+      return;
+    }
+    if (previous === connectionStatus) {
+      return;
+    }
+    if (connectionStatus === "SUBSCRIBED") {
+      const reconnectStartedAt = reconnectStartedAtMsRef.current;
+      if (typeof reconnectStartedAt === "number") {
+        trackDraftEvent("reconnect.end", { durationMs: Date.now() - reconnectStartedAt });
+      }
+      reconnectStartedAtMsRef.current = null;
+      pushSystemFeedEvent("Realtime connection restored.");
+      pushToast("Synced to live draft.");
+      jumpToTimelinePick(draft?.nextPick?.overallPick ?? null);
+    } else if (connectionStatus === "CHANNEL_ERROR" || connectionStatus === "TIMED_OUT") {
+      if (reconnectStartedAtMsRef.current === null) {
+        reconnectStartedAtMsRef.current = Date.now();
+        trackDraftEvent("reconnect.start", { status: connectionStatus });
+      }
+      const isCurrentUserClocked =
+        draft?.status === "live" && draft?.nextPick?.participantUserId === currentUserId;
+      if (connectionStatus === "TIMED_OUT" && isCurrentUserClocked && draft?.nextPick?.overallPick) {
+        timeoutExpectedPickRef.current = draft.nextPick.overallPick;
+        setTimeoutOutcomeMessage(null);
+      }
+      const degradedReason = connectionStatus.toLowerCase().replace("_", " ");
+      const degradedMessage = isCurrentUserClocked
+        ? settings.autoPickFromQueue
+          ? `Realtime degraded: ${degradedReason}. Read-only mode enabled. If your clock expires, timeout fallback uses queue target then server board order.`
+          : `Realtime degraded: ${degradedReason}. Read-only mode enabled. If your clock expires, fallback pick rules apply.`
+        : `Realtime degraded: ${degradedReason}. Read-only mode enabled.`;
+      pushSystemFeedEvent(
+        degradedMessage,
+        draft?.nextPick?.overallPick ?? undefined,
+      );
+    } else if (connectionStatus === "CLOSED") {
+      if (reconnectStartedAtMsRef.current === null) {
+        reconnectStartedAtMsRef.current = Date.now();
+        trackDraftEvent("reconnect.start", { status: connectionStatus });
+      }
+      pushSystemFeedEvent("Realtime channel closed.");
+    }
+    previousConnectionStatusRef.current = connectionStatus;
+  }, [
+    connectionStatus,
+    currentUserId,
+    draft?.nextPick?.participantUserId,
+    draft?.nextPick?.overallPick,
+    draft?.status,
+    jumpToTimelinePick,
+    pushSystemFeedEvent,
+    pushToast,
+    settings.autoPickFromQueue,
+    trackDraftEvent,
+  ]);
+
+  useEffect(() => {
+    const expectedPick = timeoutExpectedPickRef.current;
+    if (!draft || expectedPick === null) {
+      return;
+    }
+    const timeoutPick = draft.picks.find((pick) => pick.overallPick === expectedPick) ?? null;
+    const movedPastExpectedPick = (draft.nextPick?.overallPick ?? 0) > expectedPick;
+    if (!timeoutPick && !movedPastExpectedPick) {
+      return;
+    }
+    if (timeoutPick?.participantUserId === currentUserId) {
+      setTimeoutOutcomeMessage(`Timed out -> Autopicked: ${timeoutPick.playerName}`);
+      pushSystemFeedEvent(`Timed out. Autopicked: ${timeoutPick.playerName}.`, timeoutPick.overallPick);
+      trackDraftEvent("timeout.outcome", {
+        outcome: "autopicked",
+        playerName: timeoutPick.playerName,
+        overallPick: timeoutPick.overallPick,
+      });
+    } else {
+      setTimeoutOutcomeMessage("Timed out -> Skipped");
+      pushSystemFeedEvent("Timed out. Pick was skipped.");
+      trackDraftEvent("timeout.outcome", { outcome: "skipped", expectedPick });
+    }
+    setPendingManualDraftPlayerName(null);
+    setSelectedPlayerName(null);
+    setSelectionNotice(timeoutPick ? "Pick locked by server outcome." : "Clock expired before confirmation.");
+    jumpToTimelinePick(timeoutPick?.overallPick ?? expectedPick);
+    timeoutExpectedPickRef.current = null;
+  }, [currentUserId, draft, jumpToTimelinePick, pushSystemFeedEvent, trackDraftEvent]);
+
+  useEffect(() => {
+    if (!timeoutOutcomeMessage) {
+      return;
+    }
+    if (timeoutOutcomeMessage.startsWith("Clock expired ->")) {
+      return;
+    }
+    const id = window.setTimeout(() => {
+      setTimeoutOutcomeMessage(null);
+    }, 10000);
+    return () => {
+      window.clearTimeout(id);
+    };
+  }, [timeoutOutcomeMessage]);
+
+  useEffect(() => {
+    if (!selectionNotice) {
+      return;
+    }
+    const id = window.setTimeout(() => {
+      setSelectionNotice(null);
+    }, 7000);
+    return () => {
+      window.clearTimeout(id);
+    };
+  }, [selectionNotice]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    const mediaQuery = window.matchMedia("(max-width: 767px)");
+    const syncViewport = () => {
+      setIsMobileViewport(mediaQuery.matches);
+    };
+    syncViewport();
+    mediaQuery.addEventListener("change", syncViewport);
+    return () => {
+      mediaQuery.removeEventListener("change", syncViewport);
+    };
+  }, []);
+
+  useEffect(() => {
+    const isCurrentUserClocked =
+      draftStatus === "live" && draft?.nextPick?.participantUserId === currentUserId;
+    const shouldTick =
+      isCurrentUserClocked ||
+      connectionStatus !== "SUBSCRIBED" ||
+      Boolean(timeoutOutcomeMessage);
+    if (!shouldTick) {
+      setClientNowMs(Date.now());
+      return;
+    }
+    // Keep a stable one-second cadence so large live-draft panes do not rerender at sub-second frequency.
+    const intervalMs = 1000;
     const id = window.setInterval(() => {
       setClientNowMs(Date.now());
-    }, 1000);
+    }, intervalMs);
     return () => window.clearInterval(id);
-  }, []);
+  }, [connectionStatus, currentUserId, draft?.nextPick?.participantUserId, draftStatus, timeoutOutcomeMessage]);
+
+  useEffect(() => {
+    if (!isMobileViewport) {
+      setIsMobileQueueSheetOpen(false);
+      return;
+    }
+    if (!(draftStatus === "live" || draftStatus === "paused")) {
+      setIsMobileQueueSheetOpen(false);
+    }
+  }, [draftStatus, isMobileViewport]);
+
+  useEffect(() => {
+    if (!isMobileViewport || !isMobileQueueSheetOpen) {
+      return;
+    }
+    setSelectedPlayerName(null);
+  }, [isMobileQueueSheetOpen, isMobileViewport]);
 
   const sendPresence = useCallback(
     async ({ ready }: { ready?: boolean } = {}) => {
@@ -329,18 +969,24 @@ export const DraftRoom = ({
         value: "ALL",
         label: "All",
         count: draft?.availablePlayers.length ?? 0,
+        isScarce: false,
       },
-      ...PRIMARY_ROLE_FILTERS.map((role) => ({
-        value: role,
-        label: role,
-        count: roleCounts.get(role) ?? 0,
-      })),
+      ...PRIMARY_ROLE_FILTERS.map((role) => {
+        const count = roleCounts.get(role) ?? 0;
+        return {
+          value: role,
+          label: role,
+          count,
+          isScarce: count > 0 && count <= ROLE_SCARCITY_THRESHOLD,
+        };
+      }),
       ...(roleCounts.get(UNASSIGNED_ROLE)
         ? [
             {
               value: UNASSIGNED_ROLE,
               label: "N/A",
               count: roleCounts.get(UNASSIGNED_ROLE) ?? 0,
+              isScarce: false,
             },
           ]
         : []),
@@ -370,6 +1016,10 @@ export const DraftRoom = ({
       );
     });
   }, [draft?.availablePlayers, roleFilter, searchTerm]);
+  const sortedAvailablePlayers = useMemo(
+    () => sortAvailablePlayers(filteredAvailablePlayers, playerSort),
+    [filteredAvailablePlayers, playerSort],
+  );
 
   const onClockUserId = draft?.nextPick?.participantUserId ?? null;
   const canCurrentUserPick =
@@ -377,7 +1027,11 @@ export const DraftRoom = ({
     Boolean(draft?.nextPick) &&
     onClockUserId === currentUserId;
   const canEditPickQueue = isCurrentUserParticipant && draft?.status !== "completed";
-  const effectiveNowMs = clientNowMs + serverOffsetMs;
+  const isRealtimeReadOnly = connectionStatus !== "SUBSCRIBED";
+  const canQueueActions = canEditPickQueue && !isRealtimeReadOnly;
+  const canDraftActions = canCurrentUserPick && !isRealtimeReadOnly;
+  const secondsSinceLastSync = Math.max(0, Math.floor((clientNowMs - lastDraftSyncMs) / 1000));
+  const connectionLabel = connectionStatus.toLowerCase().replaceAll("_", " ");
   const currentPresence = presenceByUserId.get(currentUserId) ?? null;
   const participantsByPosition = useMemo(
     () => [...(draft?.participants ?? [])].sort((a, b) => a.draftPosition - b.draftPosition),
@@ -394,15 +1048,485 @@ export const DraftRoom = ({
         .filter((player): player is DraftDetail["availablePlayers"][number] => Boolean(player)),
     [availablePlayersByName, pickQueue],
   );
-  const nextQueuedPlayerName = pickQueue[0] ?? null;
+  const selectedPlayer = selectedPlayerName
+    ? availablePlayersByName.get(selectedPlayerName) ?? null
+    : null;
 
   useEffect(() => {
+    const previous = previousAutopickLockedRef.current;
+    if (previous === null) {
+      previousAutopickLockedRef.current = isRealtimeReadOnly;
+      return;
+    }
+    if (previous !== isRealtimeReadOnly) {
+      trackDraftEvent("autopick.locked_state", {
+        locked: isRealtimeReadOnly,
+        connectionStatus,
+        enabled: settings.autoPickFromQueue,
+      });
+    }
+    previousAutopickLockedRef.current = isRealtimeReadOnly;
+  }, [connectionStatus, isRealtimeReadOnly, settings.autoPickFromQueue, trackDraftEvent]);
+
+  useEffect(() => {
+    if (!isRealtimeReadOnly) {
+      lastStalenessBucketRef.current = null;
+      return;
+    }
+    const bucket = Math.floor(secondsSinceLastSync / 5);
+    if (bucket <= 0 || lastStalenessBucketRef.current === bucket) {
+      return;
+    }
+    lastStalenessBucketRef.current = bucket;
+    trackDraftEvent("latency.staleness_warning", {
+      secondsSinceLastSync,
+      connectionStatus,
+    });
+  }, [connectionStatus, isRealtimeReadOnly, secondsSinceLastSync, trackDraftEvent]);
+
+  const userPicks = useMemo(
+    () => (draft?.picks ?? []).filter((pick) => pick.participantUserId === currentUserId),
+    [draft?.picks, currentUserId],
+  );
+  const userRoleSet = useMemo(
+    () => new Set(userPicks.map((pick) => normalizeRole(pick.playerRole))),
+    [userPicks],
+  );
+  const queuedEligiblePlayers = useMemo(
+    () =>
+      queuedPlayers.filter((player) => {
+        const normalizedRole = normalizeRole(player.playerRole);
+        if (normalizedRole === UNASSIGNED_ROLE) {
+          return false;
+        }
+        return !userRoleSet.has(normalizedRole);
+      }),
+    [queuedPlayers, userRoleSet],
+  );
+  const nextQueuedEligiblePlayerName = queuedEligiblePlayers[0]?.playerName ?? null;
+  const rosterNeeds = useMemo(
+    () => PRIMARY_ROLE_FILTERS.filter((role) => !userRoleSet.has(role)),
+    [userRoleSet],
+  );
+  const rosterSlots = useMemo(() => {
+    const byRole = new Map<string, DraftDetail["picks"][number]>();
+    const overflow: DraftDetail["picks"][number][] = [];
+    for (const pick of userPicks) {
+      const normalizedRole = normalizeRole(pick.playerRole);
+      if (PRIMARY_ROLE_FILTERS.includes(normalizedRole as (typeof PRIMARY_ROLE_FILTERS)[number])) {
+        if (!byRole.has(normalizedRole)) {
+          byRole.set(normalizedRole, pick);
+        } else {
+          overflow.push(pick);
+        }
+      } else {
+        overflow.push(pick);
+      }
+    }
+    return {
+      byRole,
+      overflow,
+    };
+  }, [userPicks]);
+  const bestNeedSuggestion = useMemo(() => {
+    for (const neededRole of rosterNeeds) {
+      const candidate = sortedAvailablePlayers.find(
+        (player) => normalizeRole(player.playerRole) === neededRole,
+      );
+      if (candidate) {
+        return {
+          role: neededRole,
+          playerName: candidate.playerName,
+        };
+      }
+    }
+    return null;
+  }, [rosterNeeds, sortedAvailablePlayers]);
+  const rosterNeedsSet = useMemo<Set<string>>(() => new Set(rosterNeeds), [rosterNeeds]);
+  const displayAvailablePlayers = useMemo(() => {
+    if (!showNeededRolesOnly || rosterNeedsSet.size === 0) {
+      return sortedAvailablePlayers;
+    }
+    return sortedAvailablePlayers.filter((player) => rosterNeedsSet.has(normalizeRole(player.playerRole)));
+  }, [rosterNeedsSet, showNeededRolesOnly, sortedAvailablePlayers]);
+  const quickQueueSuggestions = useMemo(() => {
+    const suggestions: Array<{ label: string; playerName: string }> = [];
+    const seen = new Set<string>();
+    const queueSet = new Set(pickQueue);
+
+    for (const role of rosterNeeds) {
+      const candidate = sortedAvailablePlayers.find(
+        (player) => normalizeRole(player.playerRole) === role && !queueSet.has(player.playerName),
+      );
+      if (!candidate || seen.has(candidate.playerName)) {
+        continue;
+      }
+      suggestions.push({
+        label: `Best ${role}`,
+        playerName: candidate.playerName,
+      });
+      seen.add(candidate.playerName);
+      if (suggestions.length >= 3) {
+        return suggestions;
+      }
+    }
+
+    for (const candidate of sortedAvailablePlayers) {
+      if (queueSet.has(candidate.playerName) || seen.has(candidate.playerName)) {
+        continue;
+      }
+      suggestions.push({
+        label: `Best ${formatRoleLabel(candidate.playerRole)}`,
+        playerName: candidate.playerName,
+      });
+      seen.add(candidate.playerName);
+      if (suggestions.length >= 3) {
+        break;
+      }
+    }
+    return suggestions;
+  }, [pickQueue, rosterNeeds, sortedAvailablePlayers]);
+  const hasSearchFilter = searchInputValue.trim().length > 0;
+  const hasRoleFilter = roleFilter !== "ALL";
+  const activePlayerFilterCount =
+    Number(hasSearchFilter) + Number(hasRoleFilter) + Number(showNeededRolesOnly);
+  const hasAnyPlayerFilter = activePlayerFilterCount > 0;
+  const resetPlayerFilters = useCallback(() => {
+    setSearchInputValue("");
+    setSearchTerm("");
+    setRoleFilter("ALL");
+    setShowNeededRolesOnly(false);
+  }, []);
+  const applyRoleFilter = useCallback((nextRole: string) => {
+    setRoleFilter(nextRole);
+    if (nextRole !== "ALL") {
+      setPlayerSort("pos");
+    }
+  }, []);
+
+  const picksUntilCurrentUser = useMemo(() => {
+    if (!draft?.nextPick) {
+      return null;
+    }
+    if (canCurrentUserPick) {
+      return 0;
+    }
+    const participantCount = draft.participants.length;
+    if (participantCount < 2) {
+      return null;
+    }
+
+    for (let overallPick = draft.nextPick.overallPick; overallPick <= draft.totalPickCount; overallPick += 1) {
+      const roundNumber = Math.ceil(overallPick / participantCount);
+      const offset = (overallPick - 1) % participantCount;
+      const participantIndex = roundNumber % 2 === 1 ? participantCount - 1 - offset : offset;
+      const participant = draft.participants[participantIndex];
+      if (participant?.userId === currentUserId) {
+        return overallPick - draft.nextPick.overallPick;
+      }
+    }
+    return null;
+  }, [canCurrentUserPick, currentUserId, draft]);
+
+  const averagePickMs = useMemo(() => {
+    const defaultMs = Math.max(4000, (draft?.pickSeconds ?? 75) * 1000);
+    const picks = draft?.picks ?? [];
+    if (picks.length < 2) {
+      return defaultMs;
+    }
+    const recent = picks.slice(-10);
+    const deltasMs: number[] = [];
+    for (let index = 1; index < recent.length; index += 1) {
+      const previousMs = new Date(recent[index - 1].pickedAt).getTime();
+      const currentMs = new Date(recent[index].pickedAt).getTime();
+      if (!Number.isFinite(previousMs) || !Number.isFinite(currentMs)) {
+        continue;
+      }
+      const deltaMs = currentMs - previousMs;
+      if (deltaMs > 0) {
+        deltasMs.push(deltaMs);
+      }
+    }
+    if (deltasMs.length === 0) {
+      return defaultMs;
+    }
+    const averageMs = deltasMs.reduce((sum, value) => sum + value, 0) / deltasMs.length;
+    return Math.max(4000, Math.min(defaultMs * 1.4, averageMs));
+  }, [draft?.pickSeconds, draft?.picks]);
+  const currentPickRemainingMs = useMemo(() => {
+    if (!draft?.currentPickDeadlineAt) {
+      return null;
+    }
+    const deadlineMs = new Date(draft.currentPickDeadlineAt).getTime();
+    if (!Number.isFinite(deadlineMs)) {
+      return null;
+    }
+    return deadlineMs - (clientNowMs + serverOffsetMs);
+  }, [clientNowMs, draft?.currentPickDeadlineAt, serverOffsetMs]);
+  const liveTimeLeftLabel = useMemo(
+    () => formatCountdown(draft?.currentPickDeadlineAt ?? null, clientNowMs + serverOffsetMs),
+    [clientNowMs, draft?.currentPickDeadlineAt, serverOffsetMs],
+  );
+  const topPickStripSlots = useMemo(() => {
+    const labelForOffset = (offset: number): string => {
+      if (offset === 0) {
+        return "Now";
+      }
+      if (offset < 0) {
+        const picksAgo = Math.abs(offset);
+        return `${picksAgo} ${picksAgo === 1 ? "pick" : "picks"} ago`;
+      }
+      if (offset === 1) {
+        return "Next";
+      }
+      return `Next +${offset - 1}`;
+    };
+    if (!draft || draft.participants.length < 1 || draft.totalPickCount < 1) {
+      return [] as Array<{
+        key: string;
+        label: string;
+        offset: number;
+        slot: {
+          overallPick: number;
+          roundNumber: number;
+          participantDisplayName: string;
+          pickedPlayerName: string | null;
+          pickedPlayerTeam: string | null;
+          pickedPlayerRole: string | null;
+          pickedTeamIconUrl: string | null;
+        } | null;
+      }>;
+    }
+
+    const currentOverallPick =
+      draft.nextPick?.overallPick ?? (draft.picks.length > 0 ? draft.totalPickCount + 1 : 1);
+    const participantCount = draft.participants.length;
+    const slots: Array<{
+      key: string;
+      label: string;
+      offset: number;
+      slot: {
+        overallPick: number;
+        roundNumber: number;
+        participantDisplayName: string;
+        pickedPlayerName: string | null;
+        pickedPlayerTeam: string | null;
+        pickedPlayerRole: string | null;
+        pickedTeamIconUrl: string | null;
+      } | null;
+    }> = [];
+
+    for (const offset of TOP_PICK_STRIP_OFFSETS) {
+      const overallPick = currentOverallPick + offset;
+      if (overallPick < 1 || overallPick > draft.totalPickCount) {
+        continue;
+      }
+      const roundNumber = Math.ceil(overallPick / participantCount);
+      const roundOffset = (overallPick - 1) % participantCount;
+      const participantIndex = roundNumber % 2 === 1 ? participantCount - 1 - roundOffset : roundOffset;
+      const participant = draft.participants[participantIndex];
+      if (!participant) {
+        slots.push({
+          key: `slot-${overallPick}`,
+          label: labelForOffset(offset),
+          offset,
+          slot: null,
+        });
+        continue;
+      }
+      const picked = picksByOverallPick.get(overallPick) ?? null;
+      slots.push({
+        key: `slot-${overallPick}`,
+        label: labelForOffset(offset),
+        offset,
+        slot: {
+          overallPick,
+          roundNumber,
+          participantDisplayName: participant.displayName,
+          pickedPlayerName: picked?.playerName ?? null,
+          pickedPlayerTeam: picked?.playerTeam ?? null,
+          pickedPlayerRole: picked?.playerRole ?? null,
+          pickedTeamIconUrl: picked?.teamIconUrl ?? null,
+        },
+      });
+    }
+    return slots;
+  }, [draft, picksByOverallPick]);
+  const yourNextPickMeta = useMemo(() => {
+    if (!draft?.nextPick || typeof picksUntilCurrentUser !== "number") {
+      return null;
+    }
+    const overallPick = draft.nextPick.overallPick + picksUntilCurrentUser;
+    const roundNumber = Math.ceil(overallPick / draft.participants.length);
+    const etaMs = picksUntilCurrentUser === 0 ? 0 : picksUntilCurrentUser * averagePickMs;
+    return {
+      overallPick,
+      roundNumber,
+      picksAway: picksUntilCurrentUser,
+      etaMs,
+    };
+  }, [averagePickMs, draft?.nextPick, draft?.participants.length, picksUntilCurrentUser]);
+  const isUpNext = useMemo(
+    () =>
+      typeof picksUntilCurrentUser === "number" &&
+      picksUntilCurrentUser === 1,
+    [picksUntilCurrentUser],
+  );
+  const draftActionPlayerName = selectedPlayer?.playerName ?? nextQueuedEligiblePlayerName ?? null;
+  const hasPendingManualConfirm = Boolean(pendingManualDraftPlayerName);
+  const serverTimeoutFallbackPlayer = useMemo(() => {
+    if (!draft?.availablePlayers || userPicks.length >= 5) {
+      return null;
+    }
+    const eligible = draft.availablePlayers
+      .filter((player) => {
+        const normalizedRole = normalizeRole(player.playerRole);
+        if (normalizedRole === UNASSIGNED_ROLE) {
+          return false;
+        }
+        return !userRoleSet.has(normalizedRole);
+      })
+      .sort((left, right) =>
+        normalizeForSort(left.playerName).localeCompare(normalizeForSort(right.playerName)),
+      );
+    return eligible[0] ?? null;
+  }, [draft?.availablePlayers, userPicks.length, userRoleSet]);
+  const queueFirstFallbackPlayerName = useMemo(
+    () => nextQueuedEligiblePlayerName ?? serverTimeoutFallbackPlayer?.playerName ?? null,
+    [nextQueuedEligiblePlayerName, serverTimeoutFallbackPlayer?.playerName],
+  );
+  const queueFirstFallbackPlayer = useMemo(
+    () =>
+      queueFirstFallbackPlayerName
+        ? availablePlayersByName.get(queueFirstFallbackPlayerName) ?? null
+        : null,
+    [availablePlayersByName, queueFirstFallbackPlayerName],
+  );
+  const autopickTargetLabel = useMemo(() => {
+    if (!queueFirstFallbackPlayerName) {
+      return "No eligible timeout fallback";
+    }
+    if (!queueFirstFallbackPlayer) {
+      return queueFirstFallbackPlayerName;
+    }
+    return `${queueFirstFallbackPlayer.playerName} (${formatRoleLabel(queueFirstFallbackPlayer.playerRole)})`;
+  }, [queueFirstFallbackPlayer, queueFirstFallbackPlayerName]);
+  const serverTimeoutFallbackLabel = useMemo(() => {
+    if (!serverTimeoutFallbackPlayer) {
+      return "No eligible player";
+    }
+    return `${serverTimeoutFallbackPlayer.playerName} (${formatRoleLabel(serverTimeoutFallbackPlayer.playerRole)})`;
+  }, [serverTimeoutFallbackPlayer]);
+  const autopickCountdownSeconds = useMemo(() => {
+    if (
+      !canCurrentUserPick ||
+      !settings.autoPickFromQueue ||
+      !queueFirstFallbackPlayerName ||
+      currentPickRemainingMs === null
+    ) {
+      return null;
+    }
+    const remainingSeconds = Math.ceil(currentPickRemainingMs / 1000);
+    if (remainingSeconds > 16 || remainingSeconds < 0) {
+      return null;
+    }
+    return remainingSeconds;
+  }, [
+    canCurrentUserPick,
+    currentPickRemainingMs,
+    queueFirstFallbackPlayerName,
+    settings.autoPickFromQueue,
+  ]);
+  const queueAutopickWarningMessage = useMemo(() => {
+    if (!settings.autoPickFromQueue) {
+      return null;
+    }
+    if (pickQueue.length === 0) {
+      return QUEUE_EMPTY_AUTOPICK_WARNING;
+    }
+    if (queuedPlayers.length === 0) {
+      return QUEUE_UNAVAILABLE_AUTOPICK_WARNING;
+    }
+    if (queuedEligiblePlayers.length === 0) {
+      return QUEUE_INELIGIBLE_AUTOPICK_WARNING;
+    }
+    return null;
+  }, [
+    pickQueue.length,
+    queuedEligiblePlayers.length,
+    queuedPlayers.length,
+    settings.autoPickFromQueue,
+  ]);
+  const showQueueEmptyAutopickWarning = Boolean(queueAutopickWarningMessage);
+  const pendingManualDraftPlayer = pendingManualDraftPlayerName
+    ? availablePlayersByName.get(pendingManualDraftPlayerName) ?? null
+    : null;
+  const pendingManualSlotImpact = useMemo(() => {
+    if (!pendingManualDraftPlayer) {
+      return null;
+    }
+    const normalizedRole = normalizeRole(pendingManualDraftPlayer.playerRole);
+    if (normalizedRole === UNASSIGNED_ROLE) {
+      return {
+        fills: "N/A",
+        warning: "Missing role data. Server will reject this pick.",
+      };
+    }
+    if (!userRoleSet.has(normalizedRole)) {
+      return { fills: normalizedRole, warning: null as string | null };
+    }
+    return {
+      fills: normalizedRole,
+      warning: `${normalizedRole} already filled. Server will reject this pick.`,
+    };
+  }, [pendingManualDraftPlayer, userRoleSet]);
+  const isLowTimerWarning =
+    canCurrentUserPick &&
+    currentPickRemainingMs !== null &&
+    currentPickRemainingMs >= 0 &&
+    currentPickRemainingMs <= 10000;
+  const autopickPreviewLine = useMemo(() => {
+    if (!canCurrentUserPick || !settings.autoPickFromQueue) {
+      return null;
+    }
+    if (!queueFirstFallbackPlayerName) {
+      return "Autopick unavailable: no eligible player for timeout fallback.";
+    }
+    const clientLine =
+      autopickCountdownSeconds !== null
+        ? `Autopick in ${autopickCountdownSeconds}s: ${autopickTargetLabel}`
+        : `Autopick target: ${autopickTargetLabel}`;
+    const serverLine =
+      autopickTargetLabel === serverTimeoutFallbackLabel
+        ? null
+        : `Timeout fallback: ${serverTimeoutFallbackLabel}`;
+
+    if (!serverLine) {
+      return clientLine;
+    }
+    return `${clientLine} • ${serverLine}`;
+  }, [
+    autopickCountdownSeconds,
+    autopickTargetLabel,
+    canCurrentUserPick,
+    queueFirstFallbackPlayerName,
+    serverTimeoutFallbackLabel,
+    settings.autoPickFromQueue,
+  ]);
+
+  useEffect(() => {
+    if (!draft || !isQueueHydrated) {
+      return;
+    }
+    if (draft.availablePlayers.length === 0) {
+      return;
+    }
     const availableNames = new Set((draft?.availablePlayers ?? []).map((player) => player.playerName));
     setPickQueue((prevQueue) => {
       const nextQueue = prevQueue.filter((playerName) => availableNames.has(playerName));
       return nextQueue.length === prevQueue.length ? prevQueue : nextQueue;
     });
-  }, [draft?.availablePlayers]);
+  }, [draft, isQueueHydrated]);
 
   useEffect(() => {
     if (roleFilter === "ALL") {
@@ -415,6 +1539,135 @@ export const DraftRoom = ({
       setRoleFilter("ALL");
     }
   }, [roleCounts, roleFilter]);
+
+  useEffect(() => {
+    if (!selectedPlayerName) {
+      return;
+    }
+    if (availablePlayersByName.has(selectedPlayerName)) {
+      return;
+    }
+    const draftedPick =
+      draft?.picks.findLast?.((pick) => pick.playerName === selectedPlayerName) ??
+      [...(draft?.picks ?? [])].reverse().find((pick) => pick.playerName === selectedPlayerName) ??
+      null;
+    const unavailableMessage = draftedPick
+      ? `Player no longer available: ${selectedPlayerName} was drafted by ${draftedPick.participantDisplayName}.`
+      : `Player no longer available: ${selectedPlayerName}.`;
+    setSelectionNotice(unavailableMessage);
+    pushToast(unavailableMessage);
+    pushSystemFeedEvent(`Selected player unavailable: ${unavailableMessage}`, draftedPick?.overallPick);
+    trackDraftEvent("selection.unavailable", {
+      playerName: selectedPlayerName,
+      overallPick: draftedPick?.overallPick ?? null,
+    });
+    if (draftedPick?.overallPick) {
+      jumpToTimelinePick(draftedPick.overallPick);
+    }
+    setSelectedPlayerName(null);
+    if (pendingManualDraftPlayerName === selectedPlayerName) {
+      setPendingManualDraftPlayerName(null);
+    }
+  }, [
+    availablePlayersByName,
+    draft?.picks,
+    jumpToTimelinePick,
+    pendingManualDraftPlayerName,
+    pushSystemFeedEvent,
+    pushToast,
+    selectedPlayerName,
+    trackDraftEvent,
+  ]);
+
+  useEffect(() => {
+    if (!pendingManualDraftPlayerName) {
+      return;
+    }
+    if (!canDraftActions || !availablePlayersByName.has(pendingManualDraftPlayerName)) {
+      if (!availablePlayersByName.has(pendingManualDraftPlayerName)) {
+        setSelectionNotice("Player no longer available.");
+      }
+      setPendingManualDraftPlayerName(null);
+    }
+  }, [availablePlayersByName, canDraftActions, pendingManualDraftPlayerName]);
+
+  useEffect(() => {
+    if (timelineHighlightPick === null) {
+      return;
+    }
+    const id = window.setTimeout(() => {
+      setTimelineHighlightPick(null);
+    }, 4000);
+    return () => {
+      window.clearTimeout(id);
+    };
+  }, [timelineHighlightPick]);
+
+  useEffect(() => {
+    if (!draft) {
+      return;
+    }
+    const previous = previousDraftSnapshotRef.current;
+    const nextSnapshot = {
+      status: draft.status,
+      pickCount: draft.pickCount,
+      onClockUserId: draft.nextPick?.participantUserId ?? null,
+      picksUntilTurn: picksUntilCurrentUser,
+    };
+    if (!previous) {
+      previousDraftSnapshotRef.current = nextSnapshot;
+      return;
+    }
+
+    if (previous.status !== nextSnapshot.status) {
+      pushToast(`Draft status: ${nextSnapshot.status}`);
+      pushSystemFeedEvent(`Status changed: ${nextSnapshot.status}.`);
+    }
+
+    if (previous.pickCount !== nextSnapshot.pickCount) {
+      const latestPick = draft.picks[draft.picks.length - 1];
+      if (latestPick) {
+        pushToast(
+          `Pick #${latestPick.overallPick}: ${latestPick.participantDisplayName} drafted ${latestPick.playerName}`,
+        );
+        pushSystemFeedEvent(
+          `Pick #${latestPick.overallPick}: ${latestPick.participantDisplayName} drafted ${latestPick.playerName}.`,
+          latestPick.overallPick,
+        );
+      }
+    }
+
+    if (previous.onClockUserId !== nextSnapshot.onClockUserId) {
+      if (nextSnapshot.onClockUserId === currentUserId) {
+        pushToast("You are on the clock.");
+        playCue(700, 260);
+        pushSystemFeedEvent("You are now on the clock.");
+        if (settings.vibrateOnTurn && typeof navigator !== "undefined" && navigator.vibrate) {
+          navigator.vibrate([80, 40, 120]);
+        }
+      } else if (
+        typeof nextSnapshot.picksUntilTurn === "number" &&
+        nextSnapshot.picksUntilTurn === 1
+      ) {
+        pushToast("Up next: your turn in 1 pick.");
+        playCue(520, 180);
+        pushSystemFeedEvent("Up next: your turn in 1 pick.");
+        if (settings.vibrateOnTurn && typeof navigator !== "undefined" && navigator.vibrate) {
+          navigator.vibrate([55, 30, 55]);
+        }
+      }
+    }
+
+    previousDraftSnapshotRef.current = nextSnapshot;
+  }, [
+    currentUserId,
+    draft,
+    picksUntilCurrentUser,
+    playCue,
+    pushSystemFeedEvent,
+    pushToast,
+    settings.vibrateOnTurn,
+  ]);
 
   const updateDraftStatus = async (
     status: DraftStatus,
@@ -449,62 +1702,175 @@ export const DraftRoom = ({
     }
   };
 
-  const submitPick = async () => {
-    if (!draft || !nextQueuedPlayerName || !canCurrentUserPick) {
-      return;
-    }
-    setPickPending(true);
-    setError(null);
+  const submitPick = useCallback(
+    async (
+      playerName: string | null = draftActionPlayerName,
+      {
+        source = "manual",
+      }: {
+        source?: "manual" | "autopick";
+      } = {},
+    ) => {
+      if (!draft || !playerName || !canDraftActions) {
+        return;
+      }
+      const expectedPick = draft.nextPick?.overallPick ?? null;
+      setPickPending(true);
+      setError(null);
 
-    try {
-      const response = await fetch(`/api/drafts/${draft.id}/pick`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({ playerName: nextQueuedPlayerName }),
+      try {
+        const response = await fetch(`/api/drafts/${draft.id}/pick`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ playerName }),
+        });
+        const payload = (await response.json()) as DraftDetailResponse;
+        if (!response.ok || !payload.draft) {
+          const message = payload.error ?? "Unable to submit pick.";
+          const code = payload.code ?? null;
+          setError(message);
+          trackDraftEvent("draft.failed", { source, playerName, reason: message, code });
+          setPendingManualDraftPlayerName(null);
+          setSelectedPlayerName(null);
+
+          const likelyClockRace =
+            code === "PICK_DEADLINE_EXPIRED" ||
+            code === "OUT_OF_TURN" ||
+            code === "NOT_LIVE";
+          const autopickTargetInvalid =
+            source === "autopick" &&
+            (code === "PLAYER_UNAVAILABLE" ||
+              code === "POSITION_TAKEN" ||
+              code === "PLAYER_ROLE_REQUIRED");
+          const autopickShouldRetry =
+            source === "autopick" &&
+            !likelyClockRace &&
+            code !== "ROSTER_FULL" &&
+            code !== "DRAFT_COMPLETE";
+
+          if (autopickTargetInvalid) {
+            setPickQueue((prevQueue) => prevQueue.filter((queuedName) => queuedName !== playerName));
+          }
+          if (autopickShouldRetry) {
+            autoPickAttemptedForPickRef.current = null;
+          }
+
+          if (likelyClockRace && expectedPick) {
+            timeoutExpectedPickRef.current = expectedPick;
+            setTimeoutOutcomeMessage("Clock expired -> Resolving server outcome...");
+            setSelectionNotice("Clock expired before confirmation. Resolving server outcome...");
+          } else if (autopickTargetInvalid) {
+            setSelectionNotice(`Autopick skipped ${playerName}. Trying next queue option...`);
+          } else if (source === "autopick" && autopickShouldRetry) {
+            setSelectionNotice("Autopick attempt failed. Retrying...");
+          } else {
+            setSelectionNotice("Resolving pick outcome from server...");
+          }
+
+          void requestDraftRefresh()
+            .then(() => {
+              if (!likelyClockRace && !(source === "autopick" && autopickShouldRetry)) {
+                setSelectionNotice("Pick outcome resolved by server.");
+              }
+            })
+            .catch(() => undefined);
+          return;
+        }
+        applyDraft(payload.draft);
+        setPickQueue((prevQueue) => prevQueue.filter((queuedName) => queuedName !== playerName));
+        setSelectedPlayerName(null);
+        setPendingManualDraftPlayerName(null);
+        setSelectionNotice("Pick locked.");
+        trackDraftEvent("draft.confirmed", {
+          source,
+          playerName,
+          overallPick: payload.draft.nextPick ? payload.draft.nextPick.overallPick - 1 : null,
+        });
+        if (source === "manual") {
+          pushToast(`Pick submitted: ${playerName}`);
+        }
+      } catch (pickError) {
+        const message = pickError instanceof Error ? pickError.message : "Unable to submit pick.";
+        setError(message);
+        trackDraftEvent("draft.failed", { source, playerName, reason: message });
+        setPendingManualDraftPlayerName(null);
+        setSelectedPlayerName(null);
+        const likelyClockRaceFromTiming =
+          expectedPick !== null &&
+          currentPickRemainingMs !== null &&
+          currentPickRemainingMs <= 1200;
+        const autopickShouldRetry = source === "autopick" && !likelyClockRaceFromTiming;
+        if (autopickShouldRetry) {
+          autoPickAttemptedForPickRef.current = null;
+        }
+        if (likelyClockRaceFromTiming) {
+          timeoutExpectedPickRef.current = expectedPick;
+          setTimeoutOutcomeMessage("Clock expired -> Resolving server outcome...");
+          setSelectionNotice("Clock expired before confirmation. Resolving server outcome...");
+        } else if (autopickShouldRetry) {
+          setSelectionNotice("Autopick attempt failed. Retrying...");
+        } else {
+          setSelectionNotice("Resolving pick outcome from server...");
+        }
+        void requestDraftRefresh()
+          .then(() => {
+            if (!expectedPick && source !== "autopick") {
+              setSelectionNotice("Pick outcome resolved by server.");
+            }
+          })
+          .catch(() => undefined);
+      } finally {
+        setPickPending(false);
+      }
+    },
+    [
+      applyDraft,
+      canDraftActions,
+      draft,
+      draftActionPlayerName,
+      currentPickRemainingMs,
+      pushToast,
+      requestDraftRefresh,
+      trackDraftEvent,
+    ],
+  );
+
+  const addPlayerToQueue = useCallback(
+    (playerName: string) => {
+      if (!canQueueActions) {
+        return;
+      }
+      setPickQueue((prevQueue) => {
+        if (prevQueue.includes(playerName)) {
+          return prevQueue;
+        }
+        return [...prevQueue, playerName];
       });
-      const payload = (await response.json()) as DraftDetailResponse;
-      if (!response.ok || !payload.draft) {
-        throw new Error(payload.error ?? "Unable to submit pick.");
-      }
-      applyDraft(payload.draft);
-      setPickQueue((prevQueue) => prevQueue.slice(1));
-    } catch (pickError) {
-      setError(pickError instanceof Error ? pickError.message : "Unable to submit pick.");
-    } finally {
-      setPickPending(false);
-    }
-  };
-
-  const addPlayerToQueue = (playerName: string) => {
-    if (!canEditPickQueue) {
-      return;
-    }
-    setPickQueue((prevQueue) => {
-      if (prevQueue.includes(playerName)) {
-        return prevQueue;
-      }
-      return [...prevQueue, playerName];
-    });
-  };
+    },
+    [canQueueActions],
+  );
 
   const removePlayerFromQueue = (playerName: string) => {
-    if (!canEditPickQueue) {
+    if (!canQueueActions) {
       return;
     }
     setPickQueue((prevQueue) => prevQueue.filter((queuedName) => queuedName !== playerName));
   };
 
   const clearQueue = () => {
-    if (!canEditPickQueue) {
+    if (!canQueueActions || pickQueue.length === 0) {
+      return;
+    }
+    if (typeof window !== "undefined" && !window.confirm("Clear all players from your queue?")) {
       return;
     }
     setPickQueue([]);
   };
 
   const moveQueueItem = (fromIndex: number, toIndex: number) => {
-    if (!canEditPickQueue) {
+    if (!canQueueActions) {
       return;
     }
     setPickQueue((prevQueue) => {
@@ -524,6 +1890,246 @@ export const DraftRoom = ({
     });
   };
 
+  const handlePlayerTapOrClick = (
+    playerName: string,
+    event?: { target: EventTarget | null },
+  ) => {
+    const target = event?.target;
+    if (target instanceof HTMLElement && target.closest("button")) {
+      return;
+    }
+
+    setSelectedPlayerName(playerName);
+    setSelectionNotice(null);
+    if (!isMobileViewport) {
+      setIsPlayerDetailDrawerOpen(true);
+    }
+
+    const nowMs = Date.now();
+    const previous = lastPlayerTapRef.current;
+    if (
+      previous &&
+      previous.playerName === playerName &&
+      nowMs - previous.atMs <= DOUBLE_TAP_WINDOW_MS
+    ) {
+      lastPlayerTapRef.current = null;
+      if (pickQueue.includes(playerName)) {
+        return;
+      }
+      addPlayerToQueue(playerName);
+      pushToast(`${playerName} added to queue.`);
+      return;
+    }
+
+    lastPlayerTapRef.current = {
+      playerName,
+      atMs: nowMs,
+    };
+  };
+
+  const requestManualDraft = useCallback(
+    (playerName: string | null = draftActionPlayerName) => {
+      if (!playerName || !canDraftActions) {
+        return;
+      }
+      if (settings.requirePickConfirm) {
+        setPendingManualDraftPlayerName(playerName);
+        return;
+      }
+      void submitPick(playerName, { source: "manual" });
+    },
+    [canDraftActions, draftActionPlayerName, settings.requirePickConfirm, submitPick],
+  );
+
+  const toggleAutopickSetting = useCallback(
+    (source: string) => {
+      if (isRealtimeReadOnly) {
+        trackDraftEvent("autopick.toggle_blocked", {
+          source,
+          reason: "connection_not_subscribed",
+          connectionStatus,
+        });
+        pushToast("Autopick setting is locked while reconnecting.");
+        return;
+      }
+      setSettings((prev) => {
+        const enabled = !prev.autoPickFromQueue;
+        trackDraftEvent("autopick.toggle", { source, enabled });
+        return {
+          ...prev,
+          autoPickFromQueue: enabled,
+        };
+      });
+    },
+    [connectionStatus, isRealtimeReadOnly, pushToast, trackDraftEvent],
+  );
+
+  useEffect(() => {
+    if (isMobileViewport) {
+      return;
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target;
+      const isTypingTarget =
+        target instanceof HTMLElement &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.isContentEditable ||
+          Boolean(target.closest("[role='textbox']")));
+      if (!isTypingTarget && event.key === "/") {
+        event.preventDefault();
+        const searchInput = document.getElementById("draft-player-search");
+        if (searchInput instanceof HTMLInputElement) {
+          searchInput.focus();
+        }
+        return;
+      }
+      if (isTypingTarget) {
+        return;
+      }
+      if (event.key === "?" || (event.shiftKey && event.key === "/")) {
+        event.preventDefault();
+        setShowShortcutsHelp((prev) => !prev);
+        return;
+      }
+      if (event.key === "Escape" && showShortcutsHelp) {
+        event.preventDefault();
+        setShowShortcutsHelp(false);
+        return;
+      }
+      if (
+        (event.key === "q" || event.key === "Q") &&
+        selectedPlayerName &&
+        canQueueActions &&
+        !pickQueue.includes(selectedPlayerName)
+      ) {
+        event.preventDefault();
+        addPlayerToQueue(selectedPlayerName);
+        pushToast(`${selectedPlayerName} added to queue.`);
+        return;
+      }
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        if (displayAvailablePlayers.length === 0) {
+          return;
+        }
+        const currentIndex = selectedPlayerName
+          ? displayAvailablePlayers.findIndex((player) => player.playerName === selectedPlayerName)
+          : -1;
+        const delta = event.key === "ArrowDown" ? 1 : -1;
+        const nextIndex = currentIndex < 0
+          ? 0
+          : (currentIndex + delta + displayAvailablePlayers.length) % displayAvailablePlayers.length;
+        const nextPlayer = displayAvailablePlayers[nextIndex];
+        if (nextPlayer) {
+          setSelectedPlayerName(nextPlayer.playerName);
+        }
+        return;
+      }
+      if (event.key === "Enter" && selectedPlayerName) {
+        event.preventDefault();
+        setIsPlayerDetailDrawerOpen(true);
+        return;
+      }
+      if ((event.key === "d" || event.key === "D") && selectedPlayerName) {
+        event.preventDefault();
+        requestManualDraft(selectedPlayerName);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [
+    addPlayerToQueue,
+    canQueueActions,
+    isMobileViewport,
+    pickQueue,
+    pushToast,
+    requestManualDraft,
+    selectedPlayerName,
+    displayAvailablePlayers,
+    showShortcutsHelp,
+  ]);
+
+  useEffect(() => {
+    if (!hasPendingManualConfirm || isMobileViewport) {
+      return;
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setPendingManualDraftPlayerName(null);
+        return;
+      }
+      if (event.key !== "Enter" || !pendingManualDraftPlayerName || !canDraftActions) {
+        return;
+      }
+      event.preventDefault();
+      void submitPick(pendingManualDraftPlayerName, { source: "manual" });
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [canDraftActions, hasPendingManualConfirm, isMobileViewport, pendingManualDraftPlayerName, submitPick]);
+
+  useEffect(() => {
+    if (
+      !draft ||
+      !settings.autoPickFromQueue ||
+      !canDraftActions ||
+      draft.status !== "live" ||
+      !draft.currentPickDeadlineAt
+    ) {
+      return;
+    }
+
+    const deadlineMs = new Date(draft.currentPickDeadlineAt).getTime();
+    const pickNumber = draft.nextPick?.overallPick ?? null;
+    if (!pickNumber) {
+      return;
+    }
+
+    const id = window.setInterval(() => {
+      if (pickPending) {
+        return;
+      }
+      if (autoPickAttemptedForPickRef.current === pickNumber) {
+        return;
+      }
+      const targetPlayerName = queueFirstFallbackPlayerName;
+      if (!targetPlayerName) {
+        return;
+      }
+
+      const nowMs = Date.now() + serverOffsetMs;
+      const remainingMs = deadlineMs - nowMs;
+      if (remainingMs > AUTOPICK_TRIGGER_MS || remainingMs < 0) {
+        return;
+      }
+
+      autoPickAttemptedForPickRef.current = pickNumber;
+      pushToast(`Autopick queued: ${targetPlayerName}`);
+      pushSystemFeedEvent(`Autopick queued in low time: ${targetPlayerName}.`, pickNumber);
+      void submitPick(targetPlayerName, { source: "autopick" });
+    }, 220);
+
+    return () => {
+      window.clearInterval(id);
+    };
+  }, [
+    canDraftActions,
+    draft,
+    pickPending,
+    queueFirstFallbackPlayerName,
+    serverOffsetMs,
+    settings.autoPickFromQueue,
+    pushSystemFeedEvent,
+    pushToast,
+    submitPick,
+  ]);
+
   const toggleReady = async () => {
     if (!draft || !isCurrentUserParticipant || !currentPresence) {
       return;
@@ -539,6 +2145,156 @@ export const DraftRoom = ({
       setReadyPending(false);
     }
   };
+
+  const draftStatusValue = draft?.status ?? null;
+  const isLobbyState = draftStatusValue === "scheduled";
+  const isLiveState = draftStatusValue === "live" || draftStatusValue === "paused";
+  const isResultsState = draftStatusValue === "completed";
+  const selectedRoleAlreadyFilled = selectedPlayer
+    ? userRoleSet.has(normalizeRole(selectedPlayer.playerRole))
+    : false;
+  const selectedPlayerInsights = useMemo(() => {
+    if (!selectedPlayer) {
+      return null;
+    }
+    const analytics = selectedPlayer.analytics ?? null;
+    const normalizedRole = normalizeRole(selectedPlayer.playerRole);
+    const roleRemainingCount = roleCounts.get(normalizedRole) ?? 0;
+    const recentPicks = (draft?.picks ?? []).slice(-10);
+    const recentRolePickCount = recentPicks.filter(
+      (pick) => normalizeRole(pick.playerRole) === normalizedRole,
+    ).length;
+    const recentTeamPickCount = recentPicks.filter(
+      (pick) =>
+        selectedPlayer.playerTeam &&
+        pick.playerTeam &&
+        pick.playerTeam.toUpperCase() === selectedPlayer.playerTeam.toUpperCase(),
+    ).length;
+    const queueIndex = pickQueue.findIndex((name) => name === selectedPlayer.playerName);
+    const reasons: string[] = [];
+    const isCoreNeed =
+      PRIMARY_ROLE_FILTERS.includes(normalizedRole as (typeof PRIMARY_ROLE_FILTERS)[number]) &&
+      rosterNeeds.includes(normalizedRole as (typeof PRIMARY_ROLE_FILTERS)[number]);
+    if (isCoreNeed) {
+      reasons.push("Fills one of your open core roster slots.");
+    }
+    if (analytics?.overallRank) {
+      reasons.push(`Ranks #${analytics.overallRank} in this draft pool by per-game output.`);
+    }
+    if (analytics?.positionRank) {
+      reasons.push(
+        `Ranks #${analytics.positionRank} at ${formatRoleLabel(selectedPlayer.playerRole)} in this draft pool.`,
+      );
+    }
+    if (roleRemainingCount > 0 && roleRemainingCount <= ROLE_SCARCITY_THRESHOLD) {
+      reasons.push(
+        `${formatRoleLabel(selectedPlayer.playerRole)} is scarce with ${roleRemainingCount} left in the pool.`,
+      );
+    }
+    if (recentTeamPickCount >= 2) {
+      reasons.push(`${selectedPlayer.playerTeam ?? "This team"} players are being drafted quickly.`);
+    }
+    if (reasons.length === 0) {
+      reasons.push("Stable best-available option based on current board flow.");
+    }
+    return {
+      roleRemainingCount,
+      recentRolePickCount,
+      recentTeamPickCount,
+      queueIndex,
+      reasons: reasons.slice(0, 3),
+      analytics,
+    };
+  }, [draft?.picks, pickQueue, roleCounts, rosterNeeds, selectedPlayer]);
+  const stateBanner = useMemo(() => {
+    const isRedConnectionState =
+      connectionStatus === "TIMED_OUT" ||
+      connectionStatus === "CHANNEL_ERROR" ||
+      connectionStatus === "CLOSED";
+    const isYellowConnectionState = !isRedConnectionState && connectionStatus !== "SUBSCRIBED";
+    if (timeoutOutcomeMessage?.startsWith("Clock expired ->")) {
+      return {
+        label: "Resolving timeout outcome...",
+        detail: timeoutOutcomeMessage,
+        color: "warning" as const,
+      };
+    }
+    if (isRedConnectionState) {
+      return {
+        label: "Reconnecting (Read-only)",
+        detail: `Last synced ${secondsSinceLastSync}s ago.`,
+        color: "danger" as const,
+      };
+    }
+    if (isYellowConnectionState) {
+      return {
+        label: "Degraded (high latency)",
+        detail: `Last synced ${secondsSinceLastSync}s ago.`,
+        color: "warning" as const,
+      };
+    }
+    if (pickPending) {
+      return { label: "Submitting pick...", detail: "Waiting for server confirmation.", color: "warning" as const };
+    }
+    if (draftStatusValue === "completed") {
+      return { label: "Draft complete", detail: "Board is locked.", color: "secondary" as const };
+    }
+    if (draftStatusValue === "paused") {
+      return { label: "Paused by commissioner", detail: "Waiting for resume.", color: "warning" as const };
+    }
+    if (canCurrentUserPick) {
+      return {
+        label: "Live",
+        detail: autopickPreviewLine ?? "Select and confirm your pick.",
+        color: "success" as const,
+      };
+    }
+    if (isUpNext) {
+      return {
+        label: "Live",
+        detail: "You're up next (1 pick away).",
+        color: "primary" as const,
+      };
+    }
+    if (isLiveState) {
+      return { label: "Live", detail: "All systems normal.", color: "success" as const };
+    }
+    if (isLobbyState) {
+      return { label: "Waiting room", detail: "Ready check in progress.", color: "default" as const };
+    }
+    return { label: "Draft state", detail: "Awaiting updates.", color: "default" as const };
+  }, [
+    autopickPreviewLine,
+    canCurrentUserPick,
+    connectionStatus,
+    draftStatusValue,
+    isLiveState,
+    isLobbyState,
+    isUpNext,
+    pickPending,
+    secondsSinceLastSync,
+    timeoutOutcomeMessage,
+  ]);
+  const statusBannerToneClass = useMemo(() => {
+    if (stateBanner.color === "danger") {
+      return "border-danger-300/60 bg-danger-500/12";
+    }
+    if (stateBanner.color === "warning") {
+      return "border-warning-300/60 bg-warning-500/12";
+    }
+    if (stateBanner.color === "success") {
+      return "border-success-300/60 bg-success-500/12";
+    }
+    if (stateBanner.color === "primary") {
+      return "border-primary-300/60 bg-primary-500/12";
+    }
+    return "border-default-200/45 bg-content2/30";
+  }, [stateBanner.color]);
+  const showReadOnlyInteractionOverlay = isLiveState && isRealtimeReadOnly;
+  const queueAutopickTargetLine =
+    settings.autoPickFromQueue && queuedEligiblePlayers.length > 0
+      ? `Autopick will take #1: ${queuedEligiblePlayers[0].playerName}`
+      : null;
 
   if (loading) {
     return (
@@ -562,64 +2318,439 @@ export const DraftRoom = ({
   }
 
   return (
-    <section className="space-y-5">
-      <Card className="border border-primary-400/35 bg-gradient-to-br from-content1 via-content1 to-content2/45 shadow-sm">
-        <CardHeader className="flex flex-wrap items-center justify-between gap-3">
+    <section
+      className={`space-y-5 pb-24 md:pb-6 ${
+        isMobileViewport &&
+        isLiveState &&
+        isCurrentUserParticipant &&
+        !selectedPlayer &&
+        !isMobileQueueSheetOpen
+          ? "pb-[9.5rem]"
+          : ""
+      } ${
+        canCurrentUserPick
+          ? "rounded-large border border-primary-300/30 bg-primary-500/[0.04] p-2 shadow-[0_0_0_1px_rgba(147,197,253,0.2)]"
+          : ""
+      }`}
+    >
+      <div className="fixed inset-x-3 top-20 z-50 space-y-2 md:inset-x-auto md:right-3">
+        {toastNotices.map((toast) => (
+          <div
+            key={toast.id}
+            className="max-w-[20rem] rounded-medium border border-primary-300/35 bg-content1/95 px-3 py-2 text-xs shadow-lg backdrop-blur"
+          >
+            {toast.message}
+          </div>
+        ))}
+      </div>
+      <Card
+        className={`relative sticky top-2 z-30 border bg-gradient-to-br from-content1/95 via-content1/95 to-content2/70 shadow-md backdrop-blur ${
+          canCurrentUserPick
+            ? "border-primary-300/70 shadow-[0_0_0_1px_rgba(147,197,253,0.4),0_0_22px_rgba(59,130,246,0.22)]"
+            : "border-primary-400/35"
+        }`}
+      >
+        {isMobileViewport ? (
+          <div className="absolute right-2 top-2 z-20 flex items-center gap-2 rounded-large border border-default-200/40 bg-content1/92 p-1.5 shadow-sm backdrop-blur">
+            <Button
+              isIconOnly
+              size="sm"
+              variant="flat"
+              onPress={() => setShowStatusDetails((prev) => !prev)}
+            >
+              <MoreHorizontal className="h-4 w-4" />
+            </Button>
+            <Button
+              isIconOnly
+              size="sm"
+              variant="flat"
+              onPress={() => setShowDraftSettings((prev) => !prev)}
+            >
+              <Cog className="h-4 w-4" />
+            </Button>
+            {draft.isCommissioner ? (
+              <Button
+                isIconOnly
+                color="warning"
+                size="sm"
+                variant="flat"
+                onPress={() => setIsCommissionerDrawerOpen(true)}
+              >
+                <Shield className="h-4 w-4" />
+              </Button>
+            ) : null}
+          </div>
+        ) : null}
+        <CardHeader className="grid grid-cols-1 gap-3 md:grid-cols-[1fr_auto_1fr] md:items-center">
           <div className="space-y-1">
-            <h1 className="text-2xl font-semibold">{draft.name}</h1>
-            <p className="text-sm text-default-500">
-              {draft.leagueSlug} {draft.seasonYear} • Source {draft.sourcePage}
-            </p>
+            <div className="flex flex-wrap items-center gap-2">
+              <h1 className="text-xl font-semibold md:text-2xl">{draft.name}</h1>
+              <Chip color={statusColor(draft.status)} size="sm" variant="flat">
+                {draft.status}
+              </Chip>
+              <Chip size="sm" variant="flat">
+                Snake
+              </Chip>
+            </div>
             <p className="text-xs text-default-500">
-              Commissioner: {draft.createdByLabel ?? draft.createdByUserId}
+              {draft.leagueSlug} {draft.seasonYear} • {draft.pickSeconds}s timer • {draft.roundCount} rounds
             </p>
           </div>
-          <div className="flex flex-wrap gap-2">
-            <Chip color={statusColor(draft.status)} variant="flat">
-              {draft.status}
-            </Chip>
-            <Chip variant="flat">
-              Picks {draft.pickCount}/{draft.totalPickCount}
-            </Chip>
-            <Chip color={canCurrentUserPick ? "success" : "default"} variant="flat">
-              <span className="inline-flex items-center gap-1">
-                <Clock3 className="h-3.5 w-3.5" />
-                {canCurrentUserPick ? "You are on the clock" : "Waiting for your turn"}
-              </span>
-            </Chip>
+
+          <div className="mx-auto flex items-center gap-3">
+            <DraftClockBadge
+              deadlineIso={draft.currentPickDeadlineAt}
+              draftStatus={draft.status}
+              pickSeconds={draft.pickSeconds}
+              serverOffsetMs={serverOffsetMs}
+            />
+            <div className="min-w-[12rem]">
+              <p className="text-[11px] uppercase tracking-wide text-default-500">On The Clock</p>
+              <p className="text-sm font-semibold">
+                {draft.nextPick?.participantDisplayName ?? "Draft Complete"}
+              </p>
+              <p className="text-xs text-default-500">
+                {draft.nextPick
+                  ? `Pick #${draft.nextPick.overallPick} • Round ${draft.nextPick.roundNumber}`
+                  : "No upcoming picks"}
+              </p>
+            </div>
+          </div>
+
+          <div className="space-y-2 md:justify-self-end">
+            <div className={`rounded-large border px-3 py-2 text-xs ${statusBannerToneClass}`}>
+              <p className="font-semibold">{stateBanner.label}</p>
+            </div>
+            {!isMobileViewport ? (
+              <div className="flex flex-wrap items-center justify-start gap-2 md:justify-end">
+                <Tooltip content={showStatusDetails ? "Hide status details" : "Show status details"}>
+                  <Button
+                    isIconOnly
+                    size="sm"
+                    variant="flat"
+                    onPress={() => setShowStatusDetails((prev) => !prev)}
+                  >
+                    <MoreHorizontal className="h-4 w-4" />
+                  </Button>
+                </Tooltip>
+                <Button
+                  isIconOnly
+                  size="sm"
+                  variant="flat"
+                  onPress={() =>
+                    setSettings((prev) => ({
+                      ...prev,
+                      muted: !prev.muted,
+                    }))
+                  }
+                >
+                  {settings.muted ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
+                </Button>
+                <Button
+                  isIconOnly
+                  size="sm"
+                  variant="flat"
+                  onPress={() => setShowDraftSettings((prev) => !prev)}
+                >
+                  <Cog className="h-4 w-4" />
+                </Button>
+                {draft.isCommissioner ? (
+                  <Tooltip content="Commissioner controls">
+                    <Button
+                      isIconOnly
+                      color="warning"
+                      size="sm"
+                      variant="flat"
+                      onPress={() => setIsCommissionerDrawerOpen(true)}
+                    >
+                      <Shield className="h-4 w-4" />
+                    </Button>
+                  </Tooltip>
+                ) : null}
+              </div>
+            ) : null}
+            {showStatusDetails ? (
+              <div className="rounded-large border border-default-200/35 bg-content2/35 px-3 py-2 text-xs">
+                <p className="font-medium">{stateBanner.detail}</p>
+                <p className="mt-1 text-default-500">Connection: {connectionLabel}</p>
+                {queueAutopickTargetLine ? <p className="mt-1 text-default-500">{queueAutopickTargetLine}</p> : null}
+                {autopickCountdownSeconds !== null ? (
+                  <p className="mt-1 text-warning-300">
+                    {`Autopick in ${autopickCountdownSeconds}s: ${autopickTargetLabel}`}
+                  </p>
+                ) : null}
+                {showQueueEmptyAutopickWarning ? (
+                  <p className="mt-1 text-warning-300">
+                    {queueAutopickWarningMessage}
+                  </p>
+                ) : null}
+                {isRealtimeReadOnly ? (
+                  <p className="mt-1 text-warning-300">
+                    Realtime reconnecting. Read-only mode. Last synced {secondsSinceLastSync}s ago.
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
           </div>
         </CardHeader>
-        <CardBody className="grid grid-cols-1 gap-2 text-sm text-default-600 md:grid-cols-2">
-          <p>Scheduled: {formatDate(draft.scheduledAt)}</p>
-          <p>Started: {formatDate(draft.startedAt)}</p>
-          <p>
-            Timer: {draft.pickSeconds}s per pick • Rounds: {draft.roundCount} • Players:{" "}
-            {draft.participantCount}
-          </p>
-          <p>
-            Lobby: {draft.presentParticipantCount}/{draft.participantCount} present •{" "}
-            {draft.readyParticipantCount}/{draft.participantCount} ready
-          </p>
-          {draft.nextPick ? (
-            <p className="font-medium text-default-300 md:col-span-2">
-              On clock: {draft.nextPick.participantDisplayName} (Pick #{draft.nextPick.overallPick}
-              , Round {draft.nextPick.roundNumber})
+        <CardBody className="space-y-3 pt-0">
+          <div className="overflow-x-auto pb-1 md:overflow-visible md:pb-0">
+            <div className="flex w-max gap-2 md:grid md:w-full md:grid-cols-5">
+              {topPickStripSlots.map((item) => {
+              const mobileStripLabel =
+                item.offset === 0
+                  ? "NOW"
+                  : item.offset < 0
+                  ? `${Math.abs(item.offset)} ${Math.abs(item.offset) === 1 ? "PICK" : "PICKS"} AGO`
+                  : item.offset === 1
+                  ? "NEXT PICK"
+                  : `IN ${item.offset} PICKS`;
+              const roleBackgroundIconUrl = item.slot?.pickedPlayerRole
+                ? roleIconUrl(item.slot.pickedPlayerRole)
+                : null;
+              const teamLabel =
+                item.slot?.pickedPlayerTeam ?? item.slot?.participantDisplayName ?? "Pending";
+              const shortPlayerLabel = item.slot?.pickedPlayerName
+                ? formatShortPlayerName(item.slot.pickedPlayerName)
+                : item.offset === 0
+                ? "On the clock"
+                : item.offset < 0
+                ? "Pending"
+                : "Upcoming";
+              return (
+                <div
+                  key={item.key}
+                  className={`relative h-28 w-28 shrink-0 overflow-hidden rounded-large border p-2.5 md:h-28 md:w-full md:p-3 ${
+                    item.slot?.pickedPlayerName
+                      ? roleTileClassName(item.slot.pickedPlayerRole)
+                      : item.offset === 0
+                      ? item.slot
+                        ? "border-primary-300/70 bg-primary-500/18 shadow-[0_0_0_1px_rgba(147,197,253,0.35)]"
+                        : "border-default-200/40 bg-content2/40"
+                      : item.offset < 0
+                      ? "border-default-200/35 bg-content2/30"
+                      : "border-default-200/25 bg-content2/20"
+                  } ${
+                    item.offset === 0
+                      ? "ring-1 ring-primary-300/75 shadow-[0_0_0_1px_rgba(147,197,253,0.4),0_0_16px_rgba(59,130,246,0.2)] md:scale-[1.02]"
+                      : ""
+                  }`}
+                >
+                  <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-black/28 via-black/16 to-black/30" />
+                  {item.slot && (item.slot.pickedTeamIconUrl || roleBackgroundIconUrl) ? (
+                    <div className="pointer-events-none absolute inset-y-1.5 right-1.5 z-20 flex flex-col items-end justify-between md:inset-y-2 md:right-2">
+                      {item.slot.pickedTeamIconUrl ? (
+                        <Image
+                          alt={`${item.slot.pickedPlayerName ?? "Picked player"} team logo`}
+                          className="h-8 w-12 translate-x-2.5 -translate-y-1.5 object-contain opacity-90 drop-shadow-[0_1px_2px_rgba(0,0,0,0.55)] md:h-10 md:w-14 md:translate-x-3 md:-translate-y-2"
+                          height={40}
+                          src={item.slot.pickedTeamIconUrl}
+                          width={56}
+                        />
+                      ) : (
+                        <span className="h-10 w-14" />
+                      )}
+                      {roleBackgroundIconUrl ? (
+                        <Image
+                          alt={`${formatRoleLabel(item.slot.pickedPlayerRole)} role icon`}
+                          className="h-6 w-6 -translate-x-0.5 object-contain opacity-95 drop-shadow-[0_1px_2px_rgba(0,0,0,0.55)] md:h-8 md:w-8 md:translate-x-0"
+                          height={32}
+                          src={roleBackgroundIconUrl}
+                          width={32}
+                        />
+                      ) : null}
+                    </div>
+                  ) : null}
+                  <div className="relative z-10">
+                    <p className="truncate whitespace-nowrap text-[9px] font-semibold uppercase tracking-wide text-white/85 drop-shadow-[0_1px_1px_rgba(0,0,0,0.65)] md:text-[10px]">
+                      <span className="md:hidden">{mobileStripLabel}</span>
+                      <span className="hidden md:inline">{item.label}</span>
+                    </p>
+                    <p className="mt-1 truncate text-xs font-semibold text-white/95 drop-shadow-[0_1px_1px_rgba(0,0,0,0.7)] md:text-sm">
+                      {teamLabel}
+                    </p>
+                    <p className="hidden text-xs text-white/80 drop-shadow-[0_1px_1px_rgba(0,0,0,0.65)] md:block">
+                      {item.slot ? `#${item.slot.overallPick} • Round ${item.slot.roundNumber}` : "—"}
+                    </p>
+                    <p className="mt-1 truncate text-xs text-white/90 drop-shadow-[0_1px_1px_rgba(0,0,0,0.7)] md:mt-2 md:text-sm">
+                      {shortPlayerLabel}
+                    </p>
+                  </div>
+                </div>
+              );
+              })}
+            </div>
+          </div>
+          <div className="grid grid-cols-1 gap-2 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)]">
+            <div className="rounded-large border border-default-200/40 bg-content2/35 p-3">
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-default-500">
+                {canCurrentUserPick ? "Your pick" : "Your next pick"}
+              </p>
+              {canCurrentUserPick && draft.nextPick ? (
+                <>
+                  <p className="mt-1 text-sm font-semibold">
+                    #{draft.nextPick.overallPick} • Round {draft.nextPick.roundNumber}
+                  </p>
+                  <p className="mt-2 text-xs text-default-500">Time left: {liveTimeLeftLabel}</p>
+                </>
+              ) : yourNextPickMeta ? (
+                <>
+                  <p className="mt-1 text-sm font-semibold">
+                    #{yourNextPickMeta.overallPick} • Round {yourNextPickMeta.roundNumber}
+                  </p>
+                  <p className="text-xs text-default-500">
+                    {yourNextPickMeta.picksAway === 0
+                      ? "On the clock now"
+                      : `${yourNextPickMeta.picksAway} pick(s) away`}
+                  </p>
+                  <p className="mt-2 text-xs text-default-500">
+                    Estimated time: ~{formatEtaFromMs(yourNextPickMeta.etaMs)}
+                  </p>
+                </>
+              ) : (
+                <p className="mt-2 text-xs text-default-500">No upcoming turn</p>
+              )}
+              <div className="mt-2">
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-default-500">
+                  Position needs
+                </p>
+                {rosterNeeds.length > 0 ? (
+                  <div className="mt-1 flex flex-wrap gap-1">
+                    {rosterNeeds.map((role) => (
+                      <Button
+                        key={`next-pick-need-${role}`}
+                        className={`h-7 min-w-0 px-2 ${roleChipClassName(role)}`}
+                        size="sm"
+                        variant="flat"
+                        onPress={() => {
+                          applyRoleFilter(role);
+                          setShowNeededRolesOnly(true);
+                        }}
+                      >
+                        {role}
+                      </Button>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="mt-1 text-xs text-default-500">All core slots filled.</p>
+                )}
+              </div>
+            </div>
+            <div className="rounded-large border border-default-200/40 bg-content2/35 p-3">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-default-500">
+                  Roster slots
+                </p>
+                <Chip size="sm" variant="flat">
+                  {userPicks.length}/5
+                </Chip>
+              </div>
+              <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-5">
+                {PRIMARY_ROLE_FILTERS.map((role) => {
+                  const pick = rosterSlots.byRole.get(role);
+                  return (
+                    <button
+                      key={`roster-slot-${role}`}
+                      className={`rounded-medium border px-2 py-2 text-left ${
+                        pick ? roleTileClassName(role) : "border-default-200/30 bg-content1/35"
+                      }`}
+                      type="button"
+                      onClick={() => {
+                        applyRoleFilter(role);
+                        setShowNeededRolesOnly(true);
+                      }}
+                    >
+                      <p className="text-[10px] font-semibold uppercase tracking-wide text-default-500">{role}</p>
+                      <p className="mt-1 truncate text-xs font-medium">
+                        {pick?.playerName ?? "Open"}
+                      </p>
+                    </button>
+                  );
+                })}
+              </div>
+              {rosterSlots.overflow.length > 0 ? (
+                <p className="mt-2 text-xs text-default-500">
+                  Bench: {rosterSlots.overflow.map((pick) => pick.playerName).join(", ")}
+                </p>
+              ) : null}
+            </div>
+          </div>
+          {isUpNext && !canCurrentUserPick ? (
+            <p className="rounded-medium border border-primary-300/40 bg-primary-500/10 px-3 py-2 text-xs text-primary-200">
+              You are up next. Finalize your target before the current pick locks.
             </p>
-          ) : (
-            <p className="font-medium text-default-300 md:col-span-2">Draft board is complete.</p>
-          )}
-          <p className="md:col-span-2">
-            <span className="inline-flex items-center gap-1">
-              <Clock3 className="h-3.5 w-3.5" />
-              Current pick countdown:{" "}
-              {formatCountdown(draft.currentPickDeadlineAt, effectiveNowMs)} • You are{" "}
-              {currentUserLabel}
-            </span>
-          </p>
-          {error ? <p className="text-sm text-danger-400 md:col-span-2">{error}</p> : null}
+          ) : null}
+          {canCurrentUserPick && autopickPreviewLine ? (
+            <p
+              className={`rounded-medium border px-3 py-2 text-xs ${
+                isLowTimerWarning
+                  ? "animate-pulse border-warning-300/60 bg-warning-500/14 text-warning-200"
+                  : "border-primary-300/35 bg-primary-500/10 text-primary-200"
+              }`}
+            >
+              {autopickPreviewLine}
+            </p>
+          ) : null}
+
+          {showDraftSettings ? (
+            <div className="grid grid-cols-1 gap-2 rounded-large border border-default-200/35 bg-content2/35 p-3 text-xs md:grid-cols-2">
+              <Button
+                isDisabled={isRealtimeReadOnly}
+                size="sm"
+                variant="flat"
+                onPress={() =>
+                  setSettings((prev) => ({
+                    ...prev,
+                    requirePickConfirm: !prev.requirePickConfirm,
+                  }))
+                }
+              >
+                Fast Draft (no confirm): {settings.requirePickConfirm ? "Off" : "On"}
+              </Button>
+              <Button
+                isDisabled={isRealtimeReadOnly}
+                size="sm"
+                variant="flat"
+                onPress={() => toggleAutopickSetting("settings-panel")}
+              >
+                Queue autopick: {settings.autoPickFromQueue ? "On" : "Off"}
+              </Button>
+              <Button
+                size="sm"
+                variant="flat"
+                onPress={() =>
+                  setSettings((prev) => ({
+                    ...prev,
+                    vibrateOnTurn: !prev.vibrateOnTurn,
+                  }))
+                }
+              >
+                Mobile vibrate on turn: {settings.vibrateOnTurn ? "On" : "Off"}
+              </Button>
+              <p className="text-default-500">
+                Autopick preview: <span className="font-medium">{autopickTargetLabel}</span>
+              </p>
+              <p className="text-default-500">
+                Timeout fallback: <span className="font-medium">{serverTimeoutFallbackLabel}</span>
+              </p>
+            </div>
+          ) : null}
+
+          {selectedRoleAlreadyFilled ? (
+            <p className="rounded-medium border border-warning-300/35 bg-warning-500/10 px-3 py-2 text-xs text-warning-200">
+              Warning: your roster already has {formatRoleLabel(selectedPlayer?.playerRole ?? null)} filled.
+            </p>
+          ) : null}
+          {selectionNotice ? (
+            <p className="rounded-medium border border-default-300/35 bg-content2/45 px-3 py-2 text-xs">
+              {selectionNotice}
+            </p>
+          ) : null}
+          {error ? <p className="text-sm text-danger-400">{error}</p> : null}
         </CardBody>
       </Card>
 
+      {isLobbyState ? (
       <Card className="border border-default-200/40 bg-content1/75">
         <CardHeader className="flex flex-wrap items-center justify-between gap-3">
           <h2 className="flex items-center gap-2 text-lg font-semibold">
@@ -817,564 +2948,1584 @@ export const DraftRoom = ({
           </div>
         </CardBody>
       </Card>
+      ) : null}
 
       {draft.isCommissioner ? (
-        <Card className="border border-default-200/40 bg-content1/75">
-          <CardHeader className="flex flex-wrap items-center justify-between gap-3">
-            <h2 className="flex items-center gap-2 text-lg font-semibold">
-              <Shield className="h-5 w-5 text-warning" />
-              Commissioner Controls
-            </h2>
-            <Chip variant="flat">
-              Status: <span className="ml-1 font-semibold">{draft.status}</span>
-            </Chip>
-          </CardHeader>
-          <CardBody className="space-y-3">
-            <div className="rounded-medium border border-default-200/40 bg-content2/40 px-3 py-2">
-              <p className="inline-flex items-center gap-1 text-xs text-default-500">
-                <Gauge className="h-3.5 w-3.5" />
-                Use the icon control bar for draft state changes.
-              </p>
-            </div>
-
-            <div className="grid grid-cols-3 gap-3 sm:grid-cols-5">
-              <div className="flex flex-col items-center gap-1">
-                <Tooltip content="Start draft (all participants present and ready)">
-                  <span>
-                    <Button
-                      isIconOnly
-                      color="success"
-                      isDisabled={
-                        statusPending ||
-                        draft.status !== "scheduled" ||
-                        !draft.allParticipantsPresent ||
-                        !draft.allParticipantsReady
-                      }
-                      isLoading={statusAction === "start"}
-                      radius="full"
-                      size="sm"
-                      variant="flat"
-                      onPress={() => void updateDraftStatus("live", { actionKey: "start" })}
-                    >
-                      <Play className="h-4 w-4" />
-                    </Button>
-                  </span>
-                </Tooltip>
-                <span className="text-[11px] text-default-500">Start</span>
+        <Drawer
+          classNames={{
+            wrapper: "z-[260]",
+            base: "border-l border-default-200/40 bg-content1 text-default-foreground",
+            backdrop: "bg-black/60",
+          }}
+          isOpen={isCommissionerDrawerOpen}
+          placement="right"
+          scrollBehavior="inside"
+          size="sm"
+          onOpenChange={(open) => setIsCommissionerDrawerOpen(open)}
+        >
+          <DrawerContent>
+            <DrawerHeader className="border-b border-default-200/40 pb-3">
+              <div className="space-y-1">
+                <h2 className="flex items-center gap-2 text-lg font-semibold">
+                  <Shield className="h-5 w-5 text-warning" />
+                  Commissioner Controls
+                </h2>
+                <Chip size="sm" variant="flat">
+                  Status: <span className="ml-1 font-semibold">{draft.status}</span>
+                </Chip>
+              </div>
+            </DrawerHeader>
+            <DrawerBody className="space-y-3 py-4">
+              <div className="rounded-medium border border-default-200/40 bg-content2/40 px-3 py-2">
+                <p className="inline-flex items-center gap-1 text-xs text-default-500">
+                  <Gauge className="h-3.5 w-3.5" />
+                  Use commissioner actions to control draft state.
+                </p>
               </div>
 
-              <div className="flex flex-col items-center gap-1">
-                <Tooltip content="Force start draft even if lobby checks are incomplete">
-                  <span>
-                    <Button
-                      isIconOnly
-                      color="danger"
-                      isDisabled={
-                        statusPending ||
-                        draft.status !== "scheduled" ||
-                        (draft.allParticipantsPresent && draft.allParticipantsReady)
-                      }
-                      isLoading={statusAction === "force-start"}
-                      radius="full"
-                      size="sm"
-                      variant="flat"
-                      onPress={() =>
-                        void updateDraftStatus("live", { force: true, actionKey: "force-start" })
-                      }
-                    >
-                      <ShieldAlert className="h-4 w-4" />
-                    </Button>
-                  </span>
-                </Tooltip>
-                <span className="text-[11px] text-default-500">Force</span>
-              </div>
+              <div className="grid grid-cols-3 gap-3">
+                <div className="flex flex-col items-center gap-1">
+                  <Tooltip content="Start draft (all participants present and ready)">
+                    <span>
+                      <Button
+                        isIconOnly
+                        color="success"
+                        isDisabled={
+                          statusPending ||
+                          draft.status !== "scheduled" ||
+                          !draft.allParticipantsPresent ||
+                          !draft.allParticipantsReady
+                        }
+                        isLoading={statusAction === "start"}
+                        radius="full"
+                        size="sm"
+                        variant="flat"
+                        onPress={() => void updateDraftStatus("live", { actionKey: "start" })}
+                      >
+                        <Play className="h-4 w-4" />
+                      </Button>
+                    </span>
+                  </Tooltip>
+                  <span className="text-[11px] text-default-500">Start</span>
+                </div>
 
-              <div className="flex flex-col items-center gap-1">
-                <Tooltip content="Pause live draft">
-                  <span>
-                    <Button
-                      isIconOnly
-                      color="warning"
-                      isDisabled={statusPending || draft.status !== "live"}
-                      isLoading={statusAction === "pause"}
-                      radius="full"
-                      size="sm"
-                      variant="flat"
-                      onPress={() => void updateDraftStatus("paused", { actionKey: "pause" })}
-                    >
-                      <Pause className="h-4 w-4" />
-                    </Button>
-                  </span>
-                </Tooltip>
-                <span className="text-[11px] text-default-500">Pause</span>
-              </div>
+                <div className="flex flex-col items-center gap-1">
+                  <Tooltip content="Force start draft even if lobby checks are incomplete">
+                    <span>
+                      <Button
+                        isIconOnly
+                        color="danger"
+                        isDisabled={
+                          statusPending ||
+                          draft.status !== "scheduled" ||
+                          (draft.allParticipantsPresent && draft.allParticipantsReady)
+                        }
+                        isLoading={statusAction === "force-start"}
+                        radius="full"
+                        size="sm"
+                        variant="flat"
+                        onPress={() =>
+                          void updateDraftStatus("live", { force: true, actionKey: "force-start" })
+                        }
+                      >
+                        <ShieldAlert className="h-4 w-4" />
+                      </Button>
+                    </span>
+                  </Tooltip>
+                  <span className="text-[11px] text-default-500">Force</span>
+                </div>
 
-              <div className="flex flex-col items-center gap-1">
-                <Tooltip content="Resume paused draft">
-                  <span>
+                <div className="flex flex-col items-center gap-1">
+                  <Tooltip content="Pause live draft">
+                    <span>
+                      <Button
+                        isIconOnly
+                        color="warning"
+                        isDisabled={statusPending || draft.status !== "live"}
+                        isLoading={statusAction === "pause"}
+                        radius="full"
+                        size="sm"
+                        variant="flat"
+                        onPress={() => void updateDraftStatus("paused", { actionKey: "pause" })}
+                      >
+                        <Pause className="h-4 w-4" />
+                      </Button>
+                    </span>
+                  </Tooltip>
+                  <span className="text-[11px] text-default-500">Pause</span>
+                </div>
+
+                <div className="flex flex-col items-center gap-1">
+                  <Tooltip content="Resume paused draft">
+                    <span>
+                      <Button
+                        isIconOnly
+                        color="primary"
+                        isDisabled={statusPending || draft.status !== "paused"}
+                        isLoading={statusAction === "resume"}
+                        radius="full"
+                        size="sm"
+                        variant="flat"
+                        onPress={() =>
+                          void updateDraftStatus("live", { force: true, actionKey: "resume" })
+                        }
+                      >
+                        <SkipForward className="h-4 w-4" />
+                      </Button>
+                    </span>
+                  </Tooltip>
+                  <span className="text-[11px] text-default-500">Resume</span>
+                </div>
+
+                <div className="flex flex-col items-center gap-1">
+                  <Tooltip content="Complete draft and lock board">
+                    <span>
+                      <Button
+                        isIconOnly
+                        color="secondary"
+                        isDisabled={statusPending || draft.status === "completed"}
+                        isLoading={statusAction === "complete"}
+                        radius="full"
+                        size="sm"
+                        variant="flat"
+                        onPress={() =>
+                          void updateDraftStatus("completed", { actionKey: "complete" })
+                        }
+                      >
+                        <SquareCheckBig className="h-4 w-4" />
+                      </Button>
+                    </span>
+                  </Tooltip>
+                  <span className="text-[11px] text-default-500">Complete</span>
+                </div>
+              </div>
+            </DrawerBody>
+          </DrawerContent>
+        </Drawer>
+      ) : null}
+
+      {!isMobileViewport ? (
+        <Drawer
+          classNames={{
+            wrapper: "z-[250]",
+            base: "border-l border-default-200/40 bg-content1 text-default-foreground",
+            backdrop: "bg-black/55",
+          }}
+          isOpen={isPlayerDetailDrawerOpen && Boolean(selectedPlayer)}
+          placement="right"
+          scrollBehavior="inside"
+          size="sm"
+          onOpenChange={(open) => setIsPlayerDetailDrawerOpen(open)}
+        >
+          <DrawerContent>
+            <DrawerHeader className="border-b border-default-200/40 pb-3">
+              <div className="space-y-1">
+                <h2 className="text-lg font-semibold">
+                  {selectedPlayer?.playerName ?? "Player details"}
+                </h2>
+                <p className="text-xs text-default-500">
+                  {selectedPlayer
+                    ? `${selectedPlayer.playerTeam ?? "—"} • ${formatRoleLabel(selectedPlayer.playerRole)}`
+                    : "Select a player from the list"}
+                </p>
+              </div>
+            </DrawerHeader>
+            <DrawerBody className="space-y-3 py-4">
+              {selectedPlayer && selectedPlayerInsights ? (
+                <>
+                  <div className="rounded-large border border-default-200/35 bg-content2/35 p-3">
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-default-500">
+                      Performance (last 365 days)
+                    </p>
+                    <p className="mt-1 text-sm">
+                      OVR:{" "}
+                      <span className="font-semibold">
+                        {selectedPlayerInsights.analytics?.overallRank
+                          ? `#${selectedPlayerInsights.analytics.overallRank}`
+                          : "Unranked"}
+                      </span>{" "}
+                      • POS:{" "}
+                      <span className="font-semibold">
+                        {selectedPlayerInsights.analytics?.positionRank
+                          ? `#${selectedPlayerInsights.analytics.positionRank}`
+                          : "Unranked"}
+                      </span>
+                    </p>
+                    <p className="text-xs text-default-500">
+                      Avg points/game:{" "}
+                      <span className="font-semibold">
+                        {selectedPlayerInsights.analytics?.averageFantasyPoints?.toFixed(2) ?? "N/A"}
+                      </span>{" "}
+                      • Games:{" "}
+                      <span className="font-semibold">
+                        {selectedPlayerInsights.analytics?.gamesPlayed ?? 0}
+                      </span>{" "}
+                      • Win rate:{" "}
+                      <span className="font-semibold">
+                        {typeof selectedPlayerInsights.analytics?.winRate === "number"
+                          ? `${selectedPlayerInsights.analytics.winRate.toFixed(1)}%`
+                          : "N/A"}
+                      </span>
+                    </p>
+                    <p className="text-xs text-default-500">
+                      Queue position:{" "}
+                      {selectedPlayerInsights.queueIndex >= 0
+                        ? `#${selectedPlayerInsights.queueIndex + 1}`
+                        : "Not queued"}
+                    </p>
+                  </div>
+                  <div className="rounded-large border border-default-200/35 bg-content2/35 p-3">
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-default-500">
+                      Champion tendencies
+                    </p>
+                    {selectedPlayerInsights.analytics?.topChampions.length ? (
+                      <ul className="mt-1 space-y-1 text-sm">
+                        {selectedPlayerInsights.analytics.topChampions.map((entry) => (
+                          <li key={`${selectedPlayer.playerName}-champ-${entry.champion}`}>
+                            <span className="font-medium">{entry.champion}</span>{" "}
+                            <span className="text-default-500">
+                              ({entry.games}g • {entry.winRate.toFixed(1)}% WR • {entry.averageFantasyPoints.toFixed(2)} avg)
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="mt-1 text-sm text-default-500">
+                        No champion history found for this player in the selected time window.
+                      </p>
+                    )}
+                  </div>
+                  <div className="rounded-large border border-default-200/35 bg-content2/35 p-3">
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-default-500">
+                      Board context
+                    </p>
+                    <ul className="mt-1 space-y-1 text-sm">
+                      {selectedPlayerInsights.reasons.map((reason) => (
+                        <li key={reason} className="text-default-700 dark:text-default-300">
+                          {reason}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
                     <Button
-                      isIconOnly
+                      color={pickQueue.includes(selectedPlayer.playerName) ? "primary" : "default"}
+                      isDisabled={pickQueue.includes(selectedPlayer.playerName) || !canQueueActions}
+                      variant="flat"
+                      onPress={() => addPlayerToQueue(selectedPlayer.playerName)}
+                    >
+                      {pickQueue.includes(selectedPlayer.playerName) ? "Queued" : "Queue"}
+                    </Button>
+                    <Button
                       color="primary"
-                      isDisabled={statusPending || draft.status !== "paused"}
-                      isLoading={statusAction === "resume"}
-                      radius="full"
-                      size="sm"
-                      variant="flat"
-                      onPress={() =>
-                        void updateDraftStatus("live", { force: true, actionKey: "resume" })
-                      }
+                      isDisabled={!canDraftActions}
+                      variant="solid"
+                      onPress={() => requestManualDraft(selectedPlayer.playerName)}
                     >
-                      <SkipForward className="h-4 w-4" />
+                      Draft now
                     </Button>
-                  </span>
-                </Tooltip>
-                <span className="text-[11px] text-default-500">Resume</span>
-              </div>
+                  </div>
+                </>
+              ) : (
+                <p className="text-sm text-default-500">No player selected.</p>
+              )}
+            </DrawerBody>
+          </DrawerContent>
+        </Drawer>
+      ) : null}
 
-              <div className="flex flex-col items-center gap-1">
-                <Tooltip content="Complete draft and lock board">
-                  <span>
+      {!isMobileViewport ? (
+        <Drawer
+          classNames={{
+            wrapper: "z-[255]",
+            base: "border-l border-default-200/40 bg-content1 text-default-foreground",
+            backdrop: "bg-black/55",
+          }}
+          isOpen={isQueueDrawerOpen}
+          placement="right"
+          scrollBehavior="inside"
+          size="sm"
+          onOpenChange={(open) => setIsQueueDrawerOpen(open)}
+        >
+          <DrawerContent>
+            <DrawerHeader className="border-b border-default-200/40 pb-3">
+              <div className="space-y-1">
+                <h2 className="text-lg font-semibold">Pick Queue</h2>
+                <p className="text-xs text-default-500">
+                  Drag to reorder priority. Queue count: {queuedPlayers.length}
+                </p>
+              </div>
+            </DrawerHeader>
+            <DrawerBody className="space-y-3 py-4">
+              <div className="flex items-center justify-between gap-2">
+                <Button
+                  color={settings.autoPickFromQueue ? "primary" : "default"}
+                  isDisabled={isRealtimeReadOnly}
+                  size="sm"
+                  variant="flat"
+                  onPress={() => toggleAutopickSetting("queue-drawer")}
+                >
+                  Autopick {settings.autoPickFromQueue ? "On" : "Off"}
+                </Button>
+                <Button
+                  isDisabled={pickQueue.length === 0 || !canQueueActions}
+                  size="sm"
+                  variant="light"
+                  onPress={clearQueue}
+                >
+                  Clear
+                </Button>
+              </div>
+              <p className="text-xs text-default-500">Uses queue first, then Best Available.</p>
+              {queueAutopickTargetLine ? (
+                <p className="text-xs text-default-500">{queueAutopickTargetLine}</p>
+              ) : null}
+              {autopickCountdownSeconds !== null ? (
+                <p className="text-xs text-warning-300">
+                  {`Autopick in ${autopickCountdownSeconds}s: ${autopickTargetLabel}`}
+                </p>
+              ) : null}
+              {showQueueEmptyAutopickWarning ? (
+                <p className="text-xs text-warning-300">
+                  {queueAutopickWarningMessage}
+                </p>
+              ) : null}
+              {isRealtimeReadOnly ? (
+                <p className="text-xs text-warning-300">
+                  Realtime reconnecting. Queue edits are read-only.
+                </p>
+              ) : null}
+              {canCurrentUserPick && queuedPlayers.length === 0 ? (
+                <p className="text-xs text-default-500">Queue your top 3 so autopick is safe.</p>
+              ) : null}
+              <div className="min-h-[16rem] overflow-auto rounded-large border border-default-200/35 bg-content2/35">
+                {queuedPlayers.length === 0 ? (
+                  <p className="p-3 text-sm text-default-500">Queue is empty.</p>
+                ) : (
+                  <ul className="divide-y divide-default-200/30">
+                    {queuedPlayers.map((player, index) => (
+                      <li
+                        key={player.playerName}
+                        className={`flex items-center gap-2 px-3 py-2 ${index === 0 ? "bg-primary-500/10" : ""}`}
+                        draggable={canQueueActions}
+                        onDragEnd={() => setDraggedQueueIndex(null)}
+                        onDragOver={(event) => {
+                          if (!canQueueActions) {
+                            return;
+                          }
+                          event.preventDefault();
+                          event.dataTransfer.dropEffect = "move";
+                        }}
+                        onDragStart={() => {
+                          if (!canQueueActions) {
+                            return;
+                          }
+                          setDraggedQueueIndex(index);
+                        }}
+                        onDrop={() => {
+                          if (!canQueueActions || draggedQueueIndex === null) {
+                            return;
+                          }
+                          moveQueueItem(draggedQueueIndex, index);
+                          setDraggedQueueIndex(null);
+                        }}
+                      >
+                        <span className="text-xs font-semibold text-default-500">{index + 1}</span>
+                        <GripVertical className="h-4 w-4 shrink-0 text-default-400" />
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-sm font-medium">{player.playerName}</p>
+                          <p className="truncate text-xs text-default-500">
+                            {[player.playerTeam, formatRoleLabel(player.playerRole)].filter(Boolean).join(" • ")}
+                          </p>
+                        </div>
+                        <Button
+                          isIconOnly
+                          isDisabled={!canQueueActions}
+                          size="sm"
+                          variant="light"
+                          onPress={() => removePlayerFromQueue(player.playerName)}
+                        >
+                          <X className="h-4 w-4" />
+                        </Button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </DrawerBody>
+          </DrawerContent>
+        </Drawer>
+      ) : null}
+
+      {isLiveState ? (
+        <>
+          {isMobileViewport ? (
+          <div>
+            <Tabs
+              aria-label="Live draft mobile tabs"
+              color="primary"
+              selectedKey={mobileLiveTab}
+              size="sm"
+              variant="underlined"
+              onSelectionChange={(key) => setMobileLiveTab(String(key))}
+            >
+              <Tab key="players" title="Players">
+                <Card className="border border-primary-300/30 bg-content1/80">
+                  <CardBody className="space-y-3">
+                    <div className="grid grid-cols-1 gap-2">
+                      <Input
+                        label="Search"
+                        labelPlacement="outside"
+                        placeholder="Search player, team, or role"
+                        size="sm"
+                        startContent={<Search className="h-4 w-4 text-default-500" />}
+                        value={searchInputValue}
+                        onValueChange={setSearchInputValue}
+                      />
+                      <label className="text-xs text-default-500">
+                        Sort
+                        <select
+                          className="mt-1 w-full rounded-medium border border-default-300/40 bg-content1 px-2 py-1.5 text-sm"
+                          value={playerSort}
+                          onChange={(event) => setPlayerSort(event.target.value as PlayerSortKey)}
+                        >
+                          <option value="name">Name</option>
+                          <option value="rank">OVR Rank</option>
+                          <option value="pos">POS Rank</option>
+                          <option value="team">Team</option>
+                          <option value="role">Role</option>
+                        </select>
+                      </label>
+                      <Button
+                        color={showNeededRolesOnly ? "primary" : "default"}
+                        size="sm"
+                        variant="flat"
+                        onPress={() => setShowNeededRolesOnly((prev) => !prev)}
+                      >
+                        {showNeededRolesOnly ? "Showing needed roles only" : "Show needed roles only"}
+                      </Button>
+                    </div>
+                    <div className="overflow-x-auto pb-1">
+                      <Tabs
+                        aria-label="Position filter"
+                        className="w-max min-w-full"
+                        color="primary"
+                        selectedKey={roleFilter}
+                        size="sm"
+                        variant="underlined"
+                        onSelectionChange={(key) => applyRoleFilter(String(key))}
+                      >
+                        {roleFilters.map((filter) => (
+                          <Tab
+                            key={filter.value}
+                            isDisabled={filter.value !== "ALL" && filter.count === 0}
+                            title={`${filter.label} (${filter.count})${filter.isScarce ? " • Low" : ""}`}
+                          />
+                        ))}
+                      </Tabs>
+                    </div>
+                    <div className="space-y-2">
+                      {displayAvailablePlayers.map((player) => {
+                        const isQueued = pickQueue.includes(player.playerName);
+                        const isSelected = selectedPlayerName === player.playerName;
+                        return (
+                          <div
+                            key={player.id}
+                            aria-label={`Select ${player.playerName}`}
+                            className={`w-full rounded-large border border-default-200/35 bg-content2/30 px-3 py-3 text-left transition ${
+                              isSelected
+                                ? "ring-1 ring-primary-300/65"
+                                : isQueued
+                                ? "ring-1 ring-primary-300/35"
+                                : ""
+                            }`}
+                            role="button"
+                            tabIndex={0}
+                            onClick={(event) => handlePlayerTapOrClick(player.playerName, event)}
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter" || event.key === " ") {
+                                event.preventDefault();
+                                setSelectedPlayerName(player.playerName);
+                              }
+                            }}
+                          >
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="flex min-w-0 items-center gap-2">
+                                {player.teamIconUrl ? (
+                                  isMobileViewport ? (
+                                    <Popover placement="top" showArrow>
+                                      <PopoverTrigger>
+                                        <button
+                                          aria-label={`Show team for ${player.playerName}`}
+                                          className="shrink-0 rounded-small focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-300/70"
+                                          type="button"
+                                          onClick={(event) => event.stopPropagation()}
+                                          onPointerDown={(event) => event.stopPropagation()}
+                                        >
+                                          <CroppedTeamLogo
+                                            alt={`${player.playerName} team logo`}
+                                            frameClassName="h-5 w-7"
+                                            height={20}
+                                            imageClassName="h-5"
+                                            src={player.teamIconUrl}
+                                            width={48}
+                                          />
+                                        </button>
+                                      </PopoverTrigger>
+                                      <PopoverContent>
+                                        <p className="px-1 py-0.5 text-xs">{player.playerTeam ?? "Unknown team"}</p>
+                                      </PopoverContent>
+                                    </Popover>
+                                  ) : (
+                                    <Tooltip content={player.playerTeam ?? "Unknown team"}>
+                                      <button
+                                        aria-label={`Show team for ${player.playerName}`}
+                                        className="shrink-0 rounded-small focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-300/70"
+                                        type="button"
+                                        onClick={(event) => event.stopPropagation()}
+                                        onPointerDown={(event) => event.stopPropagation()}
+                                      >
+                                        <CroppedTeamLogo
+                                          alt={`${player.playerName} team logo`}
+                                          frameClassName="h-5 w-7"
+                                          height={20}
+                                          imageClassName="h-5"
+                                          src={player.teamIconUrl}
+                                          width={48}
+                                        />
+                                      </button>
+                                    </Tooltip>
+                                  )
+                                ) : null}
+                                <p className="truncate text-sm font-semibold">{player.playerName}</p>
+                              </div>
+                              <div className="flex items-center gap-1.5">
+                                {player.analytics?.overallRank ? (
+                                  <Chip
+                                    className="border border-sky-300/45 bg-sky-400/20 text-sky-100"
+                                    size="sm"
+                                    variant="flat"
+                                  >
+                                    OVR #{player.analytics.overallRank}
+                                  </Chip>
+                                ) : null}
+                                {player.analytics?.positionRank ? (
+                                  <Chip
+                                    className="border border-amber-300/45 bg-amber-400/20 text-amber-100"
+                                    size="sm"
+                                    variant="flat"
+                                  >
+                                    POS #{player.analytics.positionRank}
+                                  </Chip>
+                                ) : null}
+                                <Chip className={roleChipClassName(player.playerRole)} size="sm" variant="flat">
+                                  {formatRoleLabel(player.playerRole)}
+                                </Chip>
+                              </div>
+                            </div>
+                            <p className="mt-1.5 text-[11px] text-default-500">
+                              Avg pts/g:{" "}
+                              {typeof player.analytics?.averageFantasyPoints === "number"
+                                ? player.analytics.averageFantasyPoints.toFixed(2)
+                                : "N/A"}
+                            </p>
+                            <div className="mt-2 flex items-center gap-2">
+                              <Button
+                                aria-label={isQueued ? "Queued" : "Queue player"}
+                                color={isQueued ? "primary" : "default"}
+                                isDisabled={isQueued || !canQueueActions}
+                                size="sm"
+                                variant={isQueued ? "flat" : "light"}
+                                onPress={() => addPlayerToQueue(player.playerName)}
+                              >
+                                {isQueued ? "Queued" : "Queue"}
+                              </Button>
+                              {canCurrentUserPick ? (
+                                <Button
+                                  color="primary"
+                                  isDisabled={!canDraftActions}
+                                  size="sm"
+                                  variant="flat"
+                                  onPress={() => requestManualDraft(player.playerName)}
+                                >
+                                  Draft
+                                </Button>
+                              ) : (
+                                <Button
+                                  size="sm"
+                                  variant="light"
+                                  onPress={() => setSelectedPlayerName(player.playerName)}
+                                >
+                                  View
+                                </Button>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </CardBody>
+                </Card>
+              </Tab>
+              <Tab key="team" title={`My Team (${userPicks.length})`}>
+                <Card className="border border-default-200/40 bg-content1/80">
+                  <CardBody className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <p className="text-xs text-default-500">Queue: {queuedPlayers.length}</p>
+                      <Button
+                        size="sm"
+                        variant="flat"
+                        onPress={() => setMobileLiveTab("queue")}
+                      >
+                        View Queue
+                      </Button>
+                    </div>
+                    <div className="space-y-2">
+                      <p className="text-xs text-default-500">Needs</p>
+                      {rosterNeeds.length > 0 ? (
+                        <div className="flex flex-wrap gap-1.5">
+                          {rosterNeeds.map((role) => (
+                            <Button
+                              key={role}
+                              size="sm"
+                              variant="flat"
+                              onPress={() => {
+                                applyRoleFilter(role);
+                                setMobileLiveTab("players");
+                              }}
+                            >
+                              {role}
+                            </Button>
+                          ))}
+                        </div>
+                      ) : (
+                        <Chip size="sm" variant="flat">
+                          All core slots filled
+                        </Chip>
+                      )}
+                      {bestNeedSuggestion ? (
+                        <Button
+                          size="sm"
+                          variant="light"
+                          onPress={() => {
+                            applyRoleFilter(bestNeedSuggestion.role);
+                            setSelectedPlayerName(bestNeedSuggestion.playerName);
+                            setMobileLiveTab("players");
+                          }}
+                        >
+                          Best available: {bestNeedSuggestion.playerName} ({bestNeedSuggestion.role})
+                        </Button>
+                      ) : null}
+                    </div>
+                    {PRIMARY_ROLE_FILTERS.map((role) => {
+                      const pick = rosterSlots.byRole.get(role);
+                      return (
+                        <div
+                          key={role}
+                          className="flex items-center justify-between rounded-medium border border-default-200/30 px-3 py-2 text-sm"
+                        >
+                          <span className="font-medium">{role}</span>
+                          <span className="text-default-500">{pick?.playerName ?? "Open"}</span>
+                        </div>
+                      );
+                    })}
+                    {rosterSlots.overflow.length > 0 ? (
+                      <div className="rounded-medium border border-default-200/30 px-3 py-2 text-sm">
+                        <p className="text-xs uppercase tracking-wide text-default-500">Bench</p>
+                        {rosterSlots.overflow.map((pick) => (
+                          <p key={pick.id}>{pick.playerName}</p>
+                        ))}
+                      </div>
+                    ) : null}
+                  </CardBody>
+                </Card>
+              </Tab>
+              <Tab key="queue" title={`Queue (${queuedPlayers.length})`}>
+                <Card className="border border-default-200/40 bg-content1/80">
+                  <CardBody className="space-y-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <Button
+                        color={settings.autoPickFromQueue ? "primary" : "default"}
+                        isDisabled={isRealtimeReadOnly}
+                        size="sm"
+                        variant="flat"
+                        onPress={() => toggleAutopickSetting("mobile-queue-tab")}
+                      >
+                        Autopick {settings.autoPickFromQueue ? "On" : "Off"}
+                      </Button>
+                      <Button
+                        isDisabled={pickQueue.length === 0 || !canQueueActions}
+                        size="sm"
+                        variant="light"
+                        onPress={clearQueue}
+                      >
+                        Clear
+                      </Button>
+                    </div>
+                    <p className="text-xs text-default-500">Queue priority order (top picks first).</p>
+                    {queueAutopickTargetLine ? (
+                      <p className="text-xs text-default-500">{queueAutopickTargetLine}</p>
+                    ) : null}
+                    {autopickCountdownSeconds !== null ? (
+                      <p className="text-xs text-warning-300">
+                        {`Autopick in ${autopickCountdownSeconds}s: ${autopickTargetLabel}`}
+                      </p>
+                    ) : null}
+                    {showQueueEmptyAutopickWarning ? (
+                      <p className="text-xs text-warning-300">
+                        {queueAutopickWarningMessage}
+                      </p>
+                    ) : null}
+                    {isRealtimeReadOnly ? (
+                      <p className="text-xs text-warning-300">
+                        Realtime reconnecting. Queue edits are read-only.
+                      </p>
+                    ) : null}
+                    {canCurrentUserPick && queuedPlayers.length === 0 ? (
+                      <p className="text-xs text-default-500">Queue your top 3 so autopick is safe.</p>
+                    ) : null}
+                    <div className="max-h-[55svh] overflow-auto rounded-large border border-default-200/35 bg-content2/35">
+                      {queuedPlayers.length === 0 ? (
+                        <p className="p-3 text-sm text-default-500">Queue is empty.</p>
+                      ) : (
+                        <ul className="divide-y divide-default-200/30">
+                          {queuedPlayers.map((player, index) => (
+                            <li
+                              key={player.playerName}
+                              className={`flex items-center gap-2 px-3 py-2 ${
+                                index === 0 ? "bg-primary-500/10" : ""
+                              }`}
+                            >
+                              <span className="text-xs font-semibold text-default-500">{index + 1}</span>
+                              <div className="min-w-0 flex-1">
+                                <p className="truncate text-sm font-medium">{player.playerName}</p>
+                                <p className="truncate text-xs text-default-500">
+                                  {[player.playerTeam, formatRoleLabel(player.playerRole)].filter(Boolean).join(" • ")}
+                                </p>
+                              </div>
+                              <div className="flex items-center gap-1">
+                                <Button
+                                  isIconOnly
+                                  isDisabled={!canQueueActions || index === 0}
+                                  size="sm"
+                                  variant="light"
+                                  onPress={() => moveQueueItem(index, index - 1)}
+                                >
+                                  <ArrowUp className="h-4 w-4" />
+                                </Button>
+                                <Button
+                                  isIconOnly
+                                  isDisabled={!canQueueActions || index === queuedPlayers.length - 1}
+                                  size="sm"
+                                  variant="light"
+                                  onPress={() => moveQueueItem(index, index + 1)}
+                                >
+                                  <ArrowDown className="h-4 w-4" />
+                                </Button>
+                                <Button
+                                  isIconOnly
+                                  isDisabled={!canQueueActions}
+                                  size="sm"
+                                  variant="light"
+                                  onPress={() => removePlayerFromQueue(player.playerName)}
+                                >
+                                  <X className="h-4 w-4" />
+                                </Button>
+                              </div>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  </CardBody>
+                </Card>
+              </Tab>
+            </Tabs>
+          </div>
+          ) : null}
+
+          {!isMobileViewport ? (
+          <div className="grid h-[clamp(38rem,74vh,52rem)] min-h-[38rem] grid-cols-[320px_minmax(0,1fr)_360px] items-stretch gap-4">
+            <Card
+              className={`relative border border-default-200/40 bg-content1/80 shadow-sm ${
+                queuedPlayers.length === 0 ? "h-auto min-h-0 self-start" : "h-full min-h-0"
+              } ${showReadOnlyInteractionOverlay ? "cursor-not-allowed" : ""}`}
+              title={showReadOnlyInteractionOverlay ? "Disabled while reconnecting" : undefined}
+            >
+              <CardBody className={`${queuedPlayers.length === 0 ? "space-y-3 p-3" : "flex h-full min-h-0 flex-col gap-3 p-3"}`}>
+                <div className="flex items-center justify-between">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-default-500">
+                    Queue ({queuedPlayers.length})
+                  </p>
+                  <div className="flex items-center gap-2">
                     <Button
-                      isIconOnly
-                      color="secondary"
-                      isDisabled={statusPending || draft.status === "completed"}
-                      isLoading={statusAction === "complete"}
-                      radius="full"
+                      color={settings.autoPickFromQueue ? "primary" : "default"}
+                      isDisabled={isRealtimeReadOnly}
                       size="sm"
                       variant="flat"
-                      onPress={() =>
-                        void updateDraftStatus("completed", { actionKey: "complete" })
-                      }
+                      onPress={() => toggleAutopickSetting("queue-panel")}
                     >
-                      <SquareCheckBig className="h-4 w-4" />
+                      Autopick {settings.autoPickFromQueue ? "On" : "Off"}
                     </Button>
-                  </span>
-                </Tooltip>
-                <span className="text-[11px] text-default-500">Complete</span>
-              </div>
+                    <Button
+                      isDisabled={pickQueue.length === 0 || !canQueueActions}
+                      size="sm"
+                      variant="light"
+                      onPress={clearQueue}
+                    >
+                      Clear
+                    </Button>
+                  </div>
+                </div>
+                <p className="text-xs text-default-500">Drag to reorder. Queue is autopick priority.</p>
+                {queueAutopickTargetLine ? (
+                  <p className="text-xs text-default-500">{queueAutopickTargetLine}</p>
+                ) : null}
+                {autopickCountdownSeconds !== null ? (
+                  <p className="text-xs text-warning-300">
+                    {`Autopick in ${autopickCountdownSeconds}s: ${autopickTargetLabel}`}
+                  </p>
+                ) : null}
+                {showQueueEmptyAutopickWarning ? (
+                  <p className="text-xs text-warning-300">
+                    {queueAutopickWarningMessage}
+                  </p>
+                ) : null}
+                {isRealtimeReadOnly ? (
+                  <p className="text-xs text-warning-300">
+                    Realtime reconnecting. Queue edits are read-only.
+                  </p>
+                ) : null}
+                {queuedPlayers.length === 0 ? (
+                  <div className="rounded-large border border-default-200/35 bg-content2/35 p-3">
+                    <p className="text-sm font-medium">Queue your top 3 so autopick is safe.</p>
+                    <p className="mt-1 text-xs text-default-500">
+                      Start with your highest-priority picks so timeout fallback stays predictable.
+                    </p>
+                    {quickQueueSuggestions.length > 0 ? (
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        {quickQueueSuggestions.map((suggestion) => (
+                          <Button
+                            key={`queue-suggestion-${suggestion.playerName}`}
+                            isDisabled={!canQueueActions}
+                            size="sm"
+                            variant="flat"
+                            onPress={() => addPlayerToQueue(suggestion.playerName)}
+                          >
+                            {suggestion.label}
+                          </Button>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : (
+                  <div className="min-h-0 flex-1 overflow-auto rounded-large border border-default-200/35 bg-content2/35">
+                    <ul className="divide-y divide-default-200/30">
+                      {queuedPlayers.map((player, index) => (
+                        <li
+                          key={player.playerName}
+                          className={`flex items-center gap-2 px-3 py-2 ${
+                            index === 0 ? "bg-primary-500/10" : ""
+                          }`}
+                          draggable={canQueueActions}
+                          onDragEnd={() => setDraggedQueueIndex(null)}
+                          onDragOver={(event) => {
+                            if (!canQueueActions) {
+                              return;
+                            }
+                            event.preventDefault();
+                            event.dataTransfer.dropEffect = "move";
+                          }}
+                          onDragStart={() => {
+                            if (!canQueueActions) {
+                              return;
+                            }
+                            setDraggedQueueIndex(index);
+                          }}
+                          onDrop={() => {
+                            if (!canQueueActions || draggedQueueIndex === null) {
+                              return;
+                            }
+                            moveQueueItem(draggedQueueIndex, index);
+                            setDraggedQueueIndex(null);
+                          }}
+                        >
+                          <span className="text-xs font-semibold text-default-500">{index + 1}</span>
+                          <GripVertical className="h-4 w-4 shrink-0 text-default-400" />
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate text-sm font-medium">{player.playerName}</p>
+                            <p className="truncate text-xs text-default-500">
+                              {[player.playerTeam, formatRoleLabel(player.playerRole)].filter(Boolean).join(" • ")}
+                            </p>
+                          </div>
+                          <Button
+                            isIconOnly
+                            isDisabled={!canQueueActions}
+                            size="sm"
+                            variant="light"
+                            onPress={() => removePlayerFromQueue(player.playerName)}
+                          >
+                            <X className="h-4 w-4" />
+                          </Button>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                <Button
+                  className="w-full"
+                  color="primary"
+                  isDisabled={!draftActionPlayerName || !canDraftActions}
+                  isLoading={pickPending}
+                  onPress={() => requestManualDraft()}
+                >
+                  {isRealtimeReadOnly
+                    ? "Reconnecting - drafting disabled"
+                    : canCurrentUserPick
+                    ? draftActionPlayerName
+                      ? `You're on the clock - Draft ${draftActionPlayerName}`
+                      : "You're on the clock - select a player"
+                    : isUpNext
+                    ? "You're up next"
+                    : yourNextPickMeta
+                    ? `You pick in ${yourNextPickMeta.picksAway} picks (~${formatEtaFromMs(yourNextPickMeta.etaMs)})`
+                    : "Waiting for your turn"}
+                </Button>
+              </CardBody>
+              {showReadOnlyInteractionOverlay ? (
+                <div className="pointer-events-none absolute inset-0 z-20 grid place-items-center rounded-[inherit] bg-content1/55 backdrop-blur-[1px]">
+                  <div className="rounded-medium border border-warning-300/60 bg-content1/92 px-3 py-2 text-center text-xs shadow-md">
+                    <p className="inline-flex items-center gap-1 font-semibold text-warning-200">
+                      <ShieldAlert className="h-3.5 w-3.5" />
+                      Reconnecting...
+                    </p>
+                    <p className="mt-1 text-default-500">Queue actions disabled until sync is restored.</p>
+                  </div>
+                </div>
+              ) : null}
+            </Card>
+
+            <Card
+              className={`relative h-full min-h-0 overflow-hidden border bg-content1/80 shadow-sm ${
+                canCurrentUserPick
+                  ? "border-primary-300/65 shadow-[0_0_0_1px_rgba(147,197,253,0.4),0_0_18px_rgba(59,130,246,0.2)]"
+                  : "border-primary-400/30"
+              } ${showReadOnlyInteractionOverlay ? "cursor-not-allowed" : ""}`}
+              title={showReadOnlyInteractionOverlay ? "Disabled while reconnecting" : undefined}
+            >
+              <CardHeader className="flex flex-col gap-3">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="space-y-1">
+                    <h2 className="flex items-center gap-2 text-lg font-semibold">
+                      <TableIcon className="h-5 w-5 text-primary" />
+                      Available Players
+                    </h2>
+                    <p className="text-xs text-default-500">
+                      Showing {displayAvailablePlayers.length} of {draft.availablePlayers.length} players.
+                      {hasAnyPlayerFilter ? ` ${activePlayerFilterCount} filter${activePlayerFilterCount === 1 ? "" : "s"} active.` : ""}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Tooltip content="Keyboard shortcuts">
+                      <Button
+                        isIconOnly
+                        size="sm"
+                        variant="flat"
+                        onPress={() => setShowShortcutsHelp((prev) => !prev)}
+                      >
+                        ?
+                      </Button>
+                    </Tooltip>
+                    <Button
+                      size="sm"
+                      variant="flat"
+                      onPress={() => setIsQueueDrawerOpen(true)}
+                    >
+                      Queue ({queuedPlayers.length})
+                    </Button>
+                  </div>
+                </div>
+                <div className="rounded-large border border-default-200/35 bg-content2/35 p-2.5">
+                  <div className="grid grid-cols-1 gap-2 lg:grid-cols-[minmax(0,1fr)_180px]">
+                    <Input
+                      aria-label="Search players"
+                      id="draft-player-search"
+                      placeholder="Search player, team, or role"
+                      size="sm"
+                      startContent={<Search className="h-4 w-4 text-default-500" />}
+                      value={searchInputValue}
+                      onValueChange={setSearchInputValue}
+                    />
+                    <label className="text-xs font-medium text-default-500">
+                      Sort by
+                      <select
+                        className="mt-1 w-full rounded-medium border border-default-300/40 bg-content1 px-2 py-1.5 text-sm"
+                        value={playerSort}
+                        onChange={(event) => setPlayerSort(event.target.value as PlayerSortKey)}
+                      >
+                        <option value="name">Name</option>
+                        <option value="rank">OVR Rank</option>
+                        <option value="pos">POS Rank</option>
+                        <option value="team">Team</option>
+                        <option value="role">Role</option>
+                      </select>
+                    </label>
+                  </div>
+                  <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button
+                        color={showNeededRolesOnly ? "primary" : "default"}
+                        size="sm"
+                        variant={showNeededRolesOnly ? "solid" : "flat"}
+                        onPress={() => setShowNeededRolesOnly((prev) => !prev)}
+                      >
+                        {showNeededRolesOnly ? "Needs only: On" : "Needs only: Off"}
+                      </Button>
+                      {hasAnyPlayerFilter ? (
+                        <Button
+                          size="sm"
+                          variant="light"
+                          onPress={resetPlayerFilters}
+                        >
+                          Reset filters
+                        </Button>
+                      ) : null}
+                    </div>
+                    <p className="text-[11px] text-default-500">
+                      {hasAnyPlayerFilter
+                        ? `${activePlayerFilterCount} filter${activePlayerFilterCount === 1 ? "" : "s"} active`
+                        : "No active filters"}
+                    </p>
+                  </div>
+                  {showNeededRolesOnly ? (
+                    <p className="mt-1 text-[11px] text-primary-200">Showing roles you still need</p>
+                  ) : null}
+                </div>
+                <div className="rounded-large border border-default-200/30 bg-content2/25 px-2 py-1.5">
+                  <p className="px-1 text-[11px] font-semibold uppercase tracking-wide text-default-500">
+                    Role filter
+                  </p>
+                  <div className="overflow-x-auto pb-1">
+                    <Tabs
+                      aria-label="Position filter"
+                      className="w-max min-w-full"
+                      color="primary"
+                      selectedKey={roleFilter}
+                      size="sm"
+                      variant="underlined"
+                      onSelectionChange={(key) => applyRoleFilter(String(key))}
+                    >
+                      {roleFilters.map((filter) => (
+                        <Tab
+                          key={filter.value}
+                          isDisabled={filter.value !== "ALL" && filter.count === 0}
+                          title={`${filter.label} (${filter.count})${filter.isScarce ? " • Low" : ""}`}
+                        />
+                      ))}
+                    </Tabs>
+                  </div>
+                </div>
+              </CardHeader>
+              <CardBody className="flex min-h-0 flex-1 flex-col gap-3">
+                {showShortcutsHelp ? (
+                  <div className="rounded-large border border-default-200/35 bg-content2/35 px-3 py-2 text-xs">
+                    <p className="font-semibold">Shortcuts</p>
+                    <p className="mt-1 text-default-500">
+                      `/` search • `↑/↓` move selection • `Enter` open details • `Q` queue • `D` draft • `?` toggle help
+                    </p>
+                  </div>
+                ) : null}
+                {canCurrentUserPick || hasPendingManualConfirm ? (
+                  <div
+                    className={`sticky top-0 z-20 rounded-large border px-3 py-2 shadow-sm backdrop-blur ${
+                      hasPendingManualConfirm
+                        ? "border-warning-300/60 bg-warning-500/14"
+                        : "border-primary-300/55 bg-primary-500/12"
+                    }`}
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="text-[11px] font-semibold uppercase tracking-wide text-default-500">
+                          {hasPendingManualConfirm ? "Confirm pick" : "On the clock"}
+                        </p>
+                        {hasPendingManualConfirm && pendingManualDraftPlayer ? (
+                          <div className="space-y-1">
+                            <p className="truncate text-sm font-semibold">
+                              {pendingManualDraftPlayer.playerName} ({formatRoleLabel(pendingManualDraftPlayer.playerRole)})
+                            </p>
+                            <div className="flex items-center gap-2 text-xs text-default-500">
+                              {pendingManualDraftPlayer.teamIconUrl ? (
+                                <CroppedTeamLogo
+                                  alt={`${pendingManualDraftPlayer.playerName} team logo`}
+                                  frameClassName="h-4 w-6"
+                                  height={16}
+                                  imageClassName="h-4"
+                                  src={pendingManualDraftPlayer.teamIconUrl}
+                                  width={32}
+                                />
+                              ) : null}
+                              <span>{pendingManualDraftPlayer.playerTeam ?? "Unknown team"}</span>
+                              {pendingManualSlotImpact ? (
+                                <span className="rounded-small border border-default-200/40 px-1.5 py-0.5">
+                                  Fills: {pendingManualSlotImpact.fills}
+                                </span>
+                              ) : null}
+                            </div>
+                            {pendingManualSlotImpact?.warning ? (
+                              <p className="text-xs text-warning-200">{pendingManualSlotImpact.warning}</p>
+                            ) : null}
+                          </div>
+                        ) : (
+                          <>
+                            <p className="truncate text-sm font-semibold">
+                              {selectedPlayer
+                                ? `Selected: ${selectedPlayer.playerName} (${formatRoleLabel(selectedPlayer.playerRole)})`
+                                : draftActionPlayerName
+                                ? `Queued target: ${draftActionPlayerName}`
+                                : "Select a player"}
+                            </p>
+                            <p className="text-xs text-default-500">
+                              {settings.requirePickConfirm
+                                ? "Draft opens a confirmation step."
+                                : "Fast Draft enabled: submit is immediate."}
+                            </p>
+                          </>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {hasPendingManualConfirm ? (
+                          <Button
+                            size="sm"
+                            variant="light"
+                            onPress={() => setPendingManualDraftPlayerName(null)}
+                          >
+                            Cancel
+                          </Button>
+                        ) : null}
+                        {hasPendingManualConfirm && settings.requirePickConfirm ? (
+                          <Button
+                            size="sm"
+                            variant="light"
+                            onPress={() =>
+                              setSettings((prev) => ({
+                                ...prev,
+                                requirePickConfirm: false,
+                              }))
+                            }
+                          >
+                            Don&apos;t ask again
+                          </Button>
+                        ) : null}
+                        {!hasPendingManualConfirm ? (
+                          <Button
+                            color={selectedPlayer && pickQueue.includes(selectedPlayer.playerName) ? "primary" : "default"}
+                            isDisabled={
+                              !selectedPlayer ||
+                              pickQueue.includes(selectedPlayer.playerName) ||
+                              !canQueueActions
+                            }
+                            size="sm"
+                            variant="flat"
+                            onPress={() => {
+                              if (!selectedPlayer) {
+                                return;
+                              }
+                              addPlayerToQueue(selectedPlayer.playerName);
+                            }}
+                          >
+                            {selectedPlayer && pickQueue.includes(selectedPlayer.playerName)
+                              ? "Queued"
+                              : "Queue"}
+                          </Button>
+                        ) : null}
+                        <Button
+                          className={isLowTimerWarning ? "animate-pulse" : ""}
+                          color="primary"
+                          isDisabled={
+                            hasPendingManualConfirm
+                              ? !pendingManualDraftPlayerName || !canDraftActions
+                              : !draftActionPlayerName || !canDraftActions
+                          }
+                          isLoading={pickPending}
+                          size="sm"
+                          onPress={() => {
+                            if (hasPendingManualConfirm && pendingManualDraftPlayerName) {
+                              void submitPick(pendingManualDraftPlayerName, { source: "manual" });
+                              return;
+                            }
+                            requestManualDraft();
+                          }}
+                        >
+                          {hasPendingManualConfirm ? "Confirm draft" : "Draft now"}
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+                <div className="min-h-0 flex-1 overflow-hidden rounded-large border border-default-200/40 bg-content2/45">
+                  <div className="h-full min-h-0 overflow-auto">
+                    <HeroTable
+                      isHeaderSticky
+                      removeWrapper
+                      aria-label="Available players table"
+                      classNames={{
+                        base: "w-full",
+                        table: "w-full table-fixed",
+                        thead: "[&>tr]:bg-content2/95",
+                        th: "h-9 border-b border-default-200/40 px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-default-500",
+                        td: "h-11 border-b border-default-200/30 px-2 py-1.5 align-middle",
+                        tr: "transition last:[&>td]:border-b-0 data-[hover=true]:bg-content2/70",
+                      }}
+                    >
+                      <TableHeader>
+                        <TableColumn key="player" className="w-[260px]">Player</TableColumn>
+                        <TableColumn key="role" className="w-[72px] text-center">Role</TableColumn>
+                        <TableColumn key="actions" className="w-[220px] text-right">Actions</TableColumn>
+                      </TableHeader>
+                      <TableBody
+                        emptyContent={<span className="text-xs text-default-500">No players found.</span>}
+                      >
+                        {displayAvailablePlayers.map((player) => {
+                          const isQueued = pickQueue.includes(player.playerName);
+                          const isSelected = selectedPlayerName === player.playerName;
+                          const playerRoleIconUrl = roleIconUrl(player.playerRole);
+                          return (
+                            <TableRow
+                              key={player.id}
+                              className={`${isRealtimeReadOnly ? "cursor-not-allowed" : "cursor-pointer"} border-t border-default-200/30 transition ${
+                                isSelected
+                                  ? "shadow-[inset_0_0_0_1px_rgba(147,197,253,0.7)]"
+                                  : isQueued
+                                  ? "shadow-[inset_0_0_0_1px_rgba(147,197,253,0.4)]"
+                                  : ""
+                              }`}
+                              onClick={(event) => {
+                                if (isRealtimeReadOnly) {
+                                  return;
+                                }
+                                handlePlayerTapOrClick(player.playerName, event);
+                              }}
+                            >
+                              <TableCell>
+                                <div className="flex items-center gap-2">
+                                  {playerRoleIconUrl ? (
+                                    <Image
+                                      alt={`${formatRoleLabel(player.playerRole)} role icon`}
+                                      className="h-4 w-4 rounded-sm object-contain"
+                                      height={16}
+                                      src={playerRoleIconUrl}
+                                      width={16}
+                                    />
+                                  ) : null}
+                                  {player.teamIconUrl ? (
+                                    isMobileViewport ? (
+                                      <Popover placement="top" showArrow>
+                                        <PopoverTrigger>
+                                          <button
+                                            aria-label={`Show team for ${player.playerName}`}
+                                            className="shrink-0 rounded-small focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-300/70"
+                                            type="button"
+                                            onClick={(event) => event.stopPropagation()}
+                                            onPointerDown={(event) => event.stopPropagation()}
+                                          >
+                                            <CroppedTeamLogo
+                                              alt={`${player.playerName} team logo`}
+                                              frameClassName="h-5 w-7"
+                                              height={20}
+                                              imageClassName="h-5"
+                                              src={player.teamIconUrl}
+                                              width={48}
+                                            />
+                                          </button>
+                                        </PopoverTrigger>
+                                        <PopoverContent>
+                                          <p className="px-1 py-0.5 text-xs">{player.playerTeam ?? "Unknown team"}</p>
+                                        </PopoverContent>
+                                      </Popover>
+                                    ) : (
+                                      <Tooltip content={player.playerTeam ?? "Unknown team"}>
+                                        <button
+                                          aria-label={`Show team for ${player.playerName}`}
+                                          className="shrink-0 rounded-small focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-300/70"
+                                          type="button"
+                                          onClick={(event) => event.stopPropagation()}
+                                          onPointerDown={(event) => event.stopPropagation()}
+                                        >
+                                          <CroppedTeamLogo
+                                            alt={`${player.playerName} team logo`}
+                                            frameClassName="h-5 w-7"
+                                            height={20}
+                                            imageClassName="h-5"
+                                            src={player.teamIconUrl}
+                                            width={48}
+                                          />
+                                        </button>
+                                      </Tooltip>
+                                    )
+                                  ) : null}
+                                  <div className="min-w-0">
+                                    <p className="truncate font-medium">{player.playerName}</p>
+                                    {player.analytics?.overallRank || player.analytics?.positionRank ? (
+                                      <p className="text-[11px] text-sky-300">
+                                        {player.analytics?.overallRank ? `OVR #${player.analytics.overallRank}` : "OVR —"}
+                                        {player.analytics?.positionRank
+                                          ? ` • POS #${player.analytics.positionRank}`
+                                          : " • POS —"}
+                                      </p>
+                                    ) : null}
+                                    <p className="text-[11px] text-default-500">
+                                      Avg pts/g:{" "}
+                                      {typeof player.analytics?.averageFantasyPoints === "number"
+                                        ? player.analytics.averageFantasyPoints.toFixed(2)
+                                        : "N/A"}
+                                    </p>
+                                  </div>
+                                </div>
+                              </TableCell>
+                              <TableCell className="whitespace-nowrap text-center">
+                                <Chip className={roleChipClassName(player.playerRole)} size="sm" variant="flat">
+                                  {formatRoleLabel(player.playerRole)}
+                                </Chip>
+                              </TableCell>
+                              <TableCell className="whitespace-nowrap">
+                                <div className="flex items-center justify-end gap-1.5">
+                                  <Button
+                                    aria-label={isQueued ? "Queued" : "Queue player"}
+                                    color={isQueued ? "primary" : "default"}
+                                    isDisabled={isQueued || !canQueueActions}
+                                    size="sm"
+                                    variant={isQueued ? "flat" : "light"}
+                                    onPress={() => addPlayerToQueue(player.playerName)}
+                                  >
+                                    {isQueued ? "Queued" : "Queue"}
+                                  </Button>
+                                  {canCurrentUserPick ? (
+                                    <Button
+                                      color="primary"
+                                      isDisabled={!canDraftActions}
+                                      size="sm"
+                                      variant="solid"
+                                      onPress={() => requestManualDraft(player.playerName)}
+                                    >
+                                      Draft
+                                    </Button>
+                                  ) : (
+                                    <Button
+                                      size="sm"
+                                      variant="light"
+                                      onPress={() => {
+                                        setSelectedPlayerName(player.playerName);
+                                        setIsPlayerDetailDrawerOpen(true);
+                                      }}
+                                    >
+                                      View
+                                    </Button>
+                                  )}
+                                </div>
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })}
+                      </TableBody>
+                    </HeroTable>
+                  </div>
+                </div>
+              </CardBody>
+              {showReadOnlyInteractionOverlay ? (
+                <div className="pointer-events-none absolute inset-0 z-20 grid place-items-center rounded-[inherit] bg-content1/55 backdrop-blur-[1px]">
+                  <div className="rounded-medium border border-warning-300/60 bg-content1/92 px-3 py-2 text-center text-xs shadow-md">
+                    <p className="inline-flex items-center gap-1 font-semibold text-warning-200">
+                      <ShieldAlert className="h-3.5 w-3.5" />
+                      Reconnecting...
+                    </p>
+                    <p className="mt-1 text-default-500">Draft actions disabled until sync is restored.</p>
+                  </div>
+                </div>
+              ) : null}
+            </Card>
+
+            <div className="grid h-full min-h-0 grid-rows-[minmax(15rem,40%)_minmax(0,1fr)] gap-3 self-stretch">
+              <Card className="min-h-0 overflow-hidden border border-default-200/40 bg-content1/80 shadow-sm">
+                <CardHeader className="pb-2">
+                  <Tabs
+                    aria-label="Right panel sections"
+                    className="w-full"
+                    color="primary"
+                    selectedKey={desktopRightPanelTab}
+                    size="sm"
+                    variant="underlined"
+                    onSelectionChange={(key) =>
+                      setDesktopRightPanelTab(String(key) as "team" | "activity")
+                    }
+                  >
+                    <Tab key="team" title={`My Team (${userPicks.length})`} />
+                    <Tab key="activity" title="Activity" />
+                  </Tabs>
+                </CardHeader>
+                <CardBody className="min-h-0 space-y-2 overflow-auto pt-0">
+                  {desktopRightPanelTab === "team" ? (
+                    <>
+                      <p className="text-xs text-default-500">
+                        Filled slots: <span className="font-semibold">{userPicks.length}</span>/5
+                      </p>
+                      <div className="space-y-1">
+                        <p className="text-[11px] font-semibold uppercase tracking-wide text-default-500">
+                          Needs
+                        </p>
+                        {rosterNeeds.length ? (
+                          <div className="flex flex-wrap gap-1.5">
+                            {rosterNeeds.map((role) => (
+                              <Button
+                                key={role}
+                                className={`h-7 min-w-0 px-2 ${roleChipClassName(role)}`}
+                                size="sm"
+                                variant="flat"
+                                onPress={() => {
+                                  applyRoleFilter(role);
+                                  setShowNeededRolesOnly(true);
+                                }}
+                              >
+                                {role}
+                              </Button>
+                            ))}
+                          </div>
+                        ) : (
+                          <Chip size="sm" variant="flat">
+                            All core roles filled
+                          </Chip>
+                        )}
+                      </div>
+                      <div className="space-y-1">
+                        <p className="text-[11px] font-semibold uppercase tracking-wide text-default-500">
+                          Your picks
+                        </p>
+                        {userPicks.length === 0 ? (
+                          <p className="text-xs text-default-500">No picks yet.</p>
+                        ) : (
+                          <ul className="space-y-1.5">
+                            {[...userPicks]
+                              .sort((left, right) => left.overallPick - right.overallPick)
+                              .map((pick) => (
+                                <li
+                                  key={`desktop-team-pick-${pick.id}`}
+                                  className="flex items-center justify-between gap-2 rounded-medium border border-default-200/30 px-2 py-1.5 text-xs"
+                                >
+                                  <div className="min-w-0">
+                                    <p className="truncate font-medium">{pick.playerName}</p>
+                                    <p className="truncate text-default-500">
+                                      {pick.playerTeam ?? "Unknown team"}
+                                    </p>
+                                  </div>
+                                  {pick.playerRole ? (
+                                    <Chip className={roleChipClassName(pick.playerRole)} size="sm" variant="flat">
+                                      {formatRoleLabel(pick.playerRole)}
+                                    </Chip>
+                                  ) : null}
+                                </li>
+                              ))}
+                          </ul>
+                        )}
+                      </div>
+                    </>
+                  ) : (
+                    <div className="space-y-1.5">
+                      {draft.picks.length === 0 ? (
+                        <p className="text-xs text-default-500">No picks yet.</p>
+                      ) : (
+                        <ul className="space-y-1.5">
+                          {[...draft.picks]
+                            .slice(-10)
+                            .reverse()
+                            .map((pick) => (
+                              <li
+                                key={`desktop-activity-${pick.id}`}
+                                className="rounded-medium border border-default-200/30 px-2 py-1.5 text-xs"
+                              >
+                                <p className="font-medium">
+                                  #{pick.overallPick} {pick.participantDisplayName}
+                                </p>
+                                <p className="truncate text-default-500">
+                                  {pick.playerName}
+                                  {pick.playerRole ? ` (${formatRoleLabel(pick.playerRole)})` : ""}
+                                </p>
+                              </li>
+                            ))}
+                        </ul>
+                      )}
+                    </div>
+                  )}
+                </CardBody>
+              </Card>
+
+              <Card className="min-h-0 overflow-hidden border border-default-200/40 bg-content1/80 shadow-sm">
+                <CardHeader className="flex items-center justify-between py-2">
+                  <p className="text-sm font-semibold">Chat</p>
+                  <Button
+                    size="sm"
+                    variant="flat"
+                    onPress={() => setIsDesktopChatCollapsed((prev) => !prev)}
+                  >
+                    {isDesktopChatCollapsed ? "Expand" : "Collapse"}
+                  </Button>
+                </CardHeader>
+                {isDesktopChatCollapsed ? (
+                  <CardBody className="pt-0">
+                    <p className="text-xs text-default-500">Chat collapsed.</p>
+                  </CardBody>
+                ) : (
+                  <CardBody className="h-full min-h-0 p-1.5 pt-0">
+                    <GlobalChatPanel
+                      className="h-full"
+                      currentUserId={currentUserId}
+                      hideOnMobile
+                      mode="embedded"
+                    />
+                  </CardBody>
+                )}
+              </Card>
             </div>
+          </div>
+          ) : null}
+        </>
+      ) : null}
+
+      {isResultsState ? (
+        <Card className="border border-success-300/30 bg-content1/80">
+          <CardHeader>
+            <h2 className="text-lg font-semibold">Draft Recap</h2>
+          </CardHeader>
+          <CardBody className="space-y-2 text-sm">
+            <p>
+              Draft complete with <span className="font-semibold">{draft.pickCount}</span> picks across{" "}
+              <span className="font-semibold">{draft.roundCount}</span> rounds.
+            </p>
+            <p>
+              Your picks: <span className="font-semibold">{userPicks.length}</span> • Remaining queue:{" "}
+              <span className="font-semibold">{queuedPlayers.length}</span>
+            </p>
           </CardBody>
         </Card>
       ) : null}
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
-        <Card className="overflow-hidden border border-primary-400/30 bg-content1/80 shadow-sm">
-          <CardHeader className="flex flex-col gap-3">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <h2 className="flex items-center gap-2 text-lg font-semibold">
-                  <Table className="h-5 w-5 text-primary" />
-                  Available Players
-                </h2>
-                <p className="text-xs text-default-500">
-                  Use filters to narrow the board and build your queue anytime.
-                </p>
-              </div>
-              <Chip variant="flat">
-                Showing {filteredAvailablePlayers.length} / {draft.availablePlayers.length}
-              </Chip>
-            </div>
-            <div className="overflow-x-auto pb-1">
-              <Tabs
-                aria-label="Position filter"
-                className="w-max min-w-full"
-                color="primary"
-                selectedKey={roleFilter}
-                size="sm"
-                variant="underlined"
-                onSelectionChange={(key) => setRoleFilter(String(key))}
-              >
-                {roleFilters.map((filter) => (
-                  <Tab
-                    key={filter.value}
-                    isDisabled={filter.value !== "ALL" && filter.count === 0}
-                    title={(
-                      <span className="inline-flex items-center gap-1.5">
-                        {roleIconUrl(filter.value) ? (
-                          <Image
-                            alt={`${filter.label} role icon`}
-                            className="h-4 w-4"
-                            height={16}
-                            src={roleIconUrl(filter.value)!}
-                            width={16}
-                          />
-                        ) : null}
-                        <span>
-                          {filter.label} ({filter.count})
-                        </span>
-                      </span>
-                    )}
-                  />
-                ))}
-              </Tabs>
-            </div>
-          </CardHeader>
-          <CardBody className="space-y-3">
-            <Input
-              label="Search"
-              labelPlacement="outside"
-              placeholder="Search player, team, or role"
-              size="sm"
-              startContent={<Search className="h-4 w-4 text-default-500" />}
-              value={searchTerm}
-              onValueChange={setSearchTerm}
-            />
-
-            <div className="space-y-2 md:hidden">
-              {filteredAvailablePlayers.length === 0 ? (
-                <p className="rounded-large border border-default-200/40 bg-content2/45 px-3 py-4 text-center text-sm text-default-500">
-                  No players match this filter.
-                </p>
-              ) : (
-                filteredAvailablePlayers.map((player) => {
-                  const isQueued = pickQueue.includes(player.playerName);
-                  return (
-                    <div
-                      key={player.id}
-                      className={`rounded-large border px-3 py-2 ${
-                        isQueued
-                          ? "border-primary-300/50 bg-primary-500/10"
-                          : "border-default-200/40 bg-content2/45"
-                      }`}
-                    >
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="min-w-0">
-                          <p className="truncate text-sm font-semibold">{player.playerName}</p>
-                          <p className="truncate text-xs text-default-500">{player.playerTeam ?? "—"}</p>
-                        </div>
-                        <Button
-                          aria-label={
-                            isQueued
-                              ? `${player.playerName} already in queue`
-                              : `Add ${player.playerName} to queue`
-                          }
-                          color={isQueued ? "primary" : "default"}
-                          isDisabled={isQueued || !canEditPickQueue}
-                          isIconOnly
-                          size="sm"
-                          variant="flat"
-                          onPress={() => addPlayerToQueue(player.playerName)}
-                        >
-                          {isQueued ? (
-                            <CircleCheckBig className="h-4 w-4" />
-                          ) : (
-                            <Plus className="h-4 w-4" />
-                          )}
-                        </Button>
-                      </div>
-                      <div className="mt-2 flex items-center gap-2">
-                        <Chip
-                          className={roleChipClassName(player.playerRole)}
-                          color="default"
-                          size="sm"
-                          variant="flat"
-                        >
-                          <span className="inline-flex items-center gap-1">
-                            {roleIconUrl(player.playerRole) ? (
-                              <Image
-                                alt={`${formatRoleLabel(player.playerRole)} role icon`}
-                                className="h-3.5 w-3.5"
-                                height={14}
-                                src={roleIconUrl(player.playerRole)!}
-                                width={14}
-                              />
-                            ) : null}
-                            {formatRoleLabel(player.playerRole)}
-                          </span>
-                        </Chip>
-                        {player.teamIconUrl ? (
-                          <CroppedTeamLogo
-                            alt={`${player.playerName} team logo`}
-                            frameClassName="h-5 w-7"
-                            height={20}
-                            imageClassName="h-5"
-                            src={player.teamIconUrl}
-                            width={48}
-                          />
-                        ) : null}
-                      </div>
-                    </div>
-                  );
-                })
-              )}
-            </div>
-
-            <div className="hidden overflow-hidden rounded-large border border-default-200/40 bg-content2/45 md:block">
-              <div className="max-h-[29rem] overflow-auto">
-                <table className="w-full min-w-[640px] border-collapse text-left text-sm">
-                  <thead className="sticky top-0 z-10 bg-content2/95 text-xs uppercase tracking-wide text-default-500 backdrop-blur">
-                    <tr>
-                      <th className="px-3 py-2 font-medium">Queued</th>
-                      <th className="px-3 py-2 font-medium">Player</th>
-                      <th className="px-3 py-2 font-medium">Team</th>
-                      <th className="px-3 py-2 font-medium">Position</th>
-                      <th className="px-3 py-2 font-medium">Queue</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filteredAvailablePlayers.length === 0 ? (
-                      <tr>
-                        <td className="px-3 py-5 text-center text-default-500" colSpan={5}>
-                          No players match this filter.
-                        </td>
-                      </tr>
-                    ) : (
-                      filteredAvailablePlayers.map((player) => {
-                        const isQueued = pickQueue.includes(player.playerName);
-                        return (
-                          <tr
-                            key={player.id}
-                            className={`border-t border-default-200/30 transition-colors ${
-                              isQueued
-                                ? "bg-primary-500/15 hover:bg-primary-500/20"
-                                : "hover:bg-default-100/40"
-                            }`}
-                          >
-                            <td className="px-3 py-3">
-                              <div
-                                className={`h-2.5 w-2.5 rounded-full ${
-                                  isQueued ? "bg-primary" : "bg-default-300"
-                                }`}
-                              />
-                            </td>
-                            <td className="px-3 py-3">
-                              <div className="flex items-center gap-2">
-                                {player.teamIconUrl ? (
-                                  <CroppedTeamLogo
-                                    alt={`${player.playerName} team logo`}
-                                    frameClassName="h-5 w-7"
-                                    height={20}
-                                    imageClassName="h-5"
-                                    src={player.teamIconUrl}
-                                    width={48}
-                                  />
-                                ) : null}
-                                <span className="font-medium">{player.playerName}</span>
-                              </div>
-                            </td>
-                            <td className="px-3 py-3 text-default-600">{player.playerTeam ?? "—"}</td>
-                            <td className="px-3 py-3">
-                              <Chip
-                                className={roleChipClassName(player.playerRole)}
-                                color="default"
-                                size="sm"
-                                variant="flat"
-                              >
-                                <span className="inline-flex items-center gap-1">
-                                  {roleIconUrl(player.playerRole) ? (
-                                    <Image
-                                      alt={`${formatRoleLabel(player.playerRole)} role icon`}
-                                      className="h-3.5 w-3.5"
-                                      height={14}
-                                      src={roleIconUrl(player.playerRole)!}
-                                      width={14}
-                                    />
-                                  ) : null}
-                                  {formatRoleLabel(player.playerRole)}
-                                </span>
-                              </Chip>
-                            </td>
-                            <td className="px-3 py-3">
-                              <Button
-                                aria-label={
-                                  isQueued
-                                    ? `${player.playerName} already in queue`
-                                    : `Add ${player.playerName} to queue`
-                                }
-                              color={isQueued ? "primary" : "default"}
-                              isDisabled={isQueued || !canEditPickQueue}
-                              isIconOnly
-                              size="sm"
-                              variant="flat"
-                                onPress={() => addPlayerToQueue(player.playerName)}
-                              >
-                                {isQueued ? (
-                                  <CircleCheckBig className="h-4 w-4" />
-                                ) : (
-                                  <Plus className="h-4 w-4" />
-                                )}
-                              </Button>
-                            </td>
-                          </tr>
-                        );
-                      })
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </CardBody>
-        </Card>
-
-        <Card className="border border-default-200/40 bg-content1/80 shadow-sm">
-          <CardHeader className="flex items-start justify-between gap-3">
-            <div>
-              <h2 className="text-lg font-semibold">Pick Queue</h2>
-              <p className="text-xs text-default-500">Drag to reorder. Top player submits first.</p>
-            </div>
+      {isLiveState ? (
+        <Card className="border border-default-200/35 bg-content1/70">
+          <CardBody className="flex flex-wrap items-center justify-between gap-2 py-3">
+            <p className="text-xs text-default-500">
+              Draft board is collapsed during live draft for performance.
+            </p>
             <Button
-              isDisabled={pickQueue.length === 0 || !canEditPickQueue}
               size="sm"
-              variant="light"
-              onPress={clearQueue}
+              variant="flat"
+              onPress={() => setShowExpandedPanels((prev) => !prev)}
             >
-              Clear Queue
+              {showExpandedPanels ? "Hide Draft Board" : "Show Draft Board"}
             </Button>
-          </CardHeader>
-          <CardBody className="flex min-h-[20rem] flex-col gap-3 sm:min-h-[24rem] lg:min-h-[32rem]">
-            {queuedPlayers.length === 0 ? (
-              <div className="flex min-h-[11rem] items-center justify-center rounded-large border border-dashed border-default-300/50 bg-content2/35 px-4 sm:min-h-[14rem]">
-                <p className="text-center text-sm text-default-500">
-                  Add players with the + button to build your queue.
-                </p>
-              </div>
-            ) : (
-              <div className="min-h-0 flex-1 overflow-auto rounded-large border border-default-200/40 bg-content2/45">
-                <ul className="divide-y divide-default-200/30">
-                  {queuedPlayers.map((player, index) => (
-                    <li
-                      key={player.playerName}
-                      className={`flex items-center gap-2 px-3 py-2 ${
-                        index === 0 ? "bg-primary-500/10" : ""
-                      }`}
-                      draggable={canEditPickQueue}
-                      onDragEnd={() => setDraggedQueueIndex(null)}
-                      onDragOver={(event) => {
-                        if (!canEditPickQueue) {
-                          return;
-                        }
-                        event.preventDefault();
-                        event.dataTransfer.dropEffect = "move";
-                      }}
-                      onDragStart={() => {
-                        if (!canEditPickQueue) {
-                          return;
-                        }
-                        setDraggedQueueIndex(index);
-                      }}
-                      onDrop={() => {
-                        if (!canEditPickQueue) {
-                          return;
-                        }
-                        if (draggedQueueIndex === null) {
-                          return;
-                        }
-                        moveQueueItem(draggedQueueIndex, index);
-                        setDraggedQueueIndex(null);
-                      }}
-                    >
-                      <span className="text-xs font-semibold text-default-500">
-                        {index + 1}.
-                      </span>
-                      <GripVertical className="h-4 w-4 shrink-0 text-default-400" />
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-sm font-medium">{player.playerName}</p>
-                        <p className="truncate text-xs text-default-500">
-                          {[player.playerTeam, formatRoleLabel(player.playerRole)]
-                            .filter(Boolean)
-                            .join(" • ")}
-                        </p>
-                      </div>
-                      <Button
-                        aria-label={`Remove ${player.playerName} from queue`}
-                        isIconOnly
-                        isDisabled={!canEditPickQueue}
-                        size="sm"
-                        variant="light"
-                        onPress={() => removePlayerFromQueue(player.playerName)}
-                      >
-                        <X className="h-4 w-4" />
-                      </Button>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-
-            <Button
-              className="w-full"
-              color="primary"
-              isDisabled={!nextQueuedPlayerName || !canCurrentUserPick}
-              isLoading={pickPending}
-              onPress={() => void submitPick()}
-            >
-              {canCurrentUserPick
-                ? nextQueuedPlayerName
-                  ? `Submit #1: ${nextQueuedPlayerName}`
-                  : "Submit Pick"
-                : "Waiting For Your Turn"}
-            </Button>
-            {!canCurrentUserPick ? (
-              <p className="text-xs text-default-500">
-                You can manage your queue anytime, but picks submit only when you are on the clock.
-              </p>
-            ) : null}
           </CardBody>
         </Card>
-      </div>
+      ) : null}
 
-      <div className="grid grid-cols-1 gap-4">
-        <Card className="border border-default-200/40 bg-content1/75">
-          <CardHeader>
-            <h2 className="flex items-center gap-2 text-lg font-semibold">
-              <Target className="h-5 w-5 text-primary" />
-              Player Pool Snapshot
-            </h2>
-          </CardHeader>
-          <CardBody className="space-y-4">
-            <div className="grid grid-cols-2 gap-2">
-              {roleFilters
-                .filter((filter) => filter.value !== "ALL" && filter.count > 0)
-                .map((filter) => (
-                  <div
-                    key={filter.value}
-                    className="rounded-medium border border-default-200/40 bg-content2/40 px-3 py-2"
-                  >
-                    <p className="inline-flex items-center gap-1 text-xs text-default-500">
-                      {roleIconUrl(filter.value) ? (
-                        <Image
-                          alt={`${filter.label} role icon`}
-                          className="h-3.5 w-3.5"
-                          height={14}
-                          src={roleIconUrl(filter.value)!}
-                          width={14}
-                        />
-                      ) : null}
-                      {filter.label}
-                    </p>
-                    <p className="text-base font-semibold">{filter.count}</p>
-                  </div>
-                ))}
-            </div>
-            <div className="rounded-medium border border-default-200/40 bg-content2/40 px-3 py-2 text-sm">
-              <p>
-                Remaining players:{" "}
-                <span className="font-semibold">{draft.availablePlayers.length}</span>
-              </p>
-              <p>
-                Current filter: <span className="font-semibold">{roleFilter}</span>
-              </p>
-              <p>
-                Search matches: <span className="font-semibold">{filteredAvailablePlayers.length}</span>
-              </p>
-            </div>
-            <div className="rounded-medium border border-default-200/40 bg-content2/40 px-3 py-2 text-sm">
-              <p className="flex items-center gap-1 text-xs uppercase tracking-wide text-default-500">
-                <Clock3 className="h-3.5 w-3.5" />
-                On Deck
-              </p>
-              {draft.nextPick ? (
-                <p className="mt-1 font-medium">
-                  Pick #{draft.nextPick.overallPick} • {draft.nextPick.participantDisplayName}
-                </p>
-              ) : (
-                <p className="mt-1 text-default-500">Draft complete.</p>
-              )}
-            </div>
-          </CardBody>
-        </Card>
-      </div>
-
+      {!isLiveState || showExpandedPanels ? (
+      <>
       <Card className="border border-default-200/40 bg-content1/75">
         <CardHeader className="flex flex-wrap items-center justify-between gap-2">
           <h2 className="flex items-center gap-2 text-lg font-semibold">
@@ -1404,93 +4555,84 @@ export const DraftRoom = ({
                       </p>
                     </div>
 
-                    <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8">
-                      {draft.participants.map((entry, participantIndex) => {
-                        const pick = boardPickForSlot({
-                          participants: draft.participants,
-                          picksByOverallPick,
-                          roundNumber,
-                          participantIndex,
-                        });
-                        const isOnDeck =
-                          !pick &&
-                          draft.nextPick?.roundNumber === roundNumber &&
-                          draft.nextPick.participantUserId === entry.userId;
+                    <div className="overflow-x-auto pb-1">
+                      <div className="flex w-full gap-1.5">
+                        {draft.participants.map((entry, participantIndex) => {
+                          const pick = boardPickForSlot({
+                            participants: draft.participants,
+                            picksByOverallPick,
+                            roundNumber,
+                            participantIndex,
+                          });
+                          const isOnDeck =
+                            !pick &&
+                            draft.nextPick?.roundNumber === roundNumber &&
+                            draft.nextPick.participantUserId === entry.userId;
 
-                        return (
-                          <Card
-                            key={`${entry.id}-${roundNumber}`}
-                            className={`aspect-square border ${
-                              isOnDeck
-                                ? "border-primary-400/60 bg-primary-500/10"
-                                : "border-default-200/35 bg-content1/65"
-                            }`}
-                          >
-                            <CardBody className="flex h-full flex-col justify-between p-2">
-                              <p className="truncate text-[11px] text-default-500">
-                                #{entry.draftPosition} {entry.displayName}
-                              </p>
-                              {pick ? (
-                                <>
-                                  <div className="space-y-0.5">
-                                    <div className="flex min-w-0 items-center gap-1.5">
-                                      {pick.teamIconUrl ? (
-                                        <CroppedTeamLogo
-                                          alt={`${pick.playerName} team logo`}
-                                          frameClassName="h-3.5 w-4"
-                                          height={14}
-                                          imageClassName="h-3.5"
-                                          src={pick.teamIconUrl}
-                                          width={20}
-                                        />
-                                      ) : (
-                                        <span className="h-3.5 w-4 shrink-0" />
-                                      )}
-                                      <p className="truncate text-xs font-semibold">{pick.playerName}</p>
-                                    </div>
-                                    <p className="truncate text-[11px] text-default-500">
-                                      RD{pick.roundNumber} PK{pick.roundPick} (#{pick.overallPick})
-                                    </p>
-                                  </div>
-                                  <div>
-                                    {pick.playerRole ? (
-                                      <Chip
-                                        className={roleChipClassName(pick.playerRole)}
-                                        color="default"
-                                        size="sm"
-                                        variant="flat"
-                                      >
-                                        <span className="inline-flex items-center gap-1">
-                                          {roleIconUrl(pick.playerRole) ? (
-                                            <Image
-                                              alt={`${formatRoleLabel(pick.playerRole)} role icon`}
-                                              className="h-3 w-3"
-                                              height={12}
-                                              src={roleIconUrl(pick.playerRole)!}
-                                              width={12}
-                                            />
-                                          ) : null}
-                                          {formatRoleLabel(pick.playerRole)}
-                                        </span>
-                                      </Chip>
-                                    ) : null}
-                                  </div>
-                                </>
-                              ) : (
-                                <p
-                                  className={`text-[11px] ${
-                                    isOnDeck
-                                      ? "font-medium text-primary-600 dark:text-primary-300"
-                                      : "text-default-500"
-                                  }`}
-                                >
-                                  {isOnDeck ? "On deck" : "Open slot"}
+                          return (
+                            <Card
+                              key={`${entry.id}-${roundNumber}`}
+                              className={`min-w-[6.5rem] flex-1 border ${
+                                isOnDeck
+                                  ? "border-primary-400/60 bg-primary-500/10"
+                                  : "border-default-200/35 bg-content1/65"
+                              }`}
+                            >
+                              <CardBody className="flex aspect-square h-full flex-col justify-between p-1.5">
+                                <p className="truncate text-[10px] text-default-500">
+                                  #{entry.draftPosition} {entry.displayName}
                                 </p>
-                              )}
-                            </CardBody>
-                          </Card>
-                        );
-                      })}
+                                {pick ? (
+                                  <>
+                                    <div className="space-y-0.5">
+                                      <div className="flex min-w-0 items-center gap-1">
+                                        {pick.teamIconUrl ? (
+                                          <CroppedTeamLogo
+                                            alt={`${pick.playerName} team logo`}
+                                            frameClassName="h-3 w-3.5"
+                                            height={12}
+                                            imageClassName="h-3"
+                                            src={pick.teamIconUrl}
+                                            width={14}
+                                          />
+                                        ) : (
+                                          <span className="h-3 w-3.5 shrink-0" />
+                                        )}
+                                        <p className="truncate text-[11px] font-semibold">{pick.playerName}</p>
+                                      </div>
+                                      <p className="truncate text-[10px] text-default-500">
+                                        R{pick.roundNumber} P{pick.roundPick}
+                                      </p>
+                                    </div>
+                                    <div>
+                                      {pick.playerRole ? (
+                                        <Chip
+                                          className={`${roleChipClassName(pick.playerRole)} text-[10px]`}
+                                          color="default"
+                                          size="sm"
+                                          variant="flat"
+                                        >
+                                          {formatRoleLabel(pick.playerRole)}
+                                        </Chip>
+                                      ) : null}
+                                    </div>
+                                  </>
+                                ) : (
+                                  <p
+                                    className={`text-[10px] ${
+                                      isOnDeck
+                                        ? "font-medium text-primary-600 dark:text-primary-300"
+                                        : "text-default-500"
+                                    }`}
+                                  >
+                                    {isOnDeck ? "On deck" : "Open"}
+                                  </p>
+                                )}
+                              </CardBody>
+                            </Card>
+                          );
+                        })}
+                      </div>
                     </div>
                   </section>
                 );
@@ -1499,38 +4641,296 @@ export const DraftRoom = ({
           </div>
         </CardBody>
       </Card>
+      </>
+      ) : null}
 
-      <Card className="border border-default-200/40 bg-content1/75">
-        <CardHeader>
-          <h2 className="flex items-center gap-2 text-lg font-semibold">
-            <ClipboardList className="h-5 w-5 text-primary" />
-            Pick Log
-          </h2>
-        </CardHeader>
-        <CardBody className="space-y-2">
-          {draft.picks.length === 0 ? (
-            <p className="text-sm text-default-500">No picks have been made yet.</p>
-          ) : (
-            draft.picks.map((pick) => (
-              <div
-                key={pick.id}
-                className="rounded-medium border border-default-200/40 px-3 py-2 text-sm"
+      {isLiveState && isCurrentUserParticipant && isMobileViewport && !selectedPlayer && !isMobileQueueSheetOpen ? (
+        <div className="fixed inset-x-3 z-40" style={{ bottom: "max(0.75rem, env(safe-area-inset-bottom))" }}>
+          <div className="rounded-large border border-primary-300/35 bg-content1/95 p-2 shadow-lg backdrop-blur">
+            {canCurrentUserPick && autopickPreviewLine ? (
+              <p
+                className={`mb-2 rounded-medium border px-2 py-1 text-[11px] ${
+                  isLowTimerWarning
+                    ? "animate-pulse border-warning-300/60 bg-warning-500/14 text-warning-200"
+                    : "border-primary-300/35 bg-primary-500/10 text-primary-200"
+                }`}
               >
-                <p>
-                  #{pick.overallPick} • Round {pick.roundNumber} • {pick.participantDisplayName}{" "}
-                  drafted <span className="font-semibold">{pick.playerName}</span>
-                  {pick.playerTeam ? ` (${pick.playerTeam})` : ""}
-                  {pick.playerRole ? ` [${pick.playerRole}]` : ""}
-                </p>
-                <p className="text-xs text-default-500">
-                  Picked by {pick.pickedByLabel ?? pick.pickedByUserId} at{" "}
-                  {new Date(pick.pickedAt).toLocaleTimeString()}
+                {autopickPreviewLine}
+              </p>
+            ) : null}
+            {hasPendingManualConfirm && pendingManualDraftPlayer ? (
+              <p className="mb-2 text-[11px] text-default-500">
+                Confirming {pendingManualDraftPlayer.playerName} ({formatRoleLabel(pendingManualDraftPlayer.playerRole)})
+                {pendingManualSlotImpact ? ` • Fills ${pendingManualSlotImpact.fills}` : ""}
+              </p>
+            ) : null}
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto_auto]">
+              {hasPendingManualConfirm ? (
+                <>
+                  <Button
+                    className={isLowTimerWarning ? "animate-pulse" : ""}
+                    color="primary"
+                    isDisabled={!pendingManualDraftPlayerName || !canDraftActions}
+                    isLoading={pickPending}
+                    onPress={() => {
+                      if (!pendingManualDraftPlayerName) {
+                        return;
+                      }
+                      void submitPick(pendingManualDraftPlayerName, { source: "manual" });
+                    }}
+                  >
+                    {pendingManualDraftPlayerName
+                      ? `Confirm: ${pendingManualDraftPlayerName}`
+                      : "Confirm draft"}
+                  </Button>
+                  <Button variant="flat" onPress={() => setPendingManualDraftPlayerName(null)}>
+                    Cancel
+                  </Button>
+                  <Button variant="light" onPress={() => setMobileLiveTab("team")}>
+                    My Team
+                  </Button>
+                </>
+              ) : canCurrentUserPick ? (
+                <>
+                  <Button
+                    className={isLowTimerWarning ? "animate-pulse" : ""}
+                    color="primary"
+                    isDisabled={!draftActionPlayerName || !canDraftActions}
+                    isLoading={pickPending}
+                    onPress={() => requestManualDraft()}
+                  >
+                    {draftActionPlayerName ? `Draft now: ${draftActionPlayerName}` : "Select a player"}
+                  </Button>
+                  <Button variant="flat" onPress={() => setMobileLiveTab("queue")}>
+                    Queue ({queuedPlayers.length})
+                  </Button>
+                  <Button variant="light" onPress={() => setMobileLiveTab("team")}>
+                    My Team
+                  </Button>
+                </>
+              ) : (
+                <>
+                  <Button
+                    color="primary"
+                    onPress={() => setMobileLiveTab("players")}
+                  >
+                    Browse players
+                  </Button>
+                  <Button variant="flat" onPress={() => setMobileLiveTab("queue")}>
+                    Queue ({queuedPlayers.length})
+                  </Button>
+                  <Button variant="light" onPress={() => setMobileLiveTab("team")}>
+                    My Team
+                  </Button>
+                </>
+              )}
+            </div>
+            {isRealtimeReadOnly ? (
+              <p className="mt-1 text-[11px] text-warning-300">
+                Read-only while reconnecting. Last synced {secondsSinceLastSync}s ago.
+              </p>
+            ) : null}
+            {showQueueEmptyAutopickWarning && canCurrentUserPick ? (
+              <p className="mt-1 text-[11px] text-warning-300">
+                {queueAutopickWarningMessage}
+              </p>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+
+      {isLiveState && selectedPlayer && isMobileViewport ? (
+        <div
+          className="fixed inset-x-0 bottom-0 z-50 rounded-t-2xl border-t border-default-200/35 bg-content1/97 p-3 shadow-2xl"
+          style={{ paddingBottom: "max(0.75rem, env(safe-area-inset-bottom))" }}
+          onTouchEnd={(event) => {
+            const startY = mobilePlayerSheetTouchStartYRef.current;
+            const endY = event.changedTouches[0]?.clientY ?? null;
+            mobilePlayerSheetTouchStartYRef.current = null;
+            if (startY === null || endY === null) {
+              return;
+            }
+            if (endY - startY > 72) {
+              setSelectedPlayerName(null);
+            }
+          }}
+          onTouchStart={(event) => {
+            mobilePlayerSheetTouchStartYRef.current = event.touches[0]?.clientY ?? null;
+          }}
+        >
+          <div className="mx-auto max-h-[68svh] max-w-xl space-y-2 overflow-y-auto pr-1">
+            <div className="mx-auto h-1.5 w-12 rounded-full bg-default-300/50" />
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <p className="truncate text-base font-semibold">{selectedPlayer.playerName}</p>
+                <p className="truncate text-sm text-default-500">
+                  {selectedPlayer.playerTeam ?? "—"} • {formatRoleLabel(selectedPlayer.playerRole)}
                 </p>
               </div>
-            ))
-          )}
-        </CardBody>
-      </Card>
+              <Button isIconOnly size="sm" variant="light" onPress={() => setSelectedPlayerName(null)}>
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+            <p className="text-xs text-default-500">
+              OVR: {selectedPlayer.analytics?.overallRank ? `#${selectedPlayer.analytics.overallRank}` : "Unranked"} •
+              POS: {selectedPlayer.analytics?.positionRank ? `#${selectedPlayer.analytics.positionRank}` : "Unranked"}
+            </p>
+            <p className="text-xs text-default-500">
+              Avg points/game:{" "}
+              {selectedPlayer.analytics?.averageFantasyPoints?.toFixed(2) ?? "N/A"} • Games:{" "}
+              {selectedPlayer.analytics?.gamesPlayed ?? 0}
+            </p>
+            {selectedPlayer.analytics?.topChampions.length ? (
+              <div className="rounded-medium border border-default-200/35 bg-content2/35 px-2 py-1.5">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-default-500">
+                  Top champs
+                </p>
+                <p className="mt-1 text-xs text-default-500">
+                  {selectedPlayer.analytics.topChampions
+                    .map((entry) => `${entry.champion} (${entry.games}g)`)
+                    .join(" • ")}
+                </p>
+              </div>
+            ) : null}
+            <p className="text-[11px] text-default-500">Swipe down to close</p>
+            <div className="grid grid-cols-2 gap-2">
+              <Button
+                color={pickQueue.includes(selectedPlayer.playerName) ? "primary" : "default"}
+                isDisabled={pickQueue.includes(selectedPlayer.playerName) || !canQueueActions}
+                variant="flat"
+                onPress={() => addPlayerToQueue(selectedPlayer.playerName)}
+              >
+                {pickQueue.includes(selectedPlayer.playerName) ? "Queued" : "Add to queue"}
+              </Button>
+              <Button
+                color="primary"
+                isDisabled={!canDraftActions}
+                variant="flat"
+                onPress={() => requestManualDraft(selectedPlayer.playerName)}
+              >
+                Draft
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {isLiveState && isMobileViewport && isMobileQueueSheetOpen ? (
+        <div
+          className="fixed inset-0 z-50 bg-black/55"
+          onClick={() => setIsMobileQueueSheetOpen(false)}
+        >
+          <div
+            className="absolute inset-x-0 bottom-0 max-h-[82svh] overflow-hidden rounded-t-large border-t border-default-200/40 bg-content1 p-3 shadow-xl"
+            style={{ paddingBottom: "max(0.75rem, env(safe-area-inset-bottom))" }}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="mx-auto flex max-h-[82svh] max-w-xl flex-col gap-3 overflow-hidden">
+              <div className="mx-auto h-1.5 w-12 rounded-full bg-default-300/50" />
+              <div className="flex items-center justify-between">
+                <h3 className="text-base font-semibold">Queue ({queuedPlayers.length})</h3>
+                <Button isIconOnly size="sm" variant="light" onPress={() => setIsMobileQueueSheetOpen(false)}>
+                  <X className="h-4 w-4" />
+                </Button>
+              </div>
+              <div className="flex items-center justify-between gap-2">
+                <Button
+                  color={settings.autoPickFromQueue ? "primary" : "default"}
+                  isDisabled={isRealtimeReadOnly}
+                  size="sm"
+                  variant="flat"
+                  onPress={() => toggleAutopickSetting("mobile-queue-sheet")}
+                >
+                  Autopick {settings.autoPickFromQueue ? "On" : "Off"}
+                </Button>
+                <Button
+                  isDisabled={pickQueue.length === 0 || !canQueueActions}
+                  size="sm"
+                  variant="light"
+                  onPress={clearQueue}
+                >
+                  Clear
+                </Button>
+              </div>
+              {queueAutopickTargetLine ? (
+                <p className="text-xs text-default-500">{queueAutopickTargetLine}</p>
+              ) : null}
+              {autopickCountdownSeconds !== null ? (
+                <p className="text-xs text-warning-300">
+                  {`Autopick in ${autopickCountdownSeconds}s: ${autopickTargetLabel}`}
+                </p>
+              ) : null}
+              {showQueueEmptyAutopickWarning ? (
+                <p className="text-xs text-warning-300">
+                  {queueAutopickWarningMessage}
+                </p>
+              ) : null}
+              {isRealtimeReadOnly ? (
+                <p className="text-xs text-warning-300">
+                  Realtime reconnecting. Queue edits are read-only.
+                </p>
+              ) : null}
+              {canCurrentUserPick && queuedPlayers.length === 0 ? (
+                <p className="text-xs text-default-500">Queue your top 3 so autopick is safe.</p>
+              ) : null}
+              <div className="min-h-0 flex-1 overflow-auto rounded-large border border-default-200/35 bg-content2/35">
+                {queuedPlayers.length === 0 ? (
+                  <p className="p-3 text-sm text-default-500">Queue is empty.</p>
+                ) : (
+                  <ul className="divide-y divide-default-200/30">
+                    {queuedPlayers.map((player, index) => (
+                      <li
+                        key={player.playerName}
+                        className={`flex items-center gap-2 px-3 py-2 ${index === 0 ? "bg-primary-500/10" : ""}`}
+                        draggable={canQueueActions}
+                        onDragEnd={() => setDraggedQueueIndex(null)}
+                        onDragOver={(event) => {
+                          if (!canQueueActions) {
+                            return;
+                          }
+                          event.preventDefault();
+                          event.dataTransfer.dropEffect = "move";
+                        }}
+                        onDragStart={() => {
+                          if (!canQueueActions) {
+                            return;
+                          }
+                          setDraggedQueueIndex(index);
+                        }}
+                        onDrop={() => {
+                          if (!canQueueActions || draggedQueueIndex === null) {
+                            return;
+                          }
+                          moveQueueItem(draggedQueueIndex, index);
+                          setDraggedQueueIndex(null);
+                        }}
+                      >
+                        <span className="text-xs font-semibold text-default-500">{index + 1}</span>
+                        <GripVertical className="h-4 w-4 shrink-0 text-default-400" />
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-sm font-medium">{player.playerName}</p>
+                          <p className="truncate text-xs text-default-500">
+                            {[player.playerTeam, formatRoleLabel(player.playerRole)].filter(Boolean).join(" • ")}
+                          </p>
+                        </div>
+                        <Button
+                          isIconOnly
+                          isDisabled={!canQueueActions}
+                          size="sm"
+                          variant="light"
+                          onPress={() => removePlayerFromQueue(player.playerName)}
+                        >
+                          <X className="h-4 w-4" />
+                        </Button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 };

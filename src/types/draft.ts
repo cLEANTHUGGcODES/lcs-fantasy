@@ -50,6 +50,23 @@ export interface DraftPlayerPoolEntry {
   teamIconUrl: string | null;
   sourcePage: string;
   createdAt: string;
+  analytics?: DraftPlayerAnalytics | null;
+}
+
+export interface DraftPlayerChampionSummary {
+  champion: string;
+  games: number;
+  winRate: number;
+  averageFantasyPoints: number;
+}
+
+export interface DraftPlayerAnalytics {
+  overallRank: number | null;
+  positionRank: number | null;
+  gamesPlayed: number;
+  averageFantasyPoints: number | null;
+  winRate: number | null;
+  topChampions: DraftPlayerChampionSummary[];
 }
 
 export interface DraftPick {

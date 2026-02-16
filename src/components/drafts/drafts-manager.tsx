@@ -134,6 +134,24 @@ export const DraftsManager = ({
     setParticipantUserIds(next);
   };
 
+  const randomizeParticipantOrder = () => {
+    setParticipantUserIds((prev) => {
+      if (prev.length < 2) {
+        return prev;
+      }
+
+      const shuffled = [...prev];
+      for (let index = shuffled.length - 1; index > 0; index -= 1) {
+        const swapIndex = Math.floor(Math.random() * (index + 1));
+        const temp = shuffled[index];
+        shuffled[index] = shuffled[swapIndex];
+        shuffled[swapIndex] = temp;
+      }
+
+      return shuffled;
+    });
+  };
+
   const createDraft = async () => {
     setSubmitPending(true);
     setSubmitMessage(null);
@@ -327,10 +345,16 @@ export const DraftsManager = ({
             </Card>
 
               <Card className="bg-content2/50">
-                <CardHeader>
-                  <h2 className="text-base font-semibold">
-                    Draft Order (Reverse Snake starts from bottom)
-                  </h2>
+                <CardHeader className="flex items-center justify-between gap-2">
+                  <h2 className="text-base font-semibold">Draft Order (Reverse Snake starts from bottom)</h2>
+                  <Button
+                    isDisabled={selectedUsers.length < 2}
+                    size="sm"
+                    variant="flat"
+                    onPress={randomizeParticipantOrder}
+                  >
+                    Randomize Order
+                  </Button>
                 </CardHeader>
                 <CardBody className="max-h-[24rem] space-y-2 overflow-auto">
                   {selectedUsers.length === 0 ? (

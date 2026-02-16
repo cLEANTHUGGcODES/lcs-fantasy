@@ -1,18 +1,41 @@
 "use client";
 
+import { Button } from "@heroui/button";
 import { Drawer, DrawerBody, DrawerContent, DrawerFooter, DrawerHeader } from "@heroui/drawer";
+import { Input } from "@heroui/input";
 import { Tooltip } from "@heroui/tooltip";
-import { Settings, X } from "lucide-react";
+import { Check, Settings, Trash2, TriangleAlert, X } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { CSSProperties, useEffect, useState } from "react";
-import { DisplayNameForm } from "@/components/auth/display-name-form";
-import { ProfileImageForm } from "@/components/auth/profile-image-form";
+import { ChangeEvent, CSSProperties, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import { ScoringSettingsModal } from "@/components/auth/scoring-settings-modal";
 import { SignOutButton } from "@/components/auth/sign-out-button";
+import { getSupabaseAuthEnv } from "@/lib/supabase-auth-env";
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
+import { PROFILE_IMAGES_BUCKET, getPublicStorageUrl } from "@/lib/supabase-storage";
+import { normalizePersonName, normalizeTeamName } from "@/lib/user-profile";
 import type { FantasyScoring } from "@/types/fantasy";
+
+const MAX_IMAGE_BYTES = 3 * 1024 * 1024;
+const SUPPORTED_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
+const AVATAR_RING_SWATCHES = [
+  { color: "#c79b3b", label: "Gold" },
+  { color: "#f5c26b", label: "Sun" },
+  { color: "#e2e8f0", label: "Silver" },
+  { color: "#6ee7b7", label: "Mint" },
+  { color: "#38bdf8", label: "Cyan" },
+  { color: "#818cf8", label: "Indigo" },
+  { color: "#f472b6", label: "Pink" },
+  { color: "#fb7185", label: "Rose" },
+  { color: "#f97316", label: "Orange" },
+  { color: "#22c55e", label: "Green" },
+] as const;
+const DEFAULT_AVATAR_RING_COLOR = "#c79b3b";
+
+type AccountWidgetLayout = "card" | "navbar";
+type ProfileField = "firstName" | "lastName" | "teamName";
+type ProfileFieldErrors = Partial<Record<ProfileField, string>>;
 
 const initialsForName = (value: string): string =>
   value
@@ -22,7 +45,35 @@ const initialsForName = (value: string): string =>
     .map((part) => part[0]?.toUpperCase() ?? "")
     .join("") || "?";
 
-type AccountWidgetLayout = "card" | "navbar";
+const extensionForFile = (file: File): string => {
+  const nameParts = file.name.split(".");
+  const fromName = nameParts.length > 1 ? nameParts[nameParts.length - 1]?.trim() : "";
+  if (fromName) {
+    return fromName.toLowerCase().replace(/[^a-z0-9]/g, "");
+  }
+  if (file.type === "image/png") {
+    return "png";
+  }
+  if (file.type === "image/webp") {
+    return "webp";
+  }
+  return "jpg";
+};
+
+const validateImageFile = (file: File): string | null => {
+  if (!SUPPORTED_MIME_TYPES.has(file.type)) {
+    return "Use a JPG, PNG, or WEBP image.";
+  }
+  if (file.size > MAX_IMAGE_BYTES) {
+    return "Image must be 3MB or smaller.";
+  }
+  return null;
+};
+
+const formatDisplayLabel = (firstName: string, lastName: string): string => {
+  const initial = lastName[0]?.toUpperCase();
+  return initial ? `${firstName} ${initial}.` : firstName;
+};
 
 export const AccountWidget = ({
   userLabel,
@@ -48,11 +99,20 @@ export const AccountWidget = ({
   layout?: AccountWidgetLayout;
 }) => {
   const router = useRouter();
+  const avatarInputRef = useRef<HTMLInputElement | null>(null);
+  const customColorInputRef = useRef<HTMLInputElement | null>(null);
+  const saveSuccessTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [isOpen, setIsOpen] = useState(false);
   const [isSettingsDrawerOpen, setIsSettingsDrawerOpen] = useState(false);
   const [isScoringSettingsOpen, setIsScoringSettingsOpen] = useState(false);
   const [deletePending, setDeletePending] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [savePending, setSavePending] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saveSuccess, setSaveSuccess] = useState<string | null>(null);
+  const [avatarPending, setAvatarPending] = useState(false);
+  const [avatarMessage, setAvatarMessage] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<ProfileFieldErrors>({});
   const [activeLabel, setActiveLabel] = useState(userLabel);
   const [activeFirstName, setActiveFirstName] = useState(firstName);
   const [activeLastName, setActiveLastName] = useState(lastName);
@@ -60,13 +120,82 @@ export const AccountWidget = ({
   const [activeAvatarPath, setActiveAvatarPath] = useState(avatarPath);
   const [activeAvatarBorderColor, setActiveAvatarBorderColor] = useState(avatarBorderColor);
   const [activeAvatarUrl, setActiveAvatarUrl] = useState(avatarUrl);
+  const [draftFirstName, setDraftFirstName] = useState(firstName ?? "");
+  const [draftLastName, setDraftLastName] = useState(lastName ?? "");
+  const [draftTeamName, setDraftTeamName] = useState(teamName ?? "");
+  const [draftAvatarPath, setDraftAvatarPath] = useState(avatarPath);
+  const [draftAvatarUrl, setDraftAvatarUrl] = useState(avatarUrl);
   const [draftAvatarBorderColor, setDraftAvatarBorderColor] = useState(avatarBorderColor);
+  const resolvedDraftAvatarRingColor = draftAvatarBorderColor ?? DEFAULT_AVATAR_RING_COLOR;
+
   const activeAvatarBorderStyle: CSSProperties | undefined = activeAvatarBorderColor
     ? { outlineColor: activeAvatarBorderColor }
     : undefined;
-  const draftAvatarBorderStyle: CSSProperties | undefined = draftAvatarBorderColor
-    ? { outlineColor: draftAvatarBorderColor }
-    : undefined;
+  const draftAvatarBorderStyle: CSSProperties = { outlineColor: resolvedDraftAvatarRingColor };
+
+  const normalizedActiveFirstName = normalizePersonName(activeFirstName ?? "");
+  const normalizedActiveLastName = normalizePersonName(activeLastName ?? "");
+  const normalizedActiveTeamName = normalizeTeamName(activeTeamName ?? "");
+  const normalizedDraftFirstName = normalizePersonName(draftFirstName);
+  const normalizedDraftLastName = normalizePersonName(draftLastName);
+  const normalizedDraftTeamName = normalizeTeamName(draftTeamName);
+  const isFirstNameLocked = normalizedActiveFirstName.length > 0;
+  const isLastNameLocked = normalizedActiveLastName.length > 0;
+  const hasPresetRingColor = AVATAR_RING_SWATCHES.some(
+    ({ color }) => color === draftAvatarBorderColor,
+  );
+  const isDefaultRingColorSelected = draftAvatarBorderColor === null;
+  const isCustomRingColorSelected = Boolean(draftAvatarBorderColor) && !hasPresetRingColor;
+  const teamPreviewSource = (normalizedDraftTeamName || "Team Name").toUpperCase();
+  const isTeamPreviewTruncated = teamPreviewSource.length > 18;
+  const teamPreviewText = useMemo(() => {
+    const value = teamPreviewSource;
+    if (value.length <= 18) {
+      return value;
+    }
+    return `${value.slice(0, 17)}…`;
+  }, [teamPreviewSource]);
+
+  const hasUnsavedChanges = useMemo(
+    () =>
+      normalizedDraftFirstName !== normalizedActiveFirstName ||
+      normalizedDraftLastName !== normalizedActiveLastName ||
+      normalizedDraftTeamName !== normalizedActiveTeamName ||
+      draftAvatarPath !== activeAvatarPath ||
+      draftAvatarBorderColor !== activeAvatarBorderColor,
+    [
+      activeAvatarBorderColor,
+      activeAvatarPath,
+      draftAvatarBorderColor,
+      draftAvatarPath,
+      normalizedActiveFirstName,
+      normalizedActiveLastName,
+      normalizedActiveTeamName,
+      normalizedDraftFirstName,
+      normalizedDraftLastName,
+      normalizedDraftTeamName,
+    ],
+  );
+
+  const headerSubtitle = useMemo(() => {
+    const fullName = [activeFirstName, activeLastName]
+      .filter((value): value is string => Boolean(value))
+      .join(" ")
+      .trim() || activeLabel;
+    if (!activeTeamName) {
+      return fullName;
+    }
+    return `${fullName} • ${activeTeamName.toUpperCase()}`;
+  }, [activeFirstName, activeLastName, activeLabel, activeTeamName]);
+
+  useEffect(
+    () => () => {
+      if (saveSuccessTimeoutRef.current) {
+        clearTimeout(saveSuccessTimeoutRef.current);
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!isOpen) {
@@ -95,18 +224,250 @@ export const AccountWidget = ({
     };
   }, [isOpen]);
 
-  const openProfileModal = () => {
+  const validateField = (field: ProfileField): string | null => {
+    if (field === "firstName") {
+      if (isFirstNameLocked && normalizedDraftFirstName !== normalizedActiveFirstName) {
+        return "First name cannot be changed once set.";
+      }
+      if (!normalizedDraftFirstName) {
+        return "First name is required.";
+      }
+      return null;
+    }
+    if (field === "lastName") {
+      if (isLastNameLocked && normalizedDraftLastName !== normalizedActiveLastName) {
+        return "Last name cannot be changed once set.";
+      }
+      if (!normalizedDraftLastName) {
+        return "Last name is required.";
+      }
+      return null;
+    }
+    if (!normalizedDraftTeamName) {
+      return "Team name is required.";
+    }
+    return null;
+  };
+
+  const validateAllFields = (): boolean => {
+    const nextErrors: ProfileFieldErrors = {
+      firstName: validateField("firstName") ?? undefined,
+      lastName: validateField("lastName") ?? undefined,
+      teamName: validateField("teamName") ?? undefined,
+    };
+    setFieldErrors(nextErrors);
+    return !nextErrors.firstName && !nextErrors.lastName && !nextErrors.teamName;
+  };
+
+  const cleanupUnsavedAvatarDraft = async () => {
+    if (!draftAvatarPath || draftAvatarPath === activeAvatarPath) {
+      return;
+    }
+    const supabase = getSupabaseBrowserClient();
+    await supabase.storage.from(PROFILE_IMAGES_BUCKET).remove([draftAvatarPath]);
+  };
+
+  const resetDraftFromActive = () => {
+    setDraftFirstName(activeFirstName ?? "");
+    setDraftLastName(activeLastName ?? "");
+    setDraftTeamName(activeTeamName ?? "");
+    setDraftAvatarPath(activeAvatarPath);
+    setDraftAvatarUrl(activeAvatarUrl);
     setDraftAvatarBorderColor(activeAvatarBorderColor);
+    setFieldErrors({});
+    setSaveError(null);
+    setSaveSuccess(null);
+    setAvatarMessage(null);
+  };
+
+  const openProfileModal = () => {
+    resetDraftFromActive();
     setDeleteError(null);
     setIsOpen(true);
     setIsSettingsDrawerOpen(false);
     setIsScoringSettingsOpen(false);
   };
 
-  const closeProfileModal = () => {
+  const closeProfileModal = async () => {
+    if (savePending || avatarPending || deletePending) {
+      return;
+    }
+
+    if (hasUnsavedChanges) {
+      const shouldDiscard = window.confirm("Discard unsaved profile changes?");
+      if (!shouldDiscard) {
+        return;
+      }
+      await cleanupUnsavedAvatarDraft();
+    }
+
     setIsOpen(false);
-    setDraftAvatarBorderColor(activeAvatarBorderColor);
+    resetDraftFromActive();
     setDeleteError(null);
+  };
+
+  const handleAvatarFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.currentTarget.value = "";
+    if (!file || avatarPending) {
+      return;
+    }
+
+    setSaveError(null);
+    setSaveSuccess(null);
+    setAvatarMessage(null);
+
+    const validationError = validateImageFile(file);
+    if (validationError) {
+      setSaveError(validationError);
+      return;
+    }
+
+    const supabase = getSupabaseBrowserClient();
+    const {
+      data: { user },
+      error: userError,
+    } = await supabase.auth.getUser();
+
+    if (userError || !user) {
+      setSaveError(userError?.message ?? "Unable to load current user.");
+      return;
+    }
+
+    const ext = extensionForFile(file);
+    const nextPath = `${user.id}/avatar-${Date.now()}.${ext}`;
+
+    setAvatarPending(true);
+    const { error: uploadError } = await supabase.storage
+      .from(PROFILE_IMAGES_BUCKET)
+      .upload(nextPath, file, {
+        cacheControl: "3600",
+        contentType: file.type,
+        upsert: false,
+      });
+
+    if (uploadError) {
+      setAvatarPending(false);
+      setSaveError(uploadError.message);
+      return;
+    }
+
+    if (draftAvatarPath && draftAvatarPath !== activeAvatarPath && draftAvatarPath !== nextPath) {
+      await supabase.storage.from(PROFILE_IMAGES_BUCKET).remove([draftAvatarPath]);
+    }
+
+    const { supabaseUrl } = getSupabaseAuthEnv();
+    setDraftAvatarPath(nextPath);
+    setDraftAvatarUrl(
+      getPublicStorageUrl({
+        supabaseUrl,
+        bucket: PROFILE_IMAGES_BUCKET,
+        path: nextPath,
+      }),
+    );
+    setAvatarMessage("Image selected. Save changes to apply.");
+    setAvatarPending(false);
+  };
+
+  const handleRemoveDraftAvatar = async () => {
+    if (!draftAvatarPath || avatarPending) {
+      return;
+    }
+
+    setSaveError(null);
+    setSaveSuccess(null);
+    setAvatarMessage(null);
+    setAvatarPending(true);
+    const supabase = getSupabaseBrowserClient();
+
+    if (draftAvatarPath !== activeAvatarPath) {
+      await supabase.storage.from(PROFILE_IMAGES_BUCKET).remove([draftAvatarPath]);
+    }
+
+    setDraftAvatarPath(null);
+    setDraftAvatarUrl(null);
+    setAvatarMessage(activeAvatarPath ? "Avatar will be removed when you save changes." : "Avatar removed.");
+    setAvatarPending(false);
+  };
+
+  const handleSaveProfile = async () => {
+    if (savePending || avatarPending || !hasUnsavedChanges) {
+      return;
+    }
+
+    setSaveError(null);
+    setSaveSuccess(null);
+    if (!validateAllFields()) {
+      return;
+    }
+
+    const firstNameToSave = isFirstNameLocked ? normalizedActiveFirstName : normalizedDraftFirstName;
+    const lastNameToSave = isLastNameLocked ? normalizedActiveLastName : normalizedDraftLastName;
+
+    setSavePending(true);
+    const supabase = getSupabaseBrowserClient();
+    const {
+      data: { user },
+      error: userError,
+    } = await supabase.auth.getUser();
+
+    if (userError || !user) {
+      setSavePending(false);
+      setSaveError(userError?.message ?? "Unable to load current user.");
+      return;
+    }
+
+    const metadata = user.user_metadata && typeof user.user_metadata === "object"
+      ? (user.user_metadata as Record<string, unknown>)
+      : {};
+
+    const { error: updateError } = await supabase.auth.updateUser({
+      data: {
+        ...metadata,
+        first_name: firstNameToSave,
+        last_name: lastNameToSave,
+        team_name: normalizedDraftTeamName,
+        display_name: `${firstNameToSave} ${lastNameToSave}`,
+        full_name: `${firstNameToSave} ${lastNameToSave}`,
+        avatar_path: draftAvatarPath,
+        avatar_border_color: draftAvatarBorderColor,
+      },
+    });
+
+    if (updateError) {
+      setSavePending(false);
+      setSaveError(updateError.message);
+      return;
+    }
+
+    if (activeAvatarPath && activeAvatarPath !== draftAvatarPath) {
+      await supabase.storage.from(PROFILE_IMAGES_BUCKET).remove([activeAvatarPath]);
+    }
+
+    setActiveFirstName(firstNameToSave);
+    setActiveLastName(lastNameToSave);
+    setActiveTeamName(normalizedDraftTeamName);
+    setActiveAvatarPath(draftAvatarPath);
+    setActiveAvatarUrl(draftAvatarUrl);
+    setActiveAvatarBorderColor(draftAvatarBorderColor);
+    setActiveLabel(formatDisplayLabel(firstNameToSave, lastNameToSave));
+    setDraftFirstName(firstNameToSave);
+    setDraftLastName(lastNameToSave);
+    setDraftTeamName(normalizedDraftTeamName);
+    setDraftAvatarPath(draftAvatarPath);
+    setDraftAvatarUrl(draftAvatarUrl);
+    setDraftAvatarBorderColor(draftAvatarBorderColor);
+    setSavePending(false);
+    setFieldErrors({});
+    setAvatarMessage(null);
+    setSaveSuccess("Saved \u2713");
+    if (saveSuccessTimeoutRef.current) {
+      clearTimeout(saveSuccessTimeoutRef.current);
+    }
+    saveSuccessTimeoutRef.current = setTimeout(() => {
+      setSaveSuccess(null);
+    }, 1800);
+    router.refresh();
   };
 
   const handleDeleteAccount = async () => {
@@ -187,45 +548,45 @@ export const AccountWidget = ({
 
   const profileModal = isOpen ? (
     <div
-      className="fixed inset-0 z-[90] flex items-start justify-center overflow-y-auto bg-black/55 px-4 py-5 backdrop-blur-[2px] sm:items-center sm:py-6"
-      onClick={closeProfileModal}
+      className="fixed inset-0 z-[90] flex items-start justify-center overflow-y-auto bg-black/60 px-4 py-5 backdrop-blur-[2px] sm:items-center sm:py-6"
+      onClick={() => {
+        void closeProfileModal();
+      }}
     >
       <div
-        className="w-full max-w-2xl overflow-hidden rounded-[20px] border border-default-200/40 bg-content1/95 p-5 shadow-2xl backdrop-blur-md md:p-6"
+        className="flex w-full max-w-4xl max-h-[calc(100dvh-2.5rem)] flex-col overflow-hidden rounded-[20px] border border-default-200/40 bg-content1 shadow-2xl"
         onClick={(event) => event.stopPropagation()}
       >
-        <div className="mb-5 flex items-start justify-between gap-3">
-          <div>
-            <p className="text-xs uppercase tracking-wide text-default-500">Profile Settings</p>
-            <p className="text-sm font-semibold text-default-200">{activeLabel}</p>
+        <div className="flex items-center justify-between gap-3 border-b border-default-200/30 bg-content2/10 px-5 py-4 md:px-6">
+          <div className="min-w-0">
+            <p className="text-xl font-semibold tracking-tight text-white">Profile Settings</p>
+            <p className="truncate text-sm font-medium text-white/85">{headerSubtitle}</p>
           </div>
-          <div className="flex items-center gap-1">
-            <SignOutButton
-              isIconOnly
-              className="inline-flex h-10 w-10 min-h-0 min-w-0 items-center justify-center rounded-medium border border-default-300/40 bg-content2/60 p-0 text-white data-[hover=true]:border-default-200/70 data-[hover=true]:bg-content2/80 data-[hover=true]:text-white sm:h-8 sm:w-8"
-            />
-            <button
-              aria-label="Close profile settings"
-              className="inline-flex h-10 w-10 items-center justify-center rounded-medium border border-default-300/40 bg-content2/60 p-0 text-white transition hover:border-default-200/70 hover:bg-content2/80 hover:text-white sm:h-8 sm:w-8"
-              type="button"
-              onClick={closeProfileModal}
-            >
-              <X className="h-4 w-4" />
-            </button>
-          </div>
+          <Button
+            isIconOnly
+            aria-label="Close profile settings"
+            className="h-10 w-10 min-h-0 min-w-0 text-default-200"
+            size="sm"
+            variant="flat"
+            onPress={() => {
+              void closeProfileModal();
+            }}
+          >
+            <X className="h-4 w-4" />
+          </Button>
         </div>
 
-        <div className="max-h-[calc(100dvh-10rem)] overflow-y-auto pr-1">
-          <div className="grid grid-cols-1 gap-5 md:grid-cols-[220px_1fr] md:items-stretch">
-            <div className="rounded-large border border-default-200/30 bg-default-100/5 p-4">
-              <div className="mb-3 flex justify-center">
-                {activeAvatarUrl ? (
+        <div className="flex-1 overflow-y-auto px-5 py-5 md:px-6 md:py-6">
+          <div className="grid grid-cols-1 gap-6 md:grid-cols-[360px_1fr]">
+            <section className="rounded-large border border-default-200/30 bg-content2/20 p-5">
+              <div className="flex justify-center">
+                {draftAvatarUrl ? (
                   <span
-                    className="relative inline-flex h-28 w-28 overflow-hidden rounded-full bg-default-200/30 outline outline-2 outline-default-300/40"
+                    className="relative inline-flex h-28 w-28 overflow-hidden rounded-full bg-default-200/30 outline outline-2 outline-offset-0 outline-default-300/40 shadow-[inset_0_1px_2px_rgba(255,255,255,0.15)]"
                     style={draftAvatarBorderStyle}
                   >
                     <Image
-                      src={activeAvatarUrl}
+                      src={draftAvatarUrl}
                       alt={`${activeLabel} profile image`}
                       fill
                       sizes="112px"
@@ -236,81 +597,280 @@ export const AccountWidget = ({
                   </span>
                 ) : (
                   <span
-                    className="inline-flex h-28 w-28 items-center justify-center rounded-full bg-default-200/40 text-xl font-semibold text-default-600 outline outline-2 outline-default-300/40"
+                    className="inline-flex h-28 w-28 items-center justify-center rounded-full bg-default-200/40 text-xl font-semibold text-default-600 outline outline-2 outline-default-300/40 shadow-[inset_0_1px_2px_rgba(255,255,255,0.15)]"
                     style={draftAvatarBorderStyle}
                   >
                     {initialsForName(activeLabel)}
                   </span>
                 )}
               </div>
-              <p className="mb-2 text-center text-xs text-default-500">Profile image</p>
-              <ProfileImageForm
-                currentAvatarBorderColor={draftAvatarBorderColor}
-                currentAvatarPath={activeAvatarPath}
-                onSaved={({
-                  avatarPath: nextPath,
-                  avatarUrl: nextUrl,
-                  avatarBorderColor: nextBorderColor,
-                }) => {
-                  if (nextPath !== undefined) {
-                    setActiveAvatarPath(nextPath);
-                  }
-                  if (nextUrl !== undefined) {
-                    setActiveAvatarUrl(nextUrl);
-                  }
-                  if (nextBorderColor !== undefined) {
-                    setDraftAvatarBorderColor(nextBorderColor);
-                  }
+
+              <input
+                ref={avatarInputRef}
+                accept="image/jpeg,image/png,image/webp"
+                className="hidden"
+                type="file"
+                onChange={handleAvatarFileChange}
+              />
+              <input
+                ref={customColorInputRef}
+                className="hidden"
+                type="color"
+                value={draftAvatarBorderColor ?? DEFAULT_AVATAR_RING_COLOR}
+                onChange={(event) => {
+                  setDraftAvatarBorderColor(event.target.value.toLowerCase());
+                  setSaveError(null);
+                  setSaveSuccess(null);
                 }}
               />
-            </div>
 
-            <div className="h-full rounded-large border border-default-200/30 bg-default-100/5 p-4">
-              <DisplayNameForm
-                initialFirstName={activeFirstName ?? ""}
-                initialLastName={activeLastName ?? ""}
-                initialTeamName={activeTeamName ?? ""}
-                additionalMetadata={{
-                  avatar_border_color: draftAvatarBorderColor,
-                }}
-                pinSubmitToBottom
-                saveLabel="Save"
-                showSavedMessage={false}
-                onSaved={({
-                  firstName: nextFirstName,
-                  lastName: nextLastName,
-                  teamName: nextTeamName,
-                  displayLabel,
-                }) => {
-                  setActiveFirstName(nextFirstName);
-                  setActiveLastName(nextLastName);
-                  setActiveTeamName(nextTeamName);
-                  setActiveAvatarBorderColor(draftAvatarBorderColor);
-                  setActiveLabel(displayLabel);
-                  setIsOpen(false);
-                }}
-              />
-            </div>
-          </div>
+              <div className="mt-3 flex w-full flex-wrap items-center justify-center gap-2">
+                <Button
+                  className="min-w-[126px]"
+                  color="primary"
+                  isLoading={avatarPending}
+                  size="sm"
+                  variant="flat"
+                  onPress={() => avatarInputRef.current?.click()}
+                >
+                  Upload image
+                </Button>
+                <Button
+                  isDisabled={!draftAvatarPath || avatarPending}
+                  className={`${
+                    draftAvatarPath
+                      ? "h-9 w-9 min-h-0 min-w-0 bg-danger-500/10 text-danger-200 data-[hover=true]:bg-danger-500/20 data-[hover=true]:text-danger-100"
+                      : "h-9 w-9 min-h-0 min-w-0 cursor-not-allowed text-default-500"
+                  }`}
+                  aria-label="Remove image"
+                  color={draftAvatarPath ? "danger" : "default"}
+                  isIconOnly
+                  size="sm"
+                  variant="light"
+                  onPress={handleRemoveDraftAvatar}
+                >
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              </div>
+              <p className="mt-1 text-center text-[11px] text-default-400">
+                PNG/JPG/WEBP • up to 3MB • recommended 512x512
+              </p>
+              {!draftAvatarPath ? <p className="mt-1 text-[11px] text-default-500">Using default image</p> : null}
 
-          <div className="mt-5 rounded-large border border-danger-400/35 bg-danger-500/10 p-4">
-            <p className="text-xs font-semibold uppercase tracking-wide text-danger-300">
-              Danger Zone
-            </p>
-            <p className="mt-1 text-xs text-default-300">
-              Permanently delete your account, chat history, draft participation records, and profile data.
-            </p>
-            <button
-              className="mt-3 inline-flex h-10 items-center justify-center rounded-medium border border-danger-400/45 bg-danger-500/15 px-3 text-sm font-semibold text-danger-200 transition hover:bg-danger-500/25 disabled:cursor-not-allowed disabled:opacity-60"
-              disabled={deletePending}
-              type="button"
-              onClick={() => {
-                void handleDeleteAccount();
+              <div className="mt-5">
+                <p className="text-[11px] font-medium uppercase tracking-wide text-default-500">Avatar Ring</p>
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  {AVATAR_RING_SWATCHES.map(({ color, label }) => {
+                    const isSelected = draftAvatarBorderColor === color;
+                    return (
+                      <Tooltip key={color} content={label}>
+                        <button
+                          aria-label={`Use ${label} avatar ring color`}
+                          className={`relative inline-flex h-8 w-8 items-center justify-center rounded-full border transition ${
+                            isSelected
+                              ? "border-default-100 ring-2 ring-default-50/80 ring-offset-1 ring-offset-content1 shadow-[0_0_0_1px_rgba(255,255,255,0.35)]"
+                              : "border-default-300/40"
+                          }`}
+                          type="button"
+                          onClick={() => {
+                            setDraftAvatarBorderColor(color);
+                            setSaveError(null);
+                            setSaveSuccess(null);
+                          }}
+                        >
+                          <span className="h-5 w-5 rounded-full" style={{ backgroundColor: color }} />
+                          {isSelected ? (
+                            <span className="absolute right-1 top-1 inline-flex h-4 w-4 items-center justify-center rounded-full border border-white/70 bg-black/85 text-white shadow-sm">
+                              <Check className="h-3 w-3" />
+                            </span>
+                          ) : null}
+                        </button>
+                      </Tooltip>
+                    );
+                  })}
+                  <Button
+                    className="text-xs"
+                    size="sm"
+                    variant={isCustomRingColorSelected ? "solid" : "flat"}
+                    onPress={() => {
+                      customColorInputRef.current?.click();
+                      setSaveSuccess(null);
+                    }}
+                  >
+                    {isCustomRingColorSelected ? <Check className="mr-1 h-3 w-3" /> : null}
+                    Custom...
+                  </Button>
+                  <Button
+                    className="text-xs"
+                    color={isDefaultRingColorSelected ? "primary" : "default"}
+                    size="sm"
+                    variant="flat"
+                    onPress={() => {
+                      setDraftAvatarBorderColor(null);
+                      setSaveSuccess(null);
+                    }}
+                  >
+                    {isDefaultRingColorSelected ? <Check className="mr-1 h-3 w-3" /> : null}
+                    Default
+                  </Button>
+                </div>
+              </div>
+              {avatarMessage ? <p className="mt-3 text-xs text-success-400">{avatarMessage}</p> : null}
+            </section>
+
+            <section
+              className="rounded-large border border-default-200/30 bg-content2/20 p-5 pt-3"
+              onKeyDown={(event: KeyboardEvent<HTMLElement>) => {
+                const target = event.target as HTMLElement | null;
+                if (event.key !== "Enter" || event.shiftKey || !target) {
+                  return;
+                }
+                if (target.tagName !== "INPUT") {
+                  return;
+                }
+                event.preventDefault();
+                void handleSaveProfile();
               }}
             >
-              {deletePending ? "Deleting account..." : "Delete Account"}
-            </button>
+              <p className="text-[11px] font-medium uppercase tracking-wide text-default-500">Profile Details</p>
+              <p className="mt-1 text-xs text-default-400">Update your personal and team profile details.</p>
+
+              <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <Input
+                  autoComplete="given-name"
+                  classNames={{
+                    inputWrapper:
+                      "min-h-12 h-12 border border-default-200/55 bg-content1/70 data-[focus=true]:border-primary-400 data-[focus=true]:ring-2 data-[focus=true]:ring-primary-400/35",
+                  }}
+                  errorMessage={fieldErrors.firstName}
+                  isDisabled={isFirstNameLocked}
+                  isInvalid={Boolean(fieldErrors.firstName)}
+                  label={<span>First name <span className="text-danger-400/70">*</span></span>}
+                  labelPlacement="outside"
+                  placeholder="First name"
+                  value={draftFirstName}
+                  onBlur={() =>
+                    setFieldErrors((previous) => ({
+                      ...previous,
+                      firstName: validateField("firstName") ?? undefined,
+                    }))}
+                  onValueChange={(value) => {
+                    setDraftFirstName(value);
+                    setFieldErrors((previous) => ({ ...previous, firstName: undefined }));
+                    setSaveError(null);
+                    setSaveSuccess(null);
+                  }}
+                />
+                <Input
+                  autoComplete="family-name"
+                  classNames={{
+                    inputWrapper:
+                      "min-h-12 h-12 border border-default-200/55 bg-content1/70 data-[focus=true]:border-primary-400 data-[focus=true]:ring-2 data-[focus=true]:ring-primary-400/35",
+                  }}
+                  errorMessage={fieldErrors.lastName}
+                  isDisabled={isLastNameLocked}
+                  isInvalid={Boolean(fieldErrors.lastName)}
+                  label={<span>Last name <span className="text-danger-400/70">*</span></span>}
+                  labelPlacement="outside"
+                  placeholder="Last name"
+                  value={draftLastName}
+                  onBlur={() =>
+                    setFieldErrors((previous) => ({
+                      ...previous,
+                      lastName: validateField("lastName") ?? undefined,
+                    }))}
+                  onValueChange={(value) => {
+                    setDraftLastName(value);
+                    setFieldErrors((previous) => ({ ...previous, lastName: undefined }));
+                    setSaveError(null);
+                    setSaveSuccess(null);
+                  }}
+                />
+              </div>
+
+              <div className="mt-4">
+                <Input
+                  autoComplete="organization"
+                  classNames={{
+                    inputWrapper:
+                      "min-h-12 h-12 border border-default-200/55 bg-content1/70 data-[focus=true]:border-primary-400 data-[focus=true]:ring-2 data-[focus=true]:ring-primary-400/35",
+                  }}
+                  description="Shown on matchup cards and leaderboards."
+                  errorMessage={fieldErrors.teamName}
+                  isInvalid={Boolean(fieldErrors.teamName)}
+                  label={<span>Team name <span className="text-danger-400/70">*</span></span>}
+                  labelPlacement="outside"
+                  placeholder="Team name"
+                  value={draftTeamName}
+                  onBlur={() =>
+                    setFieldErrors((previous) => ({
+                      ...previous,
+                      teamName: validateField("teamName") ?? undefined,
+                    }))}
+                  onValueChange={(value) => {
+                    setDraftTeamName(value);
+                    setFieldErrors((previous) => ({ ...previous, teamName: undefined }));
+                    setSaveError(null);
+                    setSaveSuccess(null);
+                  }}
+                />
+                <p className="mt-2 text-xs text-default-500">
+                  Auto-uppercase preview:{" "}
+                  <span className="font-medium text-default-300">{teamPreviewText}</span>
+                  {isTeamPreviewTruncated ? (
+                    <span className="ml-1 text-default-500/90">• truncated</span>
+                  ) : null}
+                </p>
+              </div>
+            </section>
+          </div>
+
+          <div className="mt-6 h-px bg-default-200/20" />
+          <section className="mt-5 pt-2">
+            <p className="inline-flex items-center gap-1 text-xs font-semibold uppercase tracking-wide text-danger-300/90">
+              <TriangleAlert className="h-3.5 w-3.5" />
+              Danger Zone
+            </p>
+            <p className="mt-1 text-xs text-default-400">
+              Permanently delete your account and all associated data. This can&apos;t be undone.
+            </p>
+            <Button
+              className="mt-3"
+              color="danger"
+              isLoading={deletePending}
+              size="sm"
+              variant="bordered"
+              onPress={handleDeleteAccount}
+            >
+              Delete account
+            </Button>
             {deleteError ? <p className="mt-2 text-xs text-danger-300">{deleteError}</p> : null}
+          </section>
+        </div>
+
+        <div className="flex items-center justify-between border-t border-default-200/30 px-5 py-4 md:px-6">
+          <p className={`text-xs ${saveError ? "text-danger-300" : "text-success-400"}`}>
+            {saveError ?? saveSuccess ?? ""}
+          </p>
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant="flat"
+              onPress={() => {
+                void closeProfileModal();
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              color="primary"
+              isDisabled={!hasUnsavedChanges || avatarPending}
+              isLoading={savePending}
+              size="sm"
+              onPress={handleSaveProfile}
+            >
+              {savePending ? "Saving..." : "Save changes"}
+            </Button>
           </div>
         </div>
       </div>

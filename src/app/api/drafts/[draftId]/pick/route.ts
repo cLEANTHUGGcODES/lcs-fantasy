@@ -37,13 +37,20 @@ export async function POST(
     });
 
     if (draftBeforePick.status !== "live" || !draftBeforePick.nextPick) {
-      return Response.json({ error: "Draft is not currently accepting manual picks." }, { status: 400 });
+      return Response.json(
+        {
+          error: "Draft is not currently accepting manual picks.",
+          code: "NOT_LIVE",
+        },
+        { status: 400 },
+      );
     }
 
     if (draftBeforePick.nextPick.participantUserId !== user.id) {
       return Response.json(
         {
           error: `It is currently ${draftBeforePick.nextPick.participantDisplayName}'s turn to pick.`,
+          code: "OUT_OF_TURN",
         },
         { status: 403 },
       );
@@ -65,6 +72,7 @@ export async function POST(
       return Response.json(
         {
           error: submission.error ?? "Unable to submit pick.",
+          code: submission.code,
         },
         { status },
       );

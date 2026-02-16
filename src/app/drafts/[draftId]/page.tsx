@@ -1,6 +1,5 @@
 import { Link } from "@heroui/link";
 import { redirect } from "next/navigation";
-import { GlobalChatPanel } from "@/components/chat/global-chat-panel";
 import { DraftRoom } from "@/components/drafts/draft-room";
 import { requireAuthUser } from "@/lib/draft-auth";
 import { getUserDisplayName } from "@/lib/user-profile";
@@ -41,7 +40,6 @@ export default async function DraftRoomPage({
         currentUserLabel={getUserDisplayName(user) ?? user.id}
         draftId={draftId}
       />
-      <GlobalChatPanel currentUserId={user.id} />
     </main>
   );
 }

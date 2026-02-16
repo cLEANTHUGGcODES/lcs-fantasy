@@ -42,6 +42,7 @@ const pointFormat = new Intl.NumberFormat("en-US", {
   minimumFractionDigits: 1,
   maximumFractionDigits: 1,
 });
+const MIN_SPLIT_LABEL_PERCENT = 16;
 
 const sourceLinkForPage = (page: string): string =>
   `https://lol.fandom.com/wiki/${page.replace(/\s+/g, "_")}`;
@@ -715,8 +716,10 @@ export default async function Home() {
       : currentUserCurrentWeekMatchup?.status === "finalized"
         ? "Final"
         : "Live";
-  const currentPointSplitLabel =
-    `${Math.round(currentUserWeekPointShare)}% / ${Math.round(currentOpponentWeekPointShare)}%`;
+  const currentUserSplitPercent = Math.round(currentUserWeekPointShare);
+  const currentOpponentSplitPercent = Math.round(currentOpponentWeekPointShare);
+  const showCurrentUserSplitLabel = currentUserWeekPointShare >= MIN_SPLIT_LABEL_PERCENT;
+  const showCurrentOpponentSplitLabel = currentOpponentWeekPointShare >= MIN_SPLIT_LABEL_PERCENT;
   return (
     <main className="mx-auto min-h-[100svh] w-full max-w-7xl px-3 py-5 pb-28 supports-[min-height:100dvh]:min-h-[100dvh] md:px-6 md:py-8 md:pb-24">
       <Navbar
@@ -897,72 +900,194 @@ export default async function Home() {
                   </div>
 
                   <div className="mb-3 rounded-2xl border border-default-200/28 bg-black/35 px-4 py-2.5 shadow-[0_8px_20px_rgba(0,0,0,0.2)]">
-                    <div className={`grid items-end gap-3 ${currentUserOpponentSide ? "grid-cols-[minmax(0,1fr)_minmax(0,1fr)]" : "grid-cols-1"}`}>
-                      <div className="flex flex-col items-start text-left">
-                        <p className="text-[10px] uppercase tracking-[0.1em] text-[#d9cdb5]">Your {scoreStateLabel}</p>
-                        <p
-                          className={`mono-points ${
-                            showPlaceholderScore
-                              ? "text-xl font-medium text-[#d9cdb5]"
-                              : "text-2xl font-semibold text-white"
-                          }`}
-                        >
-                          {currentUserScoreDisplay}
-                        </p>
-                        {showPlaceholderScore ? (
-                          <p className="text-[10px] text-[#b8ad95]">Pending</p>
-                        ) : null}
-                      </div>
-                      <div className="flex flex-col items-end text-right">
-                        <p className="text-[10px] uppercase tracking-[0.1em] text-[#d9cdb5]">
-                          {currentUserOpponentSide ? `Opponent ${scoreStateLabel}` : "Bye Week"}
-                        </p>
-                        <p
-                          className={`mono-points ${
-                            showPlaceholderScore
-                              ? "text-xl font-medium text-[#d9cdb5]"
-                              : "text-2xl font-semibold text-white"
-                          }`}
-                        >
-                          {currentOpponentScoreDisplay}
-                        </p>
-                        {showPlaceholderScore ? (
-                          <p className="text-[10px] text-[#b8ad95]">Pending</p>
-                        ) : null}
-                      </div>
-                    </div>
-                    {currentUserOpponentSide ? (
-                      <div className="relative mt-2">
-                        <div
-                          className={`relative h-5 overflow-hidden rounded-full border border-default-200/35 ${
-                            showPlaceholderScore ? "bg-white/7" : "bg-white/10"
-                          }`}
-                        >
-                          <span
-                            className={`absolute inset-y-0 left-0 ${
-                              showPlaceholderScore ? "bg-[#6f9dd6]/25" : "bg-[#6f9dd6]"
+                    <div className="md:hidden">
+                      <div className={`grid items-end gap-3 ${currentUserOpponentSide ? "grid-cols-[minmax(0,1fr)_minmax(0,1fr)]" : "grid-cols-1"}`}>
+                        <div className="flex flex-col items-start text-left">
+                          <p className="text-[10px] uppercase tracking-[0.1em] text-[#d9cdb5]">Your {scoreStateLabel}</p>
+                          <p
+                            className={`mono-points ${
+                              showPlaceholderScore
+                                ? "text-xl font-medium text-[#d9cdb5]"
+                                : "text-2xl font-semibold text-white"
                             }`}
-                            style={{ width: `${currentUserWeekPointShare}%` }}
-                          />
-                          <span
-                            className={`absolute inset-y-0 right-0 ${
-                              showPlaceholderScore ? "bg-[#d88278]/25" : "bg-[#d88278]"
-                            }`}
-                            style={{ width: `${currentOpponentWeekPointShare}%` }}
-                          />
-                          <span aria-hidden className="pointer-events-none absolute left-1/4 top-0 h-full w-px bg-white/15" />
-                          <span aria-hidden className="pointer-events-none absolute left-3/4 top-0 h-full w-px bg-white/15" />
+                          >
+                            {currentUserScoreDisplay}
+                          </p>
+                          {showPlaceholderScore ? (
+                            <p className="text-[10px] text-[#b8ad95]">Pending</p>
+                          ) : null}
                         </div>
-                        <span className="mono-points absolute left-1/2 top-1/2 inline-flex h-6 min-w-10 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border border-[#C79B3B]/40 bg-[#111217]/95 px-2 text-[10px] font-semibold uppercase tracking-[0.1em] text-[#C79B3B]">
-                          VS
-                        </span>
+                        <div className="flex flex-col items-end text-right">
+                          <p className="text-[10px] uppercase tracking-[0.1em] text-[#d9cdb5]">
+                            {currentUserOpponentSide ? `Opponent ${scoreStateLabel}` : "Bye Week"}
+                          </p>
+                          <p
+                            className={`mono-points ${
+                              showPlaceholderScore
+                                ? "text-xl font-medium text-[#d9cdb5]"
+                                : "text-2xl font-semibold text-white"
+                            }`}
+                          >
+                            {currentOpponentScoreDisplay}
+                          </p>
+                          {showPlaceholderScore ? (
+                            <p className="text-[10px] text-[#b8ad95]">Pending</p>
+                          ) : null}
+                        </div>
                       </div>
+                      {currentUserOpponentSide ? (
+                        <div className="relative mt-2">
+                          <div
+                            className={`relative h-5 overflow-hidden rounded-full border border-default-200/35 ${
+                              showPlaceholderScore ? "bg-white/7" : "bg-white/10"
+                            }`}
+                          >
+                            <span
+                              className={`absolute inset-y-0 left-0 overflow-hidden ${
+                                showPlaceholderScore ? "bg-[#3983fa]/28" : "bg-[#3983fa]"
+                              }`}
+                              style={{ width: `${currentUserWeekPointShare}%` }}
+                            >
+                              {showCurrentUserSplitLabel ? (
+                                <span className="mono-points absolute inset-0 flex items-center justify-center text-[10px] font-semibold text-white/90">
+                                  {currentUserSplitPercent}%
+                                </span>
+                              ) : null}
+                            </span>
+                            <span
+                              className={`absolute inset-y-0 right-0 overflow-hidden ${
+                                showPlaceholderScore ? "bg-[#C79B3B]/28" : "bg-[#C79B3B]"
+                              }`}
+                              style={{ width: `${currentOpponentWeekPointShare}%` }}
+                            >
+                              {showCurrentOpponentSplitLabel ? (
+                                <span
+                                  className={`mono-points absolute inset-0 flex items-center justify-center text-[10px] font-semibold ${
+                                    showPlaceholderScore ? "text-[#eadcbf]/85" : "text-[#2f2406]"
+                                  }`}
+                                >
+                                  {currentOpponentSplitPercent}%
+                                </span>
+                              ) : null}
+                            </span>
+                          </div>
+                          <span
+                            className="mono-points absolute top-1/2 inline-flex h-6 min-w-10 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border border-[#C79B3B]/40 bg-[#111217]/95 px-2 text-[10px] font-semibold uppercase tracking-[0.1em] text-[#C79B3B]"
+                            style={{ left: `${currentUserWeekPointShare}%` }}
+                          >
+                            VS
+                          </span>
+                        </div>
+                      ) : null}
+                    </div>
+
+                    <div className="hidden md:block">
+                      {currentUserOpponentSide ? (
+                        <div className="grid grid-cols-[minmax(144px,160px)_minmax(0,1fr)_minmax(144px,160px)] items-center gap-4">
+                          <div className="flex flex-col justify-center text-left">
+                            <p className="text-[10px] uppercase tracking-[0.1em] text-[#d9cdb5]">Your {scoreStateLabel}</p>
+                            <p
+                              className={`mono-points ${
+                                showPlaceholderScore
+                                  ? "text-xl font-medium text-[#d9cdb5]"
+                                  : "text-2xl font-semibold text-white"
+                              }`}
+                            >
+                              {currentUserScoreDisplay}
+                            </p>
+                            {showPlaceholderScore ? (
+                              <p className="text-[10px] text-[#b8ad95]">Pending</p>
+                            ) : null}
+                          </div>
+
+                          <div className="relative">
+                            <div
+                              className={`relative h-5 overflow-hidden rounded-full border border-default-200/35 ${
+                                showPlaceholderScore ? "bg-white/7" : "bg-white/10"
+                              }`}
+                            >
+                              <span
+                                className={`absolute inset-y-0 left-0 overflow-hidden ${
+                                  showPlaceholderScore ? "bg-[#3983fa]/28" : "bg-[#3983fa]"
+                                }`}
+                                style={{ width: `${currentUserWeekPointShare}%` }}
+                              >
+                                {showCurrentUserSplitLabel ? (
+                                  <span className="mono-points absolute inset-0 flex items-center justify-center text-[10px] font-semibold text-white/90">
+                                    {currentUserSplitPercent}%
+                                  </span>
+                                ) : null}
+                              </span>
+                              <span
+                                className={`absolute inset-y-0 right-0 overflow-hidden ${
+                                  showPlaceholderScore ? "bg-[#C79B3B]/28" : "bg-[#C79B3B]"
+                                }`}
+                                style={{ width: `${currentOpponentWeekPointShare}%` }}
+                              >
+                                {showCurrentOpponentSplitLabel ? (
+                                  <span
+                                    className={`mono-points absolute inset-0 flex items-center justify-center text-[10px] font-semibold ${
+                                      showPlaceholderScore ? "text-[#eadcbf]/85" : "text-[#2f2406]"
+                                    }`}
+                                  >
+                                    {currentOpponentSplitPercent}%
+                                  </span>
+                                ) : null}
+                              </span>
+                            </div>
+                            <span
+                              className="mono-points absolute top-1/2 inline-flex h-6 min-w-10 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border border-[#C79B3B]/40 bg-[#111217]/95 px-2 text-[10px] font-semibold uppercase tracking-[0.1em] text-[#C79B3B]"
+                              style={{ left: `${currentUserWeekPointShare}%` }}
+                            >
+                              VS
+                            </span>
+                          </div>
+
+                          <div className="flex flex-col justify-center text-right">
+                            <p className="text-[10px] uppercase tracking-[0.1em] text-[#d9cdb5]">
+                              Opponent {scoreStateLabel}
+                            </p>
+                            <p
+                              className={`mono-points ${
+                                showPlaceholderScore
+                                  ? "text-xl font-medium text-[#d9cdb5]"
+                                  : "text-2xl font-semibold text-white"
+                              }`}
+                            >
+                              {currentOpponentScoreDisplay}
+                            </p>
+                            {showPlaceholderScore ? (
+                              <p className="text-[10px] text-[#b8ad95]">Pending</p>
+                            ) : null}
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="grid grid-cols-[minmax(144px,160px)_minmax(0,1fr)_minmax(144px,160px)] items-center gap-4">
+                          <div className="flex flex-col justify-center text-left">
+                            <p className="text-[10px] uppercase tracking-[0.1em] text-[#d9cdb5]">Your {scoreStateLabel}</p>
+                            <p
+                              className={`mono-points ${
+                                showPlaceholderScore
+                                  ? "text-xl font-medium text-[#d9cdb5]"
+                                  : "text-2xl font-semibold text-white"
+                              }`}
+                            >
+                              {currentUserScoreDisplay}
+                            </p>
+                          </div>
+                          <div className="text-center text-[11px] uppercase tracking-[0.1em] text-[#d9cdb5]">
+                            Bye Week
+                          </div>
+                          <div />
+                        </div>
+                      )}
+                    </div>
+
+                    {showPlaceholderScore ? (
+                      <p className="mt-2 text-center text-[10px] text-[#d9cdb5]">
+                        {scoreStateLabel} view will populate at first game start
+                      </p>
                     ) : null}
-                    <p className="mt-2 text-center text-[10px] text-[#d9cdb5]">
-                      {showPlaceholderScore
-                        ? `${scoreStateLabel} view will populate at first game start`
-                        : `${scoreStateLabel} scoring is in progress • Split ${currentPointSplitLabel}`}
-                    </p>
                   </div>
 
                   <div

@@ -169,10 +169,15 @@ const initialsForSenderLabel = (value: string): string => {
 export const GlobalChatPanel = ({
   currentUserId,
   className,
+  mode = "floating",
+  hideOnMobile = false,
 }: {
   currentUserId: string;
   className?: string;
+  mode?: "floating" | "embedded";
+  hideOnMobile?: boolean;
 }) => {
+  const isEmbedded = mode === "embedded";
   const [isOpen, setIsOpen] = useState(false);
   const [isMobileViewport, setIsMobileViewport] = useState(false);
   const [messages, setMessages] = useState<GlobalChatMessage[]>([]);
@@ -207,6 +212,7 @@ export const GlobalChatPanel = ({
     duplicateDrops: 0,
   });
   const metricsFlushInFlightRef = useRef(false);
+  const isPanelOpen = isEmbedded ? true : isOpen;
   const sortedMessages = messages;
   const groupedMessages = useMemo(() => {
     return sortedMessages.reduce<
@@ -243,14 +249,16 @@ export const GlobalChatPanel = ({
   }, [currentUserId, sortedMessages]);
 
   const syncComposerHeight = useCallback((target: HTMLTextAreaElement) => {
+    const minHeightPx = isEmbedded ? 30 : CHAT_COMPOSER_MIN_HEIGHT_PX;
+    const maxHeightPx = isEmbedded ? 72 : CHAT_COMPOSER_MAX_HEIGHT_PX;
     target.style.height = "auto";
     const nextHeight = Math.min(
-      Math.max(target.scrollHeight, CHAT_COMPOSER_MIN_HEIGHT_PX),
-      CHAT_COMPOSER_MAX_HEIGHT_PX,
+      Math.max(target.scrollHeight, minHeightPx),
+      maxHeightPx,
     );
     target.style.height = `${nextHeight}px`;
-    target.style.overflowY = target.scrollHeight > CHAT_COMPOSER_MAX_HEIGHT_PX ? "auto" : "hidden";
-  }, []);
+    target.style.overflowY = target.scrollHeight > maxHeightPx ? "auto" : "hidden";
+  }, [isEmbedded]);
 
   const focusChatInput = useCallback(() => {
     const input = chatInputRef.current;
@@ -615,7 +623,7 @@ export const GlobalChatPanel = ({
   }, []);
 
   useEffect(() => {
-    if (!isOpen) {
+    if (!isPanelOpen) {
       return;
     }
 
@@ -623,28 +631,28 @@ export const GlobalChatPanel = ({
     window.requestAnimationFrame(() => {
       scrollMessagesToBottom();
     });
-  }, [isOpen, scrollMessagesToBottom]);
+  }, [isPanelOpen, scrollMessagesToBottom]);
 
   useEffect(() => {
-    if (!isOpen || !shouldStickToBottomRef.current) {
+    if (!isPanelOpen || !shouldStickToBottomRef.current) {
       return;
     }
 
     scrollMessagesToBottom();
-  }, [isOpen, scrollMessagesToBottom, sortedMessages]);
+  }, [isPanelOpen, scrollMessagesToBottom, sortedMessages]);
 
   useEffect(() => {
-    if (!isOpen || shouldStickToBottomRef.current || sortedMessages.length === 0) {
+    if (!isPanelOpen || shouldStickToBottomRef.current || sortedMessages.length === 0) {
       return;
     }
     const latestMessage = sortedMessages[sortedMessages.length - 1];
     if (latestMessage?.userId !== currentUserId) {
       setShowJumpToLatest(true);
     }
-  }, [currentUserId, isOpen, sortedMessages]);
+  }, [currentUserId, isPanelOpen, sortedMessages]);
 
   useEffect(() => {
-    if (!isOpen) {
+    if (!isPanelOpen) {
       return;
     }
 
@@ -653,7 +661,7 @@ export const GlobalChatPanel = ({
       return;
     }
     queueComposerHeightSync(input);
-  }, [isOpen, queueComposerHeightSync]);
+  }, [isPanelOpen, queueComposerHeightSync]);
 
   useEffect(() => {
     return () => {
@@ -669,7 +677,7 @@ export const GlobalChatPanel = ({
   }, []);
 
   useEffect(() => {
-    if (!isOpen) {
+    if (!isPanelOpen) {
       return;
     }
 
@@ -704,7 +712,7 @@ export const GlobalChatPanel = ({
         window.cancelAnimationFrame(frame);
       }
     };
-  }, [isOpen, scrollMessagesToBottom]);
+  }, [isPanelOpen, scrollMessagesToBottom]);
 
   useEffect(() => {
     if (!isMobileViewport) {
@@ -722,7 +730,7 @@ export const GlobalChatPanel = ({
 
     const settleAfterViewportShift = () => {
       applyViewportHeight();
-      if (!isOpen || !shouldStickToBottomRef.current) {
+      if (!isPanelOpen || !shouldStickToBottomRef.current) {
         return;
       }
       window.requestAnimationFrame(() => {
@@ -754,10 +762,10 @@ export const GlobalChatPanel = ({
       }
       root.style.removeProperty("--chat-vvh");
     };
-  }, [isMobileViewport, isOpen, scrollMessagesToBottom]);
+  }, [isMobileViewport, isPanelOpen, scrollMessagesToBottom]);
 
   useEffect(() => {
-    if (!isOpen || !isMobileViewport) {
+    if (!isPanelOpen || !isMobileViewport) {
       return;
     }
 
@@ -785,7 +793,7 @@ export const GlobalChatPanel = ({
       body.style.overflow = previous.bodyOverflow;
       body.style.overscrollBehaviorY = previous.bodyOverscrollBehaviorY;
     };
-  }, [isOpen, isMobileViewport]);
+  }, [isPanelOpen, isMobileViewport]);
 
   const loadOlderMessages = useCallback(async () => {
     if (loadingOlder || !hasOlderMessages || !oldestCursorId) {
@@ -824,7 +832,11 @@ export const GlobalChatPanel = ({
     () => (
       <div
         ref={messageListRef}
-        className="chat-scrollbar flex-1 min-h-0 space-y-1.5 overflow-x-hidden overflow-y-auto overscroll-contain px-1 pb-1 touch-pan-y sm:space-y-2 sm:rounded-large sm:border sm:border-[#334767]/55 sm:bg-[#081326]/88 sm:p-3"
+        className={`chat-scrollbar flex-1 min-h-0 overflow-x-hidden overflow-y-auto overscroll-contain touch-pan-y ${
+          isEmbedded
+            ? "space-y-1 px-0 pb-0 rounded-large border border-[#334767]/45 bg-[#081326]/82 p-2"
+            : "space-y-1.5 px-1 pb-1 sm:space-y-2 sm:rounded-large sm:border sm:border-[#334767]/55 sm:bg-[#081326]/88 sm:p-3"
+        }`}
         style={{ WebkitOverflowScrolling: "touch" }}
         onScroll={(event) => {
           const nearBottom = isNearBottom(event.currentTarget);
@@ -834,7 +846,10 @@ export const GlobalChatPanel = ({
           }
         }}
       >
-        <div ref={messageContentRef} className="space-y-1.5 sm:space-y-2">
+        <div
+          ref={messageContentRef}
+          className={isEmbedded ? "space-y-1" : "space-y-1.5 sm:space-y-2"}
+        >
           {hasOlderMessages ? (
             <div className="mb-2 flex justify-center">
               <Button
@@ -859,23 +874,23 @@ export const GlobalChatPanel = ({
               return (
                 <div
                   key={`${group.userId}-${group.messages[0]?.id ?? 0}-${group.messages[group.messages.length - 1]?.id ?? 0}`}
-                  className="space-y-0.5"
+                  className={isEmbedded ? "space-y-0" : "space-y-0.5"}
                 >
                   {showDaySeparator ? (
-                    <div className="my-2.5 flex items-center gap-2 px-1">
+                    <div className={isEmbedded ? "my-1.5 flex items-center gap-1.5 px-0.5" : "my-2.5 flex items-center gap-2 px-1"}>
                       <span className="h-px flex-1 bg-[#3a4f72]/55" />
-                      <span className="text-[10px] font-medium tracking-wide text-[#9fb3d6]/90">
+                      <span className={isEmbedded ? "text-[9px] font-medium tracking-wide text-[#9fb3d6]/85" : "text-[10px] font-medium tracking-wide text-[#9fb3d6]/90"}>
                         {group.dayLabel}
                       </span>
                       <span className="h-px flex-1 bg-[#3a4f72]/55" />
                     </div>
                   ) : null}
                   {!group.isCurrentUser ? (
-                    <p className="px-10 text-left text-[10px] font-medium tracking-wide text-[#C79B3B]">
+                    <p className={isEmbedded ? "px-8 text-left text-[9px] font-medium tracking-wide text-[#C79B3B]" : "px-10 text-left text-[10px] font-medium tracking-wide text-[#C79B3B]"}>
                       {group.senderLabel}
                     </p>
                   ) : null}
-                  <div className="space-y-0.5">
+                  <div className={isEmbedded ? "space-y-0" : "space-y-0.5"}>
                     {group.messages.map((entry, index) => {
                       const showAvatar = index === group.messages.length - 1;
                       const avatarBorderStyle = group.senderAvatarBorderColor
@@ -906,17 +921,25 @@ export const GlobalChatPanel = ({
 
                       const bubble = (
                         <div
-                          className={`max-w-[82%] rounded-2xl border px-2 py-1 sm:max-w-[88%] sm:px-2.5 sm:py-1.5 ${
+                          className={`rounded-2xl border ${
+                            isEmbedded
+                              ? "max-w-[90%] px-1.5 py-0.5 sm:max-w-[92%] sm:px-2 sm:py-1"
+                              : "max-w-[82%] px-2 py-1 sm:max-w-[88%] sm:px-2.5 sm:py-1.5"
+                          } ${
                             group.isCurrentUser
                               ? "border-[#6c83a6]/70 bg-[#1b2a44]/92 text-[#f7faff] shadow-[0_8px_20px_rgba(11,18,33,0.32)]"
                               : "border-[#3f5578]/75 bg-[#101c2f]/92 text-[#edf2ff] shadow-[0_8px_18px_rgba(8,12,24,0.4)]"
                           }`}
                         >
-                          <p className={`text-[10px] ${group.isCurrentUser ? "text-[#c9d7ef]" : "text-[#9fb3d6]"}`}>
+                          <p className={`${isEmbedded ? "text-[9px]" : "text-[10px]"} ${group.isCurrentUser ? "text-[#c9d7ef]" : "text-[#9fb3d6]"}`}>
                             {formatTime(entry.createdAt)}
                           </p>
                           <p
-                            className={`mt-0.5 whitespace-pre-wrap break-words text-[13px] leading-[1.35rem] sm:mt-0.5 sm:text-sm ${
+                            className={`mt-0.5 whitespace-pre-wrap break-words ${
+                              isEmbedded
+                                ? "text-[12px] leading-[1.15rem] sm:text-[12px]"
+                                : "text-[13px] leading-[1.35rem] sm:mt-0.5 sm:text-sm"
+                            } ${
                               group.isCurrentUser ? "text-[#f7faff]" : "text-[#edf2ff]"
                             }`}
                           >
@@ -951,7 +974,7 @@ export const GlobalChatPanel = ({
         </div>
       </div>
     ),
-    [groupedMessages, hasOlderMessages, loadOlderMessages, loadingOlder, sortedMessages.length],
+    [groupedMessages, hasOlderMessages, isEmbedded, loadOlderMessages, loadingOlder, sortedMessages.length],
   );
 
   const submitMessage = useCallback(async () => {
@@ -1000,13 +1023,13 @@ export const GlobalChatPanel = ({
       setError(sendError instanceof Error ? sendError.message : "Unable to send chat message.");
     } finally {
       setPendingSend(false);
-      if (isOpen) {
+      if (isPanelOpen) {
         window.requestAnimationFrame(() => {
           focusChatInput();
         });
       }
     }
-  }, [focusChatInput, incrementClientMetric, isOpen, messageInput]);
+  }, [focusChatInput, incrementClientMetric, isPanelOpen, messageInput]);
 
   useEffect(() => {
     const latestMessageId = sortedMessages[sortedMessages.length - 1]?.id ?? 0;
@@ -1021,7 +1044,7 @@ export const GlobalChatPanel = ({
       return;
     }
 
-    if (isOpen) {
+    if (isPanelOpen) {
       if (lastSeenMessageId !== latestMessageIdNumber) {
         setLastSeenMessageId(latestMessageIdNumber);
       }
@@ -1042,7 +1065,7 @@ export const GlobalChatPanel = ({
   }, [
     currentUserId,
     hasInitializedUnreadState,
-    isOpen,
+    isPanelOpen,
     lastSeenMessageId,
     loading,
     sortedMessages,
@@ -1050,6 +1073,9 @@ export const GlobalChatPanel = ({
   ]);
 
   const openChat = () => {
+    if (isEmbedded) {
+      return;
+    }
     setIsOpen(true);
     setShowJumpToLatest(false);
     const latestMessageId = toMessageId(sortedMessages[sortedMessages.length - 1]?.id ?? 0);
@@ -1061,25 +1087,37 @@ export const GlobalChatPanel = ({
   };
 
   const closeChat = () => {
+    if (isEmbedded) {
+      return;
+    }
     setIsOpen(false);
     setShowJumpToLatest(false);
   };
 
   const toggleChat = () => {
-    if (isOpen) {
+    if (isEmbedded) {
+      return;
+    }
+    if (isPanelOpen) {
       closeChat();
       return;
     }
     openChat();
   };
 
-  const shellContainerClassName = isOpen && isMobileViewport
+  const shellContainerClassName = isEmbedded
+    ? "pointer-events-auto flex h-full min-h-0 flex-col"
+    : isPanelOpen && isMobileViewport
     ? "pointer-events-none fixed inset-0 z-[120] flex flex-col"
     : "pointer-events-none fixed bottom-3 left-0 right-0 z-[120] flex flex-col items-end gap-2 px-3 sm:bottom-4 sm:left-auto sm:right-4 sm:px-0";
 
+  if (hideOnMobile && isMobileViewport) {
+    return null;
+  }
+
   return (
     <div className={shellContainerClassName}>
-      {isOpen ? (
+      {!isEmbedded && isPanelOpen ? (
         <button
           aria-label="Close chat"
           className="pointer-events-auto fixed inset-0 hidden cursor-default bg-black/35 sm:block"
@@ -1088,46 +1126,66 @@ export const GlobalChatPanel = ({
         />
       ) : null}
 
-      {isOpen ? (
+      {isPanelOpen ? (
         <Card
           className={`pointer-events-auto relative z-10 flex min-h-0 flex-col overflow-hidden overscroll-none bg-gradient-to-b from-[#081325] via-[#0d1a30] to-[#13223a] text-slate-100 ${
-            isMobileViewport
+            isEmbedded
+              ? "h-full w-full rounded-2xl border border-[#C79B3B]/35 shadow-xl"
+              : isMobileViewport
               ? "h-full w-full flex-1 rounded-none"
               : "w-[380px] max-h-[min(700px,86dvh)] rounded-2xl border border-[#C79B3B]/35 shadow-2xl backdrop-blur-md"
           } ${className ?? ""}`}
-          style={isMobileViewport ? { height: "var(--chat-vvh, 100dvh)", minHeight: "100svh" } : undefined}
+          style={
+            !isEmbedded && isMobileViewport
+              ? { height: "var(--chat-vvh, 100dvh)", minHeight: "100svh" }
+              : undefined
+          }
         >
           <CardHeader
-            className="flex items-center justify-between border-b border-[#344867]/60 px-3 pb-1.5 pt-2"
-            style={{
-              paddingTop: "calc(env(safe-area-inset-top) + 0.75rem)",
-              paddingLeft: "calc(env(safe-area-inset-left) + 0.75rem)",
-              paddingRight: "calc(env(safe-area-inset-right) + 0.75rem)",
-            }}
+            className={`flex items-center justify-between border-b border-[#344867]/60 ${
+              isEmbedded ? "px-2.5 pb-1 pt-1.5" : "px-3 pb-1.5 pt-2"
+            }`}
+            style={
+              isEmbedded
+                ? undefined
+                : {
+                    paddingTop: "calc(env(safe-area-inset-top) + 0.75rem)",
+                    paddingLeft: "calc(env(safe-area-inset-left) + 0.75rem)",
+                    paddingRight: "calc(env(safe-area-inset-right) + 0.75rem)",
+                  }
+            }
           >
             <div>
-              <h2 className="text-sm font-semibold text-[#C79B3B] sm:text-base">
+              <h2 className={`${isEmbedded ? "text-xs sm:text-sm" : "text-sm sm:text-base"} font-semibold text-[#C79B3B]`}>
                 INSIGHT Fantasy Chat
               </h2>
             </div>
-            <Button
-              isIconOnly
-              aria-label="Minimize chat"
-              className="h-11 w-11 text-slate-300 data-[hover=true]:text-[#C79B3B] sm:h-8 sm:w-8"
-              size="sm"
-              variant="light"
-              onPress={closeChat}
-            >
-              <ChevronLeft className="h-4 w-4 sm:hidden" />
-              <ChevronDown className="hidden h-4 w-4 sm:block" />
-            </Button>
+            {!isEmbedded ? (
+              <Button
+                isIconOnly
+                aria-label="Minimize chat"
+                className="h-11 w-11 text-slate-300 data-[hover=true]:text-[#C79B3B] sm:h-8 sm:w-8"
+                size="sm"
+                variant="light"
+                onPress={closeChat}
+              >
+                <ChevronLeft className="h-4 w-4 sm:hidden" />
+                <ChevronDown className="hidden h-4 w-4 sm:block" />
+              </Button>
+            ) : null}
           </CardHeader>
           <CardBody
-            className="relative flex min-h-0 flex-1 flex-col gap-2 p-2.5 sm:gap-3 sm:p-3"
-            style={{
-              paddingLeft: "calc(env(safe-area-inset-left) + 0.625rem)",
-              paddingRight: "calc(env(safe-area-inset-right) + 0.625rem)",
-            }}
+            className={`relative flex min-h-0 flex-1 flex-col ${
+              isEmbedded ? "gap-1.5 p-2 sm:gap-2 sm:p-2.5" : "gap-2 p-2.5 sm:gap-3 sm:p-3"
+            }`}
+            style={
+              isEmbedded
+                ? undefined
+                : {
+                    paddingLeft: "calc(env(safe-area-inset-left) + 0.625rem)",
+                    paddingRight: "calc(env(safe-area-inset-right) + 0.625rem)",
+                  }
+            }
           >
             {loading ? (
               <div className="flex min-h-0 flex-1 items-center justify-center">
@@ -1153,12 +1211,20 @@ export const GlobalChatPanel = ({
             ) : null}
 
             <div
-              className="mt-auto border-t border-[#344a69]/55 bg-[#091325]/96 pt-1.5 sm:mt-0 sm:border-0 sm:bg-transparent sm:pt-0"
-              style={{
-                paddingBottom: "calc(env(safe-area-inset-bottom) + 0.35rem)",
-                paddingLeft: "calc(env(safe-area-inset-left) + 0.625rem)",
-                paddingRight: "calc(env(safe-area-inset-right) + 0.625rem)",
-              }}
+              className={`mt-auto ${
+                isEmbedded
+                  ? "pt-1"
+                  : "border-t border-[#344a69]/55 bg-[#091325]/96 pt-1.5 sm:mt-0 sm:border-0 sm:bg-transparent sm:pt-0"
+              }`}
+              style={
+                isEmbedded
+                  ? undefined
+                  : {
+                      paddingBottom: "calc(env(safe-area-inset-bottom) + 0.35rem)",
+                      paddingLeft: "calc(env(safe-area-inset-left) + 0.625rem)",
+                      paddingRight: "calc(env(safe-area-inset-right) + 0.625rem)",
+                    }
+              }
             >
               <form
                 autoComplete="off"
@@ -1180,7 +1246,11 @@ export const GlobalChatPanel = ({
                     autoCapitalize="off"
                     autoComplete="off"
                     autoCorrect="off"
-                    className="chat-scrollbar min-h-[36px] max-h-[96px] w-full resize-none rounded-md border border-transparent bg-[#081326] px-3 py-1.5 text-base leading-5 text-[#edf2ff] outline-none transition focus:border-transparent focus:ring-2 focus:ring-[#C79B3B]/25"
+                    className={`chat-scrollbar w-full resize-none rounded-md border border-transparent bg-[#081326] outline-none transition focus:border-transparent focus:ring-2 focus:ring-[#C79B3B]/25 ${
+                      isEmbedded
+                        ? "min-h-[30px] max-h-[72px] px-2.5 py-1 text-[13px] leading-[1.1rem] text-[#edf2ff]"
+                        : "min-h-[36px] max-h-[96px] px-3 py-1.5 text-base leading-5 text-[#edf2ff]"
+                    }`}
                     data-gramm="false"
                     enterKeyHint="send"
                     inputMode="text"
@@ -1221,16 +1291,18 @@ export const GlobalChatPanel = ({
                     }}
                   />
                 </div>
-                <Button
-                  isIconOnly
-                  aria-label="Close chat"
-                  className="h-11 w-11 min-h-11 min-w-11 self-center text-slate-300 data-[hover=true]:text-[#C79B3B] sm:hidden"
-                  type="button"
-                  variant="light"
-                  onPress={closeChat}
-                >
-                  <X className="h-4 w-4" />
-                </Button>
+                {!isEmbedded ? (
+                  <Button
+                    isIconOnly
+                    aria-label="Close chat"
+                    className="h-11 w-11 min-h-11 min-w-11 self-center text-slate-300 data-[hover=true]:text-[#C79B3B] sm:hidden"
+                    type="button"
+                    variant="light"
+                    onPress={closeChat}
+                  >
+                    <X className="h-4 w-4" />
+                  </Button>
+                ) : null}
                 <Button
                   aria-label="Send message"
                   className="h-11 w-11 min-h-11 min-w-11 self-center bg-transparent text-[#C79B3B] shadow-none hover:bg-transparent active:bg-transparent data-[hover=true]:bg-transparent data-[hover=true]:text-[#C79B3B] data-[pressed=true]:bg-transparent data-[disabled=true]:opacity-45 sm:h-9 sm:w-9 sm:min-h-9 sm:min-w-9"
@@ -1255,25 +1327,27 @@ export const GlobalChatPanel = ({
         </Card>
       ) : null}
 
-      <Button
-        className={`pointer-events-auto relative z-10 rounded-full border border-[#C79B3B]/80 bg-[#C79B3B] text-[#2a2006] shadow-none transition-colors hover:bg-[#C79B3B] active:bg-[#C79B3B] data-[hover=true]:bg-[#C79B3B] data-[pressed=true]:bg-[#C79B3B] ${
-          isOpen ? "hidden sm:inline-flex" : ""
-        }`}
-        color="default"
-        radius="full"
-        variant="solid"
-        onPress={toggleChat}
-      >
-        <span className="inline-flex items-center gap-2">
-          <MessageCircle className="h-4 w-4" />
-          Chat
-        </span>
-        {unreadCount > 0 ? (
-          <span className="ml-2 inline-flex min-w-5 items-center justify-center rounded-full border border-[#C79B3B]/50 bg-[#121f34] px-1.5 text-[11px] font-semibold text-[#C79B3B]">
-            {unreadCount > 99 ? "99+" : unreadCount}
+      {!isEmbedded ? (
+        <Button
+          className={`pointer-events-auto relative z-10 rounded-full border border-[#C79B3B]/80 bg-[#C79B3B] text-[#2a2006] shadow-none transition-colors hover:bg-[#C79B3B] active:bg-[#C79B3B] data-[hover=true]:bg-[#C79B3B] data-[pressed=true]:bg-[#C79B3B] ${
+            isPanelOpen ? "hidden sm:inline-flex" : ""
+          }`}
+          color="default"
+          radius="full"
+          variant="solid"
+          onPress={toggleChat}
+        >
+          <span className="inline-flex items-center gap-2">
+            <MessageCircle className="h-4 w-4" />
+            Chat
           </span>
-        ) : null}
-      </Button>
+          {unreadCount > 0 ? (
+            <span className="ml-2 inline-flex min-w-5 items-center justify-center rounded-full border border-[#C79B3B]/50 bg-[#121f34] px-1.5 text-[11px] font-semibold text-[#C79B3B]">
+              {unreadCount > 99 ? "99+" : unreadCount}
+            </span>
+          ) : null}
+        </Button>
+      ) : null}
     </div>
   );
 };

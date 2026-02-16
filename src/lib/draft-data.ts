@@ -1,6 +1,8 @@
 import type { User } from "@supabase/supabase-js";
 import { isGlobalAdminUser } from "@/lib/admin-access";
 import { getPickSlot, resolveCurrentPickDeadline, resolveNextPick } from "@/lib/draft-engine";
+import { calculateFantasyPoints, DEFAULT_SCORING } from "@/lib/fantasy";
+import { getLatestSnapshotFromSupabase } from "@/lib/supabase-match-store";
 import { getSupabaseServerClient } from "@/lib/supabase-server";
 import {
   formatUserLabelFromDisplayName,
@@ -11,6 +13,7 @@ import {
 } from "@/lib/user-profile";
 import type {
   DraftDetail,
+  DraftPlayerAnalytics,
   DraftParticipant,
   DraftParticipantPresence,
   DraftPlayerPoolEntry,
@@ -19,6 +22,7 @@ import type {
   DraftSummary,
   RegisteredUser,
 } from "@/types/draft";
+import type { FantasyScoring, ParsedGame } from "@/types/fantasy";
 
 const DRAFTS_TABLE = "fantasy_drafts";
 const PARTICIPANTS_TABLE = "fantasy_draft_participants";
@@ -27,6 +31,324 @@ const TEAM_POOL_TABLE = "fantasy_draft_team_pool";
 const PRESENCE_TABLE = "fantasy_draft_presence";
 const ONLINE_HEARTBEAT_WINDOW_MS = 45_000;
 const MAX_ROSTER_PLAYERS = 5;
+const PLAYER_ANALYTICS_LOOKBACK_DAYS = 365;
+const PLAYER_ANALYTICS_CACHE_TTL_MS = 60_000;
+const TOP_CHAMPION_LIMIT = 3;
+
+type SnapshotPayloadWithGames = {
+  games: ParsedGame[];
+  scoring?: Partial<FantasyScoring>;
+};
+
+type PlayerChampionAccumulator = {
+  games: number;
+  wins: number;
+  totalFantasyPoints: number;
+};
+
+type PlayerAnalyticsAccumulator = {
+  games: number;
+  wins: number;
+  totalFantasyPoints: number;
+  champions: Map<string, PlayerChampionAccumulator>;
+};
+
+type CachedPlayerAnalytics = {
+  cachedAtMs: number;
+  analyticsByPlayerKey: Map<string, DraftPlayerAnalytics>;
+};
+
+const draftPlayerAnalyticsCache = new Map<string, CachedPlayerAnalytics>();
+
+const normalizeForKey = (value: string | null | undefined): string =>
+  value?.trim().toLowerCase() ?? "";
+
+const round2 = (value: number): number =>
+  Math.round((value + Number.EPSILON) * 100) / 100;
+
+const isObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+
+const hasSnapshotGames = (value: unknown): value is SnapshotPayloadWithGames =>
+  isObject(value) &&
+  Array.isArray(value.games);
+
+const parseGameTimestampMs = (game: ParsedGame): number | null => {
+  const label = game.playedAtLabel?.trim();
+  if (label) {
+    const normalized = label.includes("T") ? label : label.replace(" ", "T");
+    const asLocalMs = Date.parse(normalized);
+    if (Number.isFinite(asLocalMs)) {
+      return asLocalMs;
+    }
+    const asUtcMs = Date.parse(`${normalized}:00Z`);
+    if (Number.isFinite(asUtcMs)) {
+      return asUtcMs;
+    }
+  }
+
+  const raw = game.playedAtRaw?.trim();
+  if (!raw) {
+    return null;
+  }
+  const parts = raw.split(",").map((part) => Number.parseInt(part.trim(), 10));
+  if (parts.length < 5 || parts.some((part) => !Number.isFinite(part))) {
+    return null;
+  }
+  const [year, month, day, hour, minute] = parts;
+  return Date.UTC(year, month - 1, day, hour, minute, 0, 0);
+};
+
+const resolvePoolBasePlayerName = (player: DraftPlayerPoolEntry): string => {
+  const rawName = player.playerName.trim();
+  const team = player.playerTeam?.trim();
+  if (!team) {
+    return rawName;
+  }
+  const suffix = ` (${team})`;
+  if (!rawName.endsWith(suffix)) {
+    return rawName;
+  }
+  return rawName.slice(0, -suffix.length).trim();
+};
+
+const draftPoolPlayerKey = (player: DraftPlayerPoolEntry): string =>
+  `${normalizeForKey(resolvePoolBasePlayerName(player))}::${normalizeForKey(player.playerTeam)}`;
+
+const createEmptyAnalytics = (): DraftPlayerAnalytics => ({
+  overallRank: null,
+  positionRank: null,
+  gamesPlayed: 0,
+  averageFantasyPoints: null,
+  winRate: null,
+  topChampions: [],
+});
+
+const playerPoolFingerprint = (playerPool: DraftPlayerPoolEntry[]): string =>
+  playerPool
+    .map((entry) => `${normalizeForKey(resolvePoolBasePlayerName(entry))}::${normalizeForKey(entry.playerTeam)}`)
+    .sort((left, right) => left.localeCompare(right))
+    .join("|");
+
+const buildPlayerAnalyticsByPool = async ({
+  sourcePage,
+  playerPool,
+}: {
+  sourcePage: string;
+  playerPool: DraftPlayerPoolEntry[];
+}): Promise<Map<string, DraftPlayerAnalytics>> => {
+  if (!sourcePage || playerPool.length === 0) {
+    return new Map();
+  }
+
+  const cacheKey = `${sourcePage}::${playerPoolFingerprint(playerPool)}`;
+  const nowMs = Date.now();
+  const cached = draftPlayerAnalyticsCache.get(cacheKey);
+  if (cached && nowMs - cached.cachedAtMs <= PLAYER_ANALYTICS_CACHE_TTL_MS) {
+    return cached.analyticsByPlayerKey;
+  }
+
+  let snapshotPayload: unknown = null;
+  try {
+    const snapshot = await getLatestSnapshotFromSupabase(sourcePage);
+    snapshotPayload = snapshot.payload;
+  } catch {
+    snapshotPayload = null;
+  }
+
+  if (!hasSnapshotGames(snapshotPayload) || snapshotPayload.games.length === 0) {
+    draftPlayerAnalyticsCache.set(cacheKey, {
+      cachedAtMs: nowMs,
+      analyticsByPlayerKey: new Map(),
+    });
+    return new Map();
+  }
+
+  const snapshotScoring: FantasyScoring = {
+    ...DEFAULT_SCORING,
+    ...(snapshotPayload.scoring ?? {}),
+  };
+
+  const cutoffMs = nowMs - PLAYER_ANALYTICS_LOOKBACK_DAYS * 24 * 60 * 60 * 1000;
+  const datedGames = snapshotPayload.games
+    .map((game) => ({ game, playedAtMs: parseGameTimestampMs(game) }))
+    .filter((entry): entry is { game: ParsedGame; playedAtMs: number } => Number.isFinite(entry.playedAtMs));
+
+  const filteredGames = datedGames.filter((entry) => entry.playedAtMs >= cutoffMs);
+  const gamesForAnalytics =
+    datedGames.length > 0
+      ? (filteredGames.length > 0 ? filteredGames : datedGames).map((entry) => entry.game)
+      : snapshotPayload.games;
+
+  const byPlayerKey = new Map<string, PlayerAnalyticsAccumulator>();
+
+  for (const game of gamesForAnalytics) {
+    for (const player of game.players) {
+      const playerName = player.name?.trim();
+      const playerTeam = player.team?.trim();
+      if (!playerName || !playerTeam) {
+        continue;
+      }
+      const key = `${normalizeForKey(playerName)}::${normalizeForKey(playerTeam)}`;
+      const fantasyPoints =
+        typeof player.fantasyPoints === "number"
+          ? player.fantasyPoints
+          : calculateFantasyPoints(
+              player.kills,
+              player.deaths,
+              player.assists,
+              player.won,
+              player.cs,
+              player.gold,
+              snapshotScoring,
+            );
+      const champion = player.champion?.trim() || "Unknown";
+
+      const existing = byPlayerKey.get(key) ?? {
+        games: 0,
+        wins: 0,
+        totalFantasyPoints: 0,
+        champions: new Map<string, PlayerChampionAccumulator>(),
+      };
+      existing.games += 1;
+      existing.wins += player.won ? 1 : 0;
+      existing.totalFantasyPoints += fantasyPoints;
+
+      const championEntry = existing.champions.get(champion) ?? {
+        games: 0,
+        wins: 0,
+        totalFantasyPoints: 0,
+      };
+      championEntry.games += 1;
+      championEntry.wins += player.won ? 1 : 0;
+      championEntry.totalFantasyPoints += fantasyPoints;
+      existing.champions.set(champion, championEntry);
+      byPlayerKey.set(key, existing);
+    }
+  }
+
+  const withAnalytics = playerPool.map((entry) => {
+    const key = draftPoolPlayerKey(entry);
+    const stats = byPlayerKey.get(key);
+    if (!stats || stats.games < 1) {
+      return {
+        key,
+        playerName: entry.playerName,
+        playerRole: entry.playerRole,
+        analytics: createEmptyAnalytics(),
+      };
+    }
+
+    const averageFantasyPoints = round2(stats.totalFantasyPoints / stats.games);
+    const winRate = round2((stats.wins / stats.games) * 100);
+    const topChampions = [...stats.champions.entries()]
+      .map(([champion, championStats]) => ({
+        champion,
+        games: championStats.games,
+        winRate: round2((championStats.wins / championStats.games) * 100),
+        averageFantasyPoints: round2(championStats.totalFantasyPoints / championStats.games),
+      }))
+      .sort((left, right) => {
+        if (right.games !== left.games) {
+          return right.games - left.games;
+        }
+        if (right.averageFantasyPoints !== left.averageFantasyPoints) {
+          return right.averageFantasyPoints - left.averageFantasyPoints;
+        }
+        return left.champion.localeCompare(right.champion);
+      })
+      .slice(0, TOP_CHAMPION_LIMIT);
+
+    return {
+      key,
+      playerName: entry.playerName,
+      playerRole: entry.playerRole,
+      analytics: {
+        overallRank: null,
+        positionRank: null,
+        gamesPlayed: stats.games,
+        averageFantasyPoints,
+        winRate,
+        topChampions,
+      } satisfies DraftPlayerAnalytics,
+    };
+  });
+
+  const compareRankableEntries = (
+    left: (typeof withAnalytics)[number],
+    right: (typeof withAnalytics)[number],
+  ): number => {
+    const leftAverage = left.analytics.averageFantasyPoints ?? Number.NEGATIVE_INFINITY;
+    const rightAverage = right.analytics.averageFantasyPoints ?? Number.NEGATIVE_INFINITY;
+    if (rightAverage !== leftAverage) {
+      return rightAverage - leftAverage;
+    }
+    if (right.analytics.gamesPlayed !== left.analytics.gamesPlayed) {
+      return right.analytics.gamesPlayed - left.analytics.gamesPlayed;
+    }
+    const leftWinRate = left.analytics.winRate ?? Number.NEGATIVE_INFINITY;
+    const rightWinRate = right.analytics.winRate ?? Number.NEGATIVE_INFINITY;
+    if (rightWinRate !== leftWinRate) {
+      return rightWinRate - leftWinRate;
+    }
+    return left.playerName.localeCompare(right.playerName);
+  };
+
+  const rankable = withAnalytics
+    .filter((entry) => entry.analytics.gamesPlayed > 0)
+    .sort(compareRankableEntries);
+
+  rankable.forEach((entry, index) => {
+    entry.analytics.overallRank = index + 1;
+  });
+
+  const rankableByRole = new Map<string, ((typeof withAnalytics)[number])[]>();
+  for (const entry of rankable) {
+    const roleKey = normalizeForKey(entry.playerRole);
+    if (!roleKey || roleKey === "unassigned") {
+      continue;
+    }
+    const bucket = rankableByRole.get(roleKey) ?? [];
+    bucket.push(entry);
+    rankableByRole.set(roleKey, bucket);
+  }
+  for (const bucket of rankableByRole.values()) {
+    bucket.sort(compareRankableEntries);
+    bucket.forEach((entry, index) => {
+      entry.analytics.positionRank = index + 1;
+    });
+  }
+
+  const analyticsByPlayerKey = new Map<string, DraftPlayerAnalytics>();
+  for (const entry of withAnalytics) {
+    analyticsByPlayerKey.set(entry.key, entry.analytics);
+  }
+
+  draftPlayerAnalyticsCache.set(cacheKey, {
+    cachedAtMs: nowMs,
+    analyticsByPlayerKey,
+  });
+
+  return analyticsByPlayerKey;
+};
+
+const addAnalyticsToPlayerPool = async ({
+  sourcePage,
+  playerPool,
+}: {
+  sourcePage: string;
+  playerPool: DraftPlayerPoolEntry[];
+}): Promise<DraftPlayerPoolEntry[]> => {
+  const analyticsByPlayerKey = await buildPlayerAnalyticsByPool({
+    sourcePage,
+    playerPool,
+  });
+
+  return playerPool.map((entry) => ({
+    ...entry,
+    analytics: analyticsByPlayerKey.get(draftPoolPlayerKey(entry)) ?? createEmptyAnalytics(),
+  }));
+};
 
 type DraftRow = {
   id: number;
@@ -479,7 +801,7 @@ export const getDraftDetail = async ({
   draftId: number;
   currentUserId: string;
 }): Promise<DraftDetail> => {
-  const [draftRow, participants, picks, playerPool, presenceRows, isGlobalAdmin] = await Promise.all([
+  const [draftRow, participants, picks, basePlayerPool, presenceRows, isGlobalAdmin] = await Promise.all([
     loadDraftRow(draftId),
     loadParticipants(draftId),
     loadPicks(draftId),
@@ -490,6 +812,10 @@ export const getDraftDetail = async ({
 
   const serverNow = new Date();
   const summary = toDraftSummary(draftRow, participants.length, picks.length);
+  const playerPool = await addAnalyticsToPlayerPool({
+    sourcePage: summary.sourcePage,
+    playerPool: basePlayerPool,
+  });
   const pickedPlayers = new Set(picks.map((pick) => pick.playerName));
   const availablePlayers = playerPool.filter((player) => !pickedPlayers.has(player.playerName));
   const participantPresence = buildParticipantPresence({
