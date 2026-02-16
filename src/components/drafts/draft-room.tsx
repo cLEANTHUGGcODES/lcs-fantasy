@@ -167,7 +167,22 @@ const boardPickForSlot = ({
 
 const PRIMARY_ROLE_FILTERS = ["TOP", "JNG", "MID", "ADC", "SUP"] as const;
 const UNASSIGNED_ROLE = "UNASSIGNED";
-const DRAFT_ROOM_UNASSIGNED_ALIASES = new Set(["FLEX"]);
+const DRAFT_ROOM_UNASSIGNED_ALIASES = new Set(["FLEX", "UTILITY", "N/A", "NA", "NONE"]);
+const DRAFT_ROOM_ROLE_ALIASES: Record<string, string> = {
+  TOPLANE: "TOP",
+  JGL: "JNG",
+  JUNGLE: "JNG",
+  MIDLANE: "MID",
+  MIDDLE: "MID",
+  MIDLANER: "MID",
+  BOT: "ADC",
+  BOTTOM: "ADC",
+  BOTLANE: "ADC",
+  AD: "ADC",
+  ADCARRY: "ADC",
+  SUPPORT: "SUP",
+  SUPP: "SUP",
+};
 const LOL_FANDOM_ROLE_ICONS: Record<string, string> = {
   TOP: "https://static.wikia.nocookie.net/lolesports_gamepedia_en/images/4/44/Toprole_icon.png/revision/latest",
   JNG: "https://static.wikia.nocookie.net/lolesports_gamepedia_en/images/f/fb/Junglerole_icon.png/revision/latest",
@@ -181,7 +196,11 @@ const normalizeRole = (role: string | null): string => {
   if (!value || DRAFT_ROOM_UNASSIGNED_ALIASES.has(value)) {
     return UNASSIGNED_ROLE;
   }
-  return value;
+  const compactValue = value.replace(/[\s/_-]+/g, "");
+  if (DRAFT_ROOM_UNASSIGNED_ALIASES.has(compactValue)) {
+    return UNASSIGNED_ROLE;
+  }
+  return DRAFT_ROOM_ROLE_ALIASES[compactValue] ?? value;
 };
 
 const formatRoleLabel = (role: string | null): string => {
@@ -203,7 +222,7 @@ const roleChipClassName = (role: string | null): string => {
     return "border border-emerald-300/70 bg-emerald-100 text-emerald-800 dark:border-emerald-300/40 dark:bg-emerald-500/20 dark:text-emerald-200";
   }
   if (normalized === "MID") {
-    return "border border-amber-300/70 bg-amber-100 text-amber-900 dark:border-amber-300/40 dark:bg-amber-500/20 dark:text-amber-100";
+    return "border border-yellow-300/70 bg-yellow-100 text-yellow-900 dark:border-yellow-300/45 dark:bg-yellow-500/25 dark:text-yellow-100";
   }
   if (normalized === "ADC") {
     return "border border-violet-300/70 bg-violet-100 text-violet-800 dark:border-violet-300/40 dark:bg-violet-500/20 dark:text-violet-200";
@@ -223,7 +242,7 @@ const roleTileClassName = (role: string | null): string => {
     return "border-emerald-300/60 bg-emerald-500/16";
   }
   if (normalized === "MID") {
-    return "border-amber-300/60 bg-amber-500/16";
+    return "border-yellow-300/70 bg-yellow-500/20";
   }
   if (normalized === "ADC") {
     return "border-violet-300/60 bg-violet-500/16";
@@ -287,6 +306,19 @@ type DraftSystemFeedEvent = {
 
 const normalizeForSort = (value: string | null | undefined): string =>
   value?.trim().toUpperCase() ?? "";
+
+const normalizePlayerLookupKey = (value: string | null | undefined): string =>
+  value
+    ?.replace(/\u00a0/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase() ?? "";
+
+const stripTrailingTeamSuffix = (value: string): string =>
+  value.replace(/\s+\([^)]*\)\s*$/, "").trim();
+
+const buildClockRingGradient = (progressPercent: number): string =>
+  `conic-gradient(rgba(199,155,59,0.95) ${progressPercent}%, rgba(199,155,59,0.18) 0)`;
 
 const sortAvailablePlayers = (
   players: DraftDetail["availablePlayers"],
@@ -366,55 +398,68 @@ const DraftClockBadge = ({
   draftStatus: DraftStatus | null;
   serverOffsetMs: number;
 }) => {
-  const [nowMs, setNowMs] = useState(() => Date.now());
+  const ringRef = useRef<HTMLDivElement | null>(null);
+  const [countdownLabel, setCountdownLabel] = useState(() =>
+    formatCountdown(deadlineIso, Date.now() + serverOffsetMs),
+  );
 
   useEffect(() => {
-    let rafId: number | null = null;
-    let intervalId: number | null = null;
-
-    const tick = () => {
-      setNowMs(Date.now());
-      rafId = window.requestAnimationFrame(tick);
+    const ringElement = ringRef.current;
+    const updateLabel = (nowMs: number) => {
+      setCountdownLabel((previous) => {
+        const next = formatCountdown(deadlineIso, nowMs);
+        return next === previous ? previous : next;
+      });
     };
 
-    if (draftStatus === "live") {
-      rafId = window.requestAnimationFrame(tick);
-    } else {
-      intervalId = window.setInterval(() => {
-        setNowMs(Date.now());
-      }, 500);
+    if (!deadlineIso || draftStatus !== "live") {
+      const nowMs = Date.now() + serverOffsetMs;
+      updateLabel(nowMs);
+      if (ringElement) {
+        ringElement.style.background = buildClockRingGradient(0);
+      }
+      return;
     }
+
+    const deadlineMs = new Date(deadlineIso).getTime();
+    const totalMs = Math.max(1, pickSeconds * 1000);
+    let rafId: number | null = null;
+    let lastPaintNowMs = 0;
+
+    const paint = () => {
+      const nowMs = Date.now() + serverOffsetMs;
+      const remainingMs = Math.max(0, deadlineMs - nowMs);
+      const progressPercent = Math.max(0, Math.min(100, (remainingMs / totalMs) * 100));
+
+      if (ringElement && (nowMs - lastPaintNowMs >= 33 || remainingMs <= 0)) {
+        ringElement.style.background = buildClockRingGradient(progressPercent);
+        lastPaintNowMs = nowMs;
+      }
+
+      updateLabel(nowMs);
+
+      if (remainingMs <= 0) {
+        return;
+      }
+
+      rafId = window.requestAnimationFrame(paint);
+    };
+
+    paint();
 
     return () => {
       if (rafId !== null) {
         window.cancelAnimationFrame(rafId);
       }
-      if (intervalId !== null) {
-        window.clearInterval(intervalId);
-      }
     };
-  }, [draftStatus]);
-
-  const effectiveNowMs = nowMs + serverOffsetMs;
-  const countdownLabel = useMemo(
-    () => formatCountdown(deadlineIso, effectiveNowMs),
-    [deadlineIso, effectiveNowMs],
-  );
-  const progressPercent = useMemo(() => {
-    if (!deadlineIso || draftStatus !== "live") {
-      return 0;
-    }
-    const deadlineMs = new Date(deadlineIso).getTime();
-    const remainingMs = Math.max(0, deadlineMs - effectiveNowMs);
-    const totalMs = Math.max(1, pickSeconds * 1000);
-    return Math.max(0, Math.min(100, (remainingMs / totalMs) * 100));
-  }, [deadlineIso, draftStatus, effectiveNowMs, pickSeconds]);
+  }, [deadlineIso, draftStatus, pickSeconds, serverOffsetMs]);
 
   return (
     <div
+      ref={ringRef}
       className="grid h-14 w-14 place-items-center rounded-full border border-primary-300/45"
       style={{
-        background: `conic-gradient(rgba(199,155,59,0.95) ${progressPercent}%, rgba(199,155,59,0.18) 0)`,
+        background: buildClockRingGradient(0),
       }}
     >
       <div className="grid h-10 w-10 place-items-center rounded-full bg-content1 text-xs font-semibold">
@@ -1358,21 +1403,51 @@ export const DraftRoom = ({
     () => new Map((draft?.availablePlayers ?? []).map((player) => [player.playerName, player])),
     [draft?.availablePlayers],
   );
-  const playerImageByName = useMemo(
-    () =>
-      new Map(
-        (draft?.playerPool ?? []).map((player) => [player.playerName, player.playerImageUrl ?? null]),
-      ),
-    [draft?.playerPool],
-  );
+  const playerImageLookup = useMemo(() => {
+    const exactByName = new Map<string, string | null>();
+    const fallbackByName = new Map<string, string>();
+    for (const player of draft?.playerPool ?? []) {
+      const imageUrl = player.playerImageUrl ?? null;
+      exactByName.set(player.playerName, imageUrl);
+      if (!imageUrl) {
+        continue;
+      }
+      const normalizedName = normalizePlayerLookupKey(player.playerName);
+      if (normalizedName && !fallbackByName.has(normalizedName)) {
+        fallbackByName.set(normalizedName, imageUrl);
+      }
+      const baseName = stripTrailingTeamSuffix(player.playerName);
+      const normalizedBaseName = normalizePlayerLookupKey(baseName);
+      if (normalizedBaseName && !fallbackByName.has(normalizedBaseName)) {
+        fallbackByName.set(normalizedBaseName, imageUrl);
+      }
+    }
+    return {
+      exactByName,
+      fallbackByName,
+    };
+  }, [draft?.playerPool]);
   const pickPlayerImageUrl = useCallback(
     (pick: DraftDetail["picks"][number] | null | undefined): string | null => {
       if (!pick) {
         return null;
       }
-      return pick.playerImageUrl ?? playerImageByName.get(pick.playerName) ?? null;
+      if (pick.playerImageUrl) {
+        return pick.playerImageUrl;
+      }
+      const exactImage = playerImageLookup.exactByName.get(pick.playerName);
+      if (exactImage) {
+        return exactImage;
+      }
+      const normalizedPickName = normalizePlayerLookupKey(pick.playerName);
+      const normalizedPickBaseName = normalizePlayerLookupKey(stripTrailingTeamSuffix(pick.playerName));
+      return (
+        playerImageLookup.fallbackByName.get(normalizedPickName) ??
+        playerImageLookup.fallbackByName.get(normalizedPickBaseName) ??
+        null
+      );
     },
-    [playerImageByName],
+    [playerImageLookup],
   );
   const queuedPlayers = useMemo(
     () =>
