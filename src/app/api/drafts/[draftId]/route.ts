@@ -1,7 +1,9 @@
 import { requireAuthUser } from "@/lib/draft-auth";
 import { isGlobalAdminUser } from "@/lib/admin-access";
 import { processDueDrafts } from "@/lib/draft-automation";
+import { recordDraftObservabilityEvents } from "@/lib/draft-observability";
 import { getDraftDetail } from "@/lib/draft-data";
+import { RouteServerTimer } from "@/lib/server-timing";
 import { getSupabaseServerClient } from "@/lib/supabase-server";
 
 const parseDraftId = (raw: string): number => {
@@ -13,22 +15,64 @@ const parseDraftId = (raw: string): number => {
 };
 
 export async function GET(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ draftId: string }> },
 ) {
-  try {
-    const user = await requireAuthUser();
-    const draftId = parseDraftId((await params).draftId);
-    await processDueDrafts({ draftId });
-    const draft = await getDraftDetail({
-      draftId,
-      currentUserId: user.id,
+  const timer = new RouteServerTimer();
+  let metricUserId: string | null = null;
+  let metricDraftId: number | null = null;
+  let metricStatusCode = 200;
+  const jsonWithTiming = (payload: unknown, status: number) =>
+    Response.json(payload, {
+      status,
+      headers: {
+        "server-timing": timer.toHeaderValue(),
+      },
     });
-    return Response.json({ draft }, { status: 200 });
+
+  try {
+    const user = await timer.measure("auth", () => requireAuthUser(undefined, request));
+    metricUserId = user.id;
+    const draftId = await timer.measure(
+      "parse_draft_id",
+      async () => parseDraftId((await params).draftId),
+    );
+    metricDraftId = draftId;
+    await timer.measure("process_due", () => processDueDrafts({ draftId }));
+    const draft = await timer.measure("load_draft_detail", () =>
+      getDraftDetail({
+        draftId,
+        currentUserId: user.id,
+      }),
+    );
+    return jsonWithTiming({ draft }, 200);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unable to load draft.";
-    const status = message === "UNAUTHORIZED" ? 401 : message === "Draft not found." ? 404 : 500;
-    return Response.json({ error: message }, { status });
+    metricStatusCode = message === "UNAUTHORIZED" ? 401 : message === "Draft not found." ? 404 : 500;
+    return jsonWithTiming({ error: message }, metricStatusCode);
+  } finally {
+    if (metricUserId) {
+      void recordDraftObservabilityEvents({
+        supabase: getSupabaseServerClient(),
+        userId: metricUserId,
+        source: "server",
+        events: [
+          {
+            metricName: "server_draft_detail_latency_ms",
+            metricValue: timer.getTotalDurationMs(),
+            metadata: {
+              statusCode: metricStatusCode,
+              draftId: metricDraftId,
+              stepsMs: Object.fromEntries(
+                timer
+                  .getEntries()
+                  .map((entry) => [entry.name, Math.round(entry.durationMs)]),
+              ),
+            },
+          },
+        ],
+      }).catch(() => undefined);
+    }
   }
 }
 

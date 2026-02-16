@@ -4,6 +4,7 @@ import type { ParsedGame, PlayerRole } from "@/types/fantasy";
 type PlayerPoolSeed = {
   playerName: string;
   playerTeam: string;
+  playerPage: string | null;
   playerRole: PlayerRole | null;
   teamIconUrl: string | null;
 };
@@ -29,8 +30,11 @@ export const getPickSlot = (
   const roundNumber = Math.ceil(overallPick / participantCount);
   const offset = (overallPick - 1) % participantCount;
 
-  // Reverse snake: round 1 runs N -> 1, round 2 runs 1 -> N, then repeats.
-  const participantIndex = roundNumber % 2 === 1
+  // 3RR reverse snake:
+  // round 1 runs 1 -> N
+  // rounds 2 and 3 run N -> 1
+  // round 4+ alternates from there (4: 1 -> N, 5: N -> 1, ...).
+  const participantIndex = isThreeRoundReversalRound(roundNumber)
     ? participantCount - 1 - offset
     : offset;
 
@@ -40,6 +44,19 @@ export const getPickSlot = (
     roundPick: offset + 1,
     participantIndex,
   };
+};
+
+export const isThreeRoundReversalRound = (roundNumber: number): boolean => {
+  if (!Number.isFinite(roundNumber) || roundNumber < 1) {
+    return false;
+  }
+  if (roundNumber === 1) {
+    return false;
+  }
+  if (roundNumber === 2 || roundNumber === 3) {
+    return true;
+  }
+  return roundNumber % 2 === 1;
 };
 
 export const buildPlayerPoolFromGames = (
@@ -56,6 +73,7 @@ export const buildPlayerPoolFromGames = (
     {
       baseName: string;
       playerTeam: string;
+      playerPage: string | null;
       teamIconUrl: string | null;
       roleCounts: Map<PlayerRole, number>;
     }
@@ -71,6 +89,7 @@ export const buildPlayerPoolFromGames = (
         byPlayerKey.set(key, {
           baseName: player.name.trim(),
           playerTeam: player.team.trim(),
+          playerPage: player.pageTitle ?? null,
           teamIconUrl,
           roleCounts: new Map([[player.role, 1]]),
         });
@@ -78,6 +97,7 @@ export const buildPlayerPoolFromGames = (
       }
 
       const existing = byPlayerKey.get(key)!;
+      existing.playerPage = existing.playerPage ?? player.pageTitle ?? null;
       existing.teamIconUrl = existing.teamIconUrl ?? teamIconUrl;
       existing.roleCounts.set(player.role, (existing.roleCounts.get(player.role) ?? 0) + 1);
     }
@@ -92,18 +112,20 @@ export const buildPlayerPoolFromGames = (
 
     const key = `${baseName.toLowerCase()}::${playerTeam.toLowerCase()}`;
     if (!byPlayerKey.has(key)) {
-      byPlayerKey.set(key, {
-        baseName,
-        playerTeam,
-        teamIconUrl: player.teamIconUrl,
-        roleCounts: player.playerRole
-          ? new Map<PlayerRole, number>([[player.playerRole, 1]])
+        byPlayerKey.set(key, {
+          baseName,
+          playerTeam,
+          playerPage: player.playerPage,
+          teamIconUrl: player.teamIconUrl,
+          roleCounts: player.playerRole
+            ? new Map<PlayerRole, number>([[player.playerRole, 1]])
           : new Map<PlayerRole, number>(),
       });
       continue;
     }
 
     const existing = byPlayerKey.get(key)!;
+    existing.playerPage = existing.playerPage ?? player.playerPage;
     existing.teamIconUrl = existing.teamIconUrl ?? player.teamIconUrl;
     if (player.playerRole) {
       existing.roleCounts.set(
@@ -139,6 +161,8 @@ export const buildPlayerPoolFromGames = (
         : entry.baseName;
       return {
         playerName,
+        playerPage: entry.playerPage,
+        playerImageUrl: null,
         playerTeam: entry.playerTeam,
         playerRole: resolvePrimaryRole(entry.roleCounts),
         teamIconUrl: entry.teamIconUrl,

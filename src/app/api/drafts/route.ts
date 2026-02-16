@@ -2,12 +2,14 @@ import { buildPlayerPoolFromGames } from "@/lib/draft-engine";
 import { requireAuthUser } from "@/lib/draft-auth";
 import { isGlobalAdminUser } from "@/lib/admin-access";
 import { processDueDrafts } from "@/lib/draft-automation";
+import { withProjectedAutopickFantasyAverages } from "@/lib/draft-autopick-projections";
 import { listDraftSummaries, listRegisteredUsers } from "@/lib/draft-data";
+import { withResolvedDraftPlayerImages } from "@/lib/draft-player-images";
 import { fetchSupplementalStartersForGames } from "@/lib/leaguepedia-rosters";
 import { getLatestSnapshotFromSupabase } from "@/lib/supabase-match-store";
 import { getSupabaseServerClient } from "@/lib/supabase-server";
 import { getUserDisplayName } from "@/lib/user-profile";
-import type { ParsedGame } from "@/types/fantasy";
+import type { FantasyScoring, ParsedGame } from "@/types/fantasy";
 
 type CreateDraftBody = {
   name?: string;
@@ -25,6 +27,13 @@ const isObject = (value: unknown): value is Record<string, unknown> =>
 
 const hasGames = (payload: unknown): payload is { games: ParsedGame[] } =>
   isObject(payload) && Array.isArray(payload.games);
+
+const readOptionalScoring = (payload: unknown): Partial<FantasyScoring> | null => {
+  if (!isObject(payload) || !isObject(payload.scoring)) {
+    return null;
+  }
+  return payload.scoring as Partial<FantasyScoring>;
+};
 
 export async function GET() {
   try {
@@ -177,6 +186,11 @@ export async function POST(request: Request) {
         { status: 400 },
       );
     }
+    const playerPoolWithProjection = withProjectedAutopickFantasyAverages(playerPool, {
+      games: snapshot.payload.games,
+      scoring: readOptionalScoring(snapshot.payload),
+    });
+    const playerPoolWithImages = await withResolvedDraftPlayerImages(playerPoolWithProjection);
 
     const supabase = getSupabaseServerClient();
     const createdByLabel = getUserDisplayName(user) ?? user.id;
@@ -235,10 +249,12 @@ export async function POST(request: Request) {
       throw new Error(`Unable to add draft participants: ${participantError.message}`);
     }
 
-    const playerPoolInserts = playerPool.map((entry) => ({
+    const playerPoolInserts = playerPoolWithImages.map((entry) => ({
       draft_id: draftId,
       team_name: entry.playerName,
       team_icon_url: entry.teamIconUrl,
+      player_image_url: entry.playerImageUrl,
+      projected_avg_fantasy_points: entry.projectedAvgFantasyPoints,
       player_team: entry.playerTeam,
       player_role: entry.playerRole,
       source_page: entry.sourcePage,
@@ -248,6 +264,15 @@ export async function POST(request: Request) {
       .insert(playerPoolInserts);
 
     if (playerPoolError) {
+      if (playerPoolError.message.includes("projected_avg_fantasy_points")) {
+        return Response.json(
+          {
+            error:
+              "Database is missing the autopick projection column. Apply the latest Supabase migration, then retry.",
+          },
+          { status: 400 },
+        );
+      }
       throw new Error(`Unable to seed draft player pool: ${playerPoolError.message}`);
     }
 

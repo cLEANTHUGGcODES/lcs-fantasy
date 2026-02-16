@@ -1,4 +1,5 @@
 import { processDueDrafts } from "@/lib/draft-automation";
+import { getDraftObservabilitySummary } from "@/lib/draft-observability";
 import { cleanupGlobalChatData, getChatObservabilitySummary } from "@/lib/global-chat";
 import { syncLeaguepediaSnapshot } from "@/lib/snapshot-sync";
 
@@ -38,6 +39,8 @@ const handle = async (request: Request) => {
   let chatCleanupError: string | null = null;
   let chatObservabilitySummary: Record<string, unknown> | null = null;
   let chatObservabilitySummaryError: string | null = null;
+  let draftObservabilitySummary: Record<string, unknown> | null = null;
+  let draftObservabilitySummaryError: string | null = null;
   let scoreSync: Record<string, unknown> | null = null;
   let scoreSyncError: string | null = null;
   try {
@@ -59,6 +62,12 @@ const handle = async (request: Request) => {
     chatObservabilitySummaryError =
       error instanceof Error ? error.message : "Unable to load chat observability summary.";
   }
+  try {
+    draftObservabilitySummary = await getDraftObservabilitySummary();
+  } catch (error) {
+    draftObservabilitySummaryError =
+      error instanceof Error ? error.message : "Unable to load draft observability summary.";
+  }
   return Response.json(
     {
       ok: true,
@@ -69,6 +78,8 @@ const handle = async (request: Request) => {
       scoreSyncError,
       chatObservabilitySummary,
       chatObservabilitySummaryError,
+      draftObservabilitySummary,
+      draftObservabilitySummaryError,
       serverNow: new Date().toISOString(),
     },
     { status: 200 },

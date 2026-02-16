@@ -3,6 +3,7 @@ export type PlayerRole = "TOP" | "JNG" | "MID" | "ADC" | "SUP" | "FLEX";
 
 export interface PlayerGameStat {
   name: string;
+  pageTitle?: string | null;
   team: string;
   side: TeamSide;
   role: PlayerRole;

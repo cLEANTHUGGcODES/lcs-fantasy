@@ -45,6 +45,8 @@ export interface DraftPlayerPoolEntry {
   id: number;
   draftId: number;
   playerName: string;
+  playerPage?: string | null;
+  playerImageUrl: string | null;
   playerTeam: string | null;
   playerRole: string | null;
   teamIconUrl: string | null;
@@ -78,6 +80,7 @@ export interface DraftPick {
   participantUserId: string;
   participantDisplayName: string;
   playerName: string;
+  playerImageUrl: string | null;
   playerTeam: string | null;
   playerRole: string | null;
   teamIconUrl: string | null;

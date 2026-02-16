@@ -329,7 +329,10 @@ const extractPlayersForSide = (
 
   table.find(`td.side-${side} .sb-p`).each((index, element) => {
     const card = $(element);
-    const name = normalizeText(card.find(".sb-p-name").first().text());
+    const nameCell = card.find(".sb-p-name").first();
+    const nameAnchor = nameCell.find("a[href]").first();
+    const name = normalizeText(nameCell.text());
+    const pageTitle = normalizeWikiPageTitle(nameAnchor.attr("href"));
     const champion = normalizeText(
       card.find(".sb-p-champion [title]").first().attr("title") ?? "",
     );
@@ -341,6 +344,7 @@ const extractPlayersForSide = (
 
     players.push({
       name,
+      pageTitle,
       team,
       side,
       role: roleOrder[index] ?? "FLEX",

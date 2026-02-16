@@ -51,13 +51,33 @@ import {
 } from "react";
 import { GlobalChatPanel } from "@/components/chat/global-chat-panel";
 import { CroppedTeamLogo } from "@/components/cropped-team-logo";
+import { getPickSlot, isThreeRoundReversalRound } from "@/lib/draft-engine";
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
-import type { DraftDetail, DraftParticipant, DraftStatus } from "@/types/draft";
+import type { DraftDetail, DraftStatus } from "@/types/draft";
 
 type DraftDetailResponse = {
   draft?: DraftDetail;
   error?: string;
   code?: string;
+};
+
+type DraftPresenceResponse = DraftDetailResponse & {
+  ok?: boolean;
+  serverNow?: string;
+};
+
+type DraftClientMetricName =
+  | "client_draft_refresh_latency_ms"
+  | "client_draft_presence_latency_ms"
+  | "client_draft_pick_latency_ms"
+  | "client_draft_status_latency_ms"
+  | "client_realtime_disconnect"
+  | "client_refresh_retry";
+
+type DraftClientMetricEvent = {
+  metricName: DraftClientMetricName;
+  metricValue: number;
+  metadata?: Record<string, unknown>;
 };
 
 const statusColor = (status: DraftStatus) => {
@@ -109,22 +129,40 @@ const formatShortPlayerName = (value: string | null | undefined): string => {
   return lastInitial ? `${firstName} ${lastInitial}.` : firstName;
 };
 
+const parseServerTimingTotalMs = (headerValue: string | null): number | null => {
+  if (!headerValue) {
+    return null;
+  }
+
+  const parts = headerValue.split(",");
+  for (const rawPart of parts) {
+    const part = rawPart.trim();
+    if (!part.toLowerCase().startsWith("total")) {
+      continue;
+    }
+    const match = /(?:^|;)\s*dur=([0-9]+(?:\.[0-9]+)?)/i.exec(part);
+    if (!match) {
+      continue;
+    }
+    const parsed = Number.parseFloat(match[1]);
+    if (Number.isFinite(parsed) && parsed >= 0) {
+      return parsed;
+    }
+  }
+
+  return null;
+};
+
 const boardPickForSlot = ({
-  participants,
-  picksByOverallPick,
+  picksByRoundAndParticipantUserId,
   roundNumber,
-  participantIndex,
+  participantUserId,
 }: {
-  participants: DraftParticipant[];
-  picksByOverallPick: Map<number, DraftDetail["picks"][number]>;
+  picksByRoundAndParticipantUserId: Map<string, DraftDetail["picks"][number]>;
   roundNumber: number;
-  participantIndex: number;
+  participantUserId: string;
 }) => {
-  const participantCount = participants.length;
-  const pickWithinRound =
-    roundNumber % 2 === 1 ? participantCount - participantIndex : participantIndex + 1;
-  const overallPick = (roundNumber - 1) * participantCount + pickWithinRound;
-  return picksByOverallPick.get(overallPick) ?? null;
+  return picksByRoundAndParticipantUserId.get(`${roundNumber}::${participantUserId}`) ?? null;
 };
 
 const PRIMARY_ROLE_FILTERS = ["TOP", "JNG", "MID", "ADC", "SUP"] as const;
@@ -201,6 +239,12 @@ const DRAFT_ROOM_DESKTOP_CHAT_COLLAPSE_KEY = "draft-room-desktop-chat-collapsed-
 const AUTOPICK_TRIGGER_MS = 6000;
 const TOAST_DURATION_MS = 2800;
 const DOUBLE_TAP_WINDOW_MS = 320;
+const REALTIME_REFRESH_DEBOUNCE_MS = 320;
+const PRESENCE_REFRESH_DEBOUNCE_MS = 1200;
+const DRAFT_CLIENT_METRICS_FLUSH_INTERVAL_MS = 30000;
+const DRAFT_CLIENT_METRICS_MAX_BATCH = 24;
+const DRAFT_CLIENT_METRICS_MAX_QUEUE = 120;
+const DRAFT_CLIENT_METRICS_MAX_VALUE = 600000;
 const ROLE_SCARCITY_THRESHOLD = 2;
 const QUEUE_EMPTY_AUTOPICK_WARNING =
   "Queue empty - autopick will use Best Available with server constraints.";
@@ -281,6 +325,28 @@ const sortAvailablePlayers = (
     return normalizeForSort(left.playerName).localeCompare(normalizeForSort(right.playerName));
   });
   return next;
+};
+
+const compareAutopickCandidates = (
+  left: DraftDetail["availablePlayers"][number],
+  right: DraftDetail["availablePlayers"][number],
+): number => {
+  const leftAverage = left.analytics?.averageFantasyPoints ?? Number.NEGATIVE_INFINITY;
+  const rightAverage = right.analytics?.averageFantasyPoints ?? Number.NEGATIVE_INFINITY;
+  if (rightAverage !== leftAverage) {
+    return rightAverage - leftAverage;
+  }
+  const leftGames = left.analytics?.gamesPlayed ?? 0;
+  const rightGames = right.analytics?.gamesPlayed ?? 0;
+  if (rightGames !== leftGames) {
+    return rightGames - leftGames;
+  }
+  const leftWinRate = left.analytics?.winRate ?? Number.NEGATIVE_INFINITY;
+  const rightWinRate = right.analytics?.winRate ?? Number.NEGATIVE_INFINITY;
+  if (rightWinRate !== leftWinRate) {
+    return rightWinRate - leftWinRate;
+  }
+  return normalizeForSort(left.playerName).localeCompare(normalizeForSort(right.playerName));
 };
 
 const queueStorageKeyFor = (draftId: number, userId: string): string =>
@@ -414,11 +480,14 @@ export const DraftRoom = ({
   const autoPickAttemptedForPickRef = useRef<number | null>(null);
   const lastPlayerTapRef = useRef<{ playerName: string; atMs: number } | null>(null);
   const loadDraftInFlightRef = useRef(false);
+  const draftRefreshTimerRef = useRef<number | null>(null);
   const mobilePlayerSheetTouchStartYRef = useRef<number | null>(null);
   const timeoutExpectedPickRef = useRef<number | null>(null);
   const reconnectStartedAtMsRef = useRef<number | null>(null);
   const previousAutopickLockedRef = useRef<boolean | null>(null);
   const lastStalenessBucketRef = useRef<number | null>(null);
+  const clientMetricsQueueRef = useRef<DraftClientMetricEvent[]>([]);
+  const clientMetricsFlushInFlightRef = useRef(false);
   const [lastDraftSyncMs, setLastDraftSyncMs] = useState(() => Date.now());
 
   const applyDraft = useCallback((nextDraft: DraftDetail) => {
@@ -446,6 +515,70 @@ export const DraftRoom = ({
     setSystemFeedEvents((previous) =>
       [...previous, { id, label, overallPick, createdAtMs }].slice(-60),
     );
+  }, []);
+
+  const queueClientMetric = useCallback(
+    (
+      metricName: DraftClientMetricName,
+      metricValue: number,
+      metadata?: Record<string, unknown>,
+    ) => {
+      if (!Number.isFinite(metricValue)) {
+        return;
+      }
+      const normalizedValue = Math.max(
+        0,
+        Math.min(Math.floor(metricValue), DRAFT_CLIENT_METRICS_MAX_VALUE),
+      );
+      if (normalizedValue < 1) {
+        return;
+      }
+      clientMetricsQueueRef.current.push({
+        metricName,
+        metricValue: normalizedValue,
+        metadata,
+      });
+      if (clientMetricsQueueRef.current.length > DRAFT_CLIENT_METRICS_MAX_QUEUE) {
+        clientMetricsQueueRef.current = clientMetricsQueueRef.current.slice(
+          clientMetricsQueueRef.current.length - DRAFT_CLIENT_METRICS_MAX_QUEUE,
+        );
+      }
+    },
+    [],
+  );
+
+  const flushClientMetrics = useCallback(async () => {
+    if (clientMetricsFlushInFlightRef.current) {
+      return;
+    }
+    if (clientMetricsQueueRef.current.length < 1) {
+      return;
+    }
+
+    const batch = clientMetricsQueueRef.current.slice(0, DRAFT_CLIENT_METRICS_MAX_BATCH);
+    clientMetricsQueueRef.current = clientMetricsQueueRef.current.slice(batch.length);
+    clientMetricsFlushInFlightRef.current = true;
+
+    try {
+      const response = await fetch("/api/drafts/metrics", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ events: batch }),
+        keepalive: true,
+      });
+      if (!response.ok) {
+        throw new Error("Unable to record draft metrics.");
+      }
+    } catch {
+      clientMetricsQueueRef.current = [...batch, ...clientMetricsQueueRef.current].slice(
+        0,
+        DRAFT_CLIENT_METRICS_MAX_QUEUE,
+      );
+    } finally {
+      clientMetricsFlushInFlightRef.current = false;
+    }
   }, []);
 
   const trackDraftEvent = useCallback(
@@ -515,21 +648,35 @@ export const DraftRoom = ({
   );
 
   const loadDraft = useCallback(async () => {
-    const response = await fetch(`/api/drafts/${draftId}`, {
-      cache: "no-store",
-    });
-    const payload = (await response.json()) as DraftDetailResponse;
+    const startedAt = performance.now();
+    let responseStatus = 0;
+    let serverTimingTotalMs: number | null = null;
+    try {
+      const response = await fetch(`/api/drafts/${draftId}`, {
+        cache: "no-store",
+      });
+      responseStatus = response.status;
+      serverTimingTotalMs = parseServerTimingTotalMs(response.headers.get("server-timing"));
+      const payload = (await response.json()) as DraftDetailResponse;
 
-    if (!response.ok || !payload.draft) {
-      throw new Error(payload.error ?? "Unable to load draft.");
+      if (!response.ok || !payload.draft) {
+        throw new Error(payload.error ?? "Unable to load draft.");
+      }
+
+      applyDraft(payload.draft);
+    } finally {
+      queueClientMetric("client_draft_refresh_latency_ms", performance.now() - startedAt, {
+        statusCode: responseStatus,
+        serverTotalMs: serverTimingTotalMs,
+        draftId,
+      });
     }
-
-    applyDraft(payload.draft);
-  }, [applyDraft, draftId]);
+  }, [applyDraft, draftId, queueClientMetric]);
   const draftStatus = draft?.status ?? null;
 
   const requestDraftRefresh = useCallback(async () => {
     if (loadDraftInFlightRef.current) {
+      queueClientMetric("client_refresh_retry", 1, { reason: "refresh_in_flight", draftId });
       return;
     }
     loadDraftInFlightRef.current = true;
@@ -538,7 +685,31 @@ export const DraftRoom = ({
     } finally {
       loadDraftInFlightRef.current = false;
     }
-  }, [loadDraft]);
+  }, [draftId, loadDraft, queueClientMetric]);
+  const scheduleDraftRefresh = useCallback(
+    (delayMs: number = REALTIME_REFRESH_DEBOUNCE_MS) => {
+      if (typeof window === "undefined") {
+        return;
+      }
+      if (draftRefreshTimerRef.current !== null) {
+        window.clearTimeout(draftRefreshTimerRef.current);
+      }
+      draftRefreshTimerRef.current = window.setTimeout(() => {
+        draftRefreshTimerRef.current = null;
+        void requestDraftRefresh().catch(() => undefined);
+      }, Math.max(0, delayMs));
+    },
+    [requestDraftRefresh],
+  );
+
+  useEffect(() => {
+    return () => {
+      if (draftRefreshTimerRef.current !== null) {
+        window.clearTimeout(draftRefreshTimerRef.current);
+        draftRefreshTimerRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -608,6 +779,33 @@ export const DraftRoom = ({
       isDesktopChatCollapsed ? "true" : "false",
     );
   }, [isDesktopChatCollapsed]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    const id = window.setInterval(() => {
+      void flushClientMetrics().catch(() => undefined);
+    }, DRAFT_CLIENT_METRICS_FLUSH_INTERVAL_MS);
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        void flushClientMetrics().catch(() => undefined);
+      }
+    };
+    const onBeforeUnload = () => {
+      void flushClientMetrics().catch(() => undefined);
+    };
+
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => {
+      window.clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("beforeunload", onBeforeUnload);
+      void flushClientMetrics().catch(() => undefined);
+    };
+  }, [flushClientMetrics]);
 
   useEffect(() => {
     const id = window.setTimeout(() => {
@@ -705,7 +903,7 @@ export const DraftRoom = ({
           filter: `id=eq.${draftId}`,
         },
         () => {
-          void requestDraftRefresh().catch(() => undefined);
+          scheduleDraftRefresh();
         },
       )
       .on(
@@ -717,7 +915,7 @@ export const DraftRoom = ({
           filter: `draft_id=eq.${draftId}`,
         },
         () => {
-          void requestDraftRefresh().catch(() => undefined);
+          scheduleDraftRefresh();
         },
       )
       .on(
@@ -729,7 +927,10 @@ export const DraftRoom = ({
           filter: `draft_id=eq.${draftId}`,
         },
         () => {
-          void requestDraftRefresh().catch(() => undefined);
+          if (draftStatus === "live" || draftStatus === "paused" || draftStatus === "completed") {
+            return;
+          }
+          scheduleDraftRefresh(PRESENCE_REFRESH_DEBOUNCE_MS);
         },
       )
       .subscribe((status) => {
@@ -739,7 +940,7 @@ export const DraftRoom = ({
     return () => {
       void supabase.removeChannel(channel);
     };
-  }, [draftId, requestDraftRefresh]);
+  }, [draftId, draftStatus, scheduleDraftRefresh]);
 
   useEffect(() => {
     const previous = previousConnectionStatusRef.current;
@@ -760,6 +961,10 @@ export const DraftRoom = ({
       pushToast("Synced to live draft.");
       jumpToTimelinePick(draft?.nextPick?.overallPick ?? null);
     } else if (connectionStatus === "CHANNEL_ERROR" || connectionStatus === "TIMED_OUT") {
+      queueClientMetric("client_realtime_disconnect", 1, {
+        status: connectionStatus,
+        draftId,
+      });
       if (reconnectStartedAtMsRef.current === null) {
         reconnectStartedAtMsRef.current = Date.now();
         trackDraftEvent("reconnect.start", { status: connectionStatus });
@@ -781,6 +986,10 @@ export const DraftRoom = ({
         draft?.nextPick?.overallPick ?? undefined,
       );
     } else if (connectionStatus === "CLOSED") {
+      queueClientMetric("client_realtime_disconnect", 1, {
+        status: connectionStatus,
+        draftId,
+      });
       if (reconnectStartedAtMsRef.current === null) {
         reconnectStartedAtMsRef.current = Date.now();
         trackDraftEvent("reconnect.start", { status: connectionStatus });
@@ -791,12 +1000,14 @@ export const DraftRoom = ({
   }, [
     connectionStatus,
     currentUserId,
+    draftId,
     draft?.nextPick?.participantUserId,
     draft?.nextPick?.overallPick,
     draft?.status,
     jumpToTimelinePick,
     pushSystemFeedEvent,
     pushToast,
+    queueClientMetric,
     settings.autoPickFromQueue,
     trackDraftEvent,
   ]);
@@ -911,26 +1122,52 @@ export const DraftRoom = ({
 
   const sendPresence = useCallback(
     async ({ ready }: { ready?: boolean } = {}) => {
-      const response = await fetch(`/api/drafts/${draftId}/presence`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-        },
-        body: JSON.stringify(typeof ready === "boolean" ? { ready } : {}),
-      });
+      const startedAt = performance.now();
+      let responseStatus = 0;
+      let serverTimingTotalMs: number | null = null;
+      try {
+        const response = await fetch(`/api/drafts/${draftId}/presence`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: JSON.stringify(typeof ready === "boolean" ? { ready } : {}),
+        });
+        responseStatus = response.status;
+        serverTimingTotalMs = parseServerTimingTotalMs(response.headers.get("server-timing"));
 
-      const payload = (await response.json()) as DraftDetailResponse;
-      if (!response.ok || !payload.draft) {
-        throw new Error(payload.error ?? "Unable to update presence.");
+        const payload = (await response.json()) as DraftPresenceResponse;
+        if (!response.ok) {
+          throw new Error(payload.error ?? "Unable to update presence.");
+        }
+
+        if (payload.draft) {
+          applyDraft(payload.draft);
+          return;
+        }
+
+        const serverNowMs = payload.serverNow ? new Date(payload.serverNow).getTime() : Number.NaN;
+        if (Number.isFinite(serverNowMs)) {
+          setServerOffsetMs(serverNowMs - Date.now());
+        }
+      } finally {
+        queueClientMetric("client_draft_presence_latency_ms", performance.now() - startedAt, {
+          statusCode: responseStatus,
+          serverTotalMs: serverTimingTotalMs,
+          mode: typeof ready === "boolean" ? "ready_toggle" : "heartbeat",
+          draftId,
+        });
       }
-
-      applyDraft(payload.draft);
     },
-    [applyDraft, draftId],
+    [applyDraft, draftId, queueClientMetric],
   );
 
   const isCurrentUserParticipant = Boolean(
     draft?.participantPresence.some((entry) => entry.userId === currentUserId),
+  );
+  const participantsByPosition = useMemo(
+    () => [...(draft?.participants ?? [])].sort((a, b) => a.draftPosition - b.draftPosition),
+    [draft?.participants],
   );
 
   useEffect(() => {
@@ -951,6 +1188,33 @@ export const DraftRoom = ({
     () => new Map((draft?.picks ?? []).map((pick) => [pick.overallPick, pick])),
     [draft],
   );
+  const assignedParticipantByOverallPick = useMemo(() => {
+    const map = new Map<number, DraftDetail["participants"][number]>();
+    const participantCount = participantsByPosition.length;
+    if (participantCount < 2) {
+      return map;
+    }
+    for (const pick of draft?.picks ?? []) {
+      if (pick.overallPick < 1) {
+        continue;
+      }
+      const slot = getPickSlot(participantCount, pick.overallPick);
+      const assignedParticipant = participantsByPosition[slot.participantIndex];
+      if (assignedParticipant) {
+        map.set(pick.overallPick, assignedParticipant);
+      }
+    }
+    return map;
+  }, [draft?.picks, participantsByPosition]);
+  const picksByRoundAndParticipantUserId = useMemo(() => {
+    const map = new Map<string, DraftDetail["picks"][number]>();
+    for (const pick of draft?.picks ?? []) {
+      const assignedParticipant = assignedParticipantByOverallPick.get(pick.overallPick);
+      const participantUserId = assignedParticipant?.userId ?? pick.participantUserId;
+      map.set(`${pick.roundNumber}::${participantUserId}`, pick);
+    }
+    return map;
+  }, [assignedParticipantByOverallPick, draft?.picks]);
   const presenceByUserId = useMemo(
     () => new Map((draft?.participantPresence ?? []).map((entry) => [entry.userId, entry])),
     [draft],
@@ -1033,13 +1297,25 @@ export const DraftRoom = ({
   const secondsSinceLastSync = Math.max(0, Math.floor((clientNowMs - lastDraftSyncMs) / 1000));
   const connectionLabel = connectionStatus.toLowerCase().replaceAll("_", " ");
   const currentPresence = presenceByUserId.get(currentUserId) ?? null;
-  const participantsByPosition = useMemo(
-    () => [...(draft?.participants ?? [])].sort((a, b) => a.draftPosition - b.draftPosition),
-    [draft?.participants],
-  );
   const availablePlayersByName = useMemo(
     () => new Map((draft?.availablePlayers ?? []).map((player) => [player.playerName, player])),
     [draft?.availablePlayers],
+  );
+  const playerImageByName = useMemo(
+    () =>
+      new Map(
+        (draft?.playerPool ?? []).map((player) => [player.playerName, player.playerImageUrl ?? null]),
+      ),
+    [draft?.playerPool],
+  );
+  const pickPlayerImageUrl = useCallback(
+    (pick: DraftDetail["picks"][number] | null | undefined): string | null => {
+      if (!pick) {
+        return null;
+      }
+      return pick.playerImageUrl ?? playerImageByName.get(pick.playerName) ?? null;
+    },
+    [playerImageByName],
   );
   const queuedPlayers = useMemo(
     () =>
@@ -1085,8 +1361,13 @@ export const DraftRoom = ({
   }, [connectionStatus, isRealtimeReadOnly, secondsSinceLastSync, trackDraftEvent]);
 
   const userPicks = useMemo(
-    () => (draft?.picks ?? []).filter((pick) => pick.participantUserId === currentUserId),
-    [draft?.picks, currentUserId],
+    () =>
+      (draft?.picks ?? []).filter((pick) => {
+        const assignedParticipant = assignedParticipantByOverallPick.get(pick.overallPick);
+        const participantUserId = assignedParticipant?.userId ?? pick.participantUserId;
+        return participantUserId === currentUserId;
+      }),
+    [assignedParticipantByOverallPick, currentUserId, draft?.picks],
   );
   const userRoleSet = useMemo(
     () => new Set(userPicks.map((pick) => normalizeRole(pick.playerRole))),
@@ -1211,22 +1492,20 @@ export const DraftRoom = ({
     if (canCurrentUserPick) {
       return 0;
     }
-    const participantCount = draft.participants.length;
+    const participantCount = participantsByPosition.length;
     if (participantCount < 2) {
       return null;
     }
 
     for (let overallPick = draft.nextPick.overallPick; overallPick <= draft.totalPickCount; overallPick += 1) {
-      const roundNumber = Math.ceil(overallPick / participantCount);
-      const offset = (overallPick - 1) % participantCount;
-      const participantIndex = roundNumber % 2 === 1 ? participantCount - 1 - offset : offset;
-      const participant = draft.participants[participantIndex];
+      const participantIndex = getPickSlot(participantCount, overallPick).participantIndex;
+      const participant = participantsByPosition[participantIndex];
       if (participant?.userId === currentUserId) {
         return overallPick - draft.nextPick.overallPick;
       }
     }
     return null;
-  }, [canCurrentUserPick, currentUserId, draft]);
+  }, [canCurrentUserPick, currentUserId, draft, participantsByPosition]);
 
   const averagePickMs = useMemo(() => {
     const defaultMs = Math.max(4000, (draft?.pickSeconds ?? 75) * 1000);
@@ -1281,7 +1560,7 @@ export const DraftRoom = ({
       }
       return `Next +${offset - 1}`;
     };
-    if (!draft || draft.participants.length < 1 || draft.totalPickCount < 1) {
+    if (!draft || participantsByPosition.length < 1 || draft.totalPickCount < 1) {
       return [] as Array<{
         key: string;
         label: string;
@@ -1293,6 +1572,7 @@ export const DraftRoom = ({
           pickedPlayerName: string | null;
           pickedPlayerTeam: string | null;
           pickedPlayerRole: string | null;
+          pickedPlayerImageUrl: string | null;
           pickedTeamIconUrl: string | null;
         } | null;
       }>;
@@ -1300,7 +1580,7 @@ export const DraftRoom = ({
 
     const currentOverallPick =
       draft.nextPick?.overallPick ?? (draft.picks.length > 0 ? draft.totalPickCount + 1 : 1);
-    const participantCount = draft.participants.length;
+    const participantCount = participantsByPosition.length;
     const slots: Array<{
       key: string;
       label: string;
@@ -1312,6 +1592,7 @@ export const DraftRoom = ({
         pickedPlayerName: string | null;
         pickedPlayerTeam: string | null;
         pickedPlayerRole: string | null;
+        pickedPlayerImageUrl: string | null;
         pickedTeamIconUrl: string | null;
       } | null;
     }> = [];
@@ -1321,10 +1602,10 @@ export const DraftRoom = ({
       if (overallPick < 1 || overallPick > draft.totalPickCount) {
         continue;
       }
-      const roundNumber = Math.ceil(overallPick / participantCount);
-      const roundOffset = (overallPick - 1) % participantCount;
-      const participantIndex = roundNumber % 2 === 1 ? participantCount - 1 - roundOffset : roundOffset;
-      const participant = draft.participants[participantIndex];
+      const slotMeta = getPickSlot(participantCount, overallPick);
+      const roundNumber = slotMeta.roundNumber;
+      const participantIndex = slotMeta.participantIndex;
+      const participant = participantsByPosition[participantIndex];
       if (!participant) {
         slots.push({
           key: `slot-${overallPick}`,
@@ -1346,18 +1627,22 @@ export const DraftRoom = ({
           pickedPlayerName: picked?.playerName ?? null,
           pickedPlayerTeam: picked?.playerTeam ?? null,
           pickedPlayerRole: picked?.playerRole ?? null,
+          pickedPlayerImageUrl: pickPlayerImageUrl(picked),
           pickedTeamIconUrl: picked?.teamIconUrl ?? null,
         },
       });
     }
     return slots;
-  }, [draft, picksByOverallPick]);
+  }, [draft, participantsByPosition, pickPlayerImageUrl, picksByOverallPick]);
   const yourNextPickMeta = useMemo(() => {
     if (!draft?.nextPick || typeof picksUntilCurrentUser !== "number") {
       return null;
     }
+    if (participantsByPosition.length < 1) {
+      return null;
+    }
     const overallPick = draft.nextPick.overallPick + picksUntilCurrentUser;
-    const roundNumber = Math.ceil(overallPick / draft.participants.length);
+    const roundNumber = Math.ceil(overallPick / participantsByPosition.length);
     const etaMs = picksUntilCurrentUser === 0 ? 0 : picksUntilCurrentUser * averagePickMs;
     return {
       overallPick,
@@ -1365,7 +1650,7 @@ export const DraftRoom = ({
       picksAway: picksUntilCurrentUser,
       etaMs,
     };
-  }, [averagePickMs, draft?.nextPick, draft?.participants.length, picksUntilCurrentUser]);
+  }, [averagePickMs, draft?.nextPick, participantsByPosition.length, picksUntilCurrentUser]);
   const isUpNext = useMemo(
     () =>
       typeof picksUntilCurrentUser === "number" &&
@@ -1386,9 +1671,7 @@ export const DraftRoom = ({
         }
         return !userRoleSet.has(normalizedRole);
       })
-      .sort((left, right) =>
-        normalizeForSort(left.playerName).localeCompare(normalizeForSort(right.playerName)),
-      );
+      .sort(compareAutopickCandidates);
     return eligible[0] ?? null;
   }, [draft?.availablePlayers, userPicks.length, userRoleSet]);
   const queueFirstFallbackPlayerName = useMemo(
@@ -1679,6 +1962,9 @@ export const DraftRoom = ({
     setStatusPending(true);
     setStatusAction(actionKey ?? null);
     setError(null);
+    const startedAt = performance.now();
+    let responseStatus = 0;
+    let serverTimingTotalMs: number | null = null;
 
     try {
       const response = await fetch(`/api/drafts/${draft.id}/status`, {
@@ -1688,6 +1974,8 @@ export const DraftRoom = ({
         },
         body: JSON.stringify({ status, force }),
       });
+      responseStatus = response.status;
+      serverTimingTotalMs = parseServerTimingTotalMs(response.headers.get("server-timing"));
 
       const payload = (await response.json()) as DraftDetailResponse;
       if (!response.ok || !payload.draft) {
@@ -1697,6 +1985,12 @@ export const DraftRoom = ({
     } catch (updateError) {
       setError(updateError instanceof Error ? updateError.message : "Unable to update status.");
     } finally {
+      queueClientMetric("client_draft_status_latency_ms", performance.now() - startedAt, {
+        statusCode: responseStatus,
+        serverTotalMs: serverTimingTotalMs,
+        draftId: draft.id,
+        nextStatus: status,
+      });
       setStatusPending(false);
       setStatusAction(null);
     }
@@ -1717,6 +2011,9 @@ export const DraftRoom = ({
       const expectedPick = draft.nextPick?.overallPick ?? null;
       setPickPending(true);
       setError(null);
+      const startedAt = performance.now();
+      let responseStatus = 0;
+      let serverTimingTotalMs: number | null = null;
 
       try {
         const response = await fetch(`/api/drafts/${draft.id}/pick`, {
@@ -1726,6 +2023,8 @@ export const DraftRoom = ({
           },
           body: JSON.stringify({ playerName }),
         });
+        responseStatus = response.status;
+        serverTimingTotalMs = parseServerTimingTotalMs(response.headers.get("server-timing"));
         const payload = (await response.json()) as DraftDetailResponse;
         if (!response.ok || !payload.draft) {
           const message = payload.error ?? "Unable to submit pick.";
@@ -1822,6 +2121,12 @@ export const DraftRoom = ({
           })
           .catch(() => undefined);
       } finally {
+        queueClientMetric("client_draft_pick_latency_ms", performance.now() - startedAt, {
+          statusCode: responseStatus,
+          serverTotalMs: serverTimingTotalMs,
+          draftId: draft.id,
+          source,
+        });
         setPickPending(false);
       }
     },
@@ -1832,6 +2137,7 @@ export const DraftRoom = ({
       draftActionPlayerName,
       currentPickRemainingMs,
       pushToast,
+      queueClientMetric,
       requestDraftRefresh,
       trackDraftEvent,
     ],
@@ -2508,8 +2814,7 @@ export const DraftRoom = ({
               const roleBackgroundIconUrl = item.slot?.pickedPlayerRole
                 ? roleIconUrl(item.slot.pickedPlayerRole)
                 : null;
-              const teamLabel =
-                item.slot?.pickedPlayerTeam ?? item.slot?.participantDisplayName ?? "Pending";
+              const teamLabel = item.slot?.participantDisplayName ?? "Pending";
               const shortPlayerLabel = item.slot?.pickedPlayerName
                 ? formatShortPlayerName(item.slot.pickedPlayerName)
                 : item.offset === 0
@@ -2537,9 +2842,17 @@ export const DraftRoom = ({
                   }`}
                 >
                   <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-black/28 via-black/16 to-black/30" />
-                  {item.slot && (item.slot.pickedTeamIconUrl || roleBackgroundIconUrl) ? (
+                  {item.slot && (item.slot.pickedPlayerImageUrl || item.slot.pickedTeamIconUrl || roleBackgroundIconUrl) ? (
                     <div className="pointer-events-none absolute inset-y-1.5 right-1.5 z-20 flex flex-col items-end justify-between md:inset-y-2 md:right-2">
-                      {item.slot.pickedTeamIconUrl ? (
+                      {item.slot.pickedPlayerImageUrl ? (
+                        <Image
+                          alt={`${item.slot.pickedPlayerName ?? "Picked player"} portrait`}
+                          className="h-9 w-9 rounded-full border border-white/35 object-cover shadow-[0_2px_8px_rgba(0,0,0,0.45)] md:h-11 md:w-11"
+                          height={44}
+                          src={item.slot.pickedPlayerImageUrl}
+                          width={44}
+                        />
+                      ) : item.slot.pickedTeamIconUrl ? (
                         <Image
                           alt={`${item.slot.pickedPlayerName ?? "Picked player"} team logo`}
                           className="h-8 w-12 translate-x-2.5 -translate-y-1.5 object-contain opacity-90 drop-shadow-[0_1px_2px_rgba(0,0,0,0.55)] md:h-10 md:w-14 md:translate-x-3 md:-translate-y-2"
@@ -2648,10 +2961,11 @@ export const DraftRoom = ({
               <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-5">
                 {PRIMARY_ROLE_FILTERS.map((role) => {
                   const pick = rosterSlots.byRole.get(role);
+                  const pickImageUrl = pickPlayerImageUrl(pick);
                   return (
                     <button
                       key={`roster-slot-${role}`}
-                      className={`rounded-medium border px-2 py-2 text-left ${
+                      className={`h-24 overflow-hidden rounded-medium border text-left ${
                         pick ? roleTileClassName(role) : "border-default-200/30 bg-content1/35"
                       }`}
                       type="button"
@@ -2660,10 +2974,53 @@ export const DraftRoom = ({
                         setShowNeededRolesOnly(true);
                       }}
                     >
-                      <p className="text-[10px] font-semibold uppercase tracking-wide text-default-500">{role}</p>
-                      <p className="mt-1 truncate text-xs font-medium">
-                        {pick?.playerName ?? "Open"}
-                      </p>
+                      <div className="grid h-full grid-cols-2">
+                        <div className="flex min-w-0 flex-col justify-between p-2">
+                          <p className="text-[10px] font-semibold uppercase tracking-wide text-default-500">
+                            {role}
+                          </p>
+                          <div className="min-w-0">
+                            <p className="truncate text-xs font-semibold">{pick?.playerName ?? "Open"}</p>
+                            <p className="truncate text-[10px] text-default-500">
+                              {pick?.playerTeam ?? "Add player"}
+                            </p>
+                          </div>
+                        </div>
+                        <div className="relative border-l border-default-200/25 bg-content1/20">
+                          {pick ? (
+                            pickImageUrl ? (
+                              <Image
+                                alt={`${pick.playerName} portrait`}
+                                className="h-full w-full object-cover"
+                                height={160}
+                                src={pickImageUrl}
+                                width={160}
+                              />
+                            ) : pick.teamIconUrl ? (
+                              <div className="grid h-full place-items-center">
+                                <CroppedTeamLogo
+                                  alt={`${pick.playerName} team logo`}
+                                  frameClassName="h-12 w-14"
+                                  height={48}
+                                  imageClassName="h-12"
+                                  src={pick.teamIconUrl}
+                                  width={56}
+                                />
+                              </div>
+                            ) : (
+                              <div className="grid h-full place-items-center">
+                                <span className="h-8 w-8 rounded-full border border-default-300/40 bg-content2/40" />
+                              </div>
+                            )
+                          ) : (
+                            <div className="grid h-full place-items-center">
+                              <span className="text-[10px] font-medium uppercase tracking-wide text-default-400">
+                                Open
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
                     </button>
                   );
                 })}
@@ -3619,13 +3976,36 @@ export const DraftRoom = ({
                     </div>
                     {PRIMARY_ROLE_FILTERS.map((role) => {
                       const pick = rosterSlots.byRole.get(role);
+                      const pickImageUrl = pickPlayerImageUrl(pick);
                       return (
                         <div
                           key={role}
                           className="flex items-center justify-between rounded-medium border border-default-200/30 px-3 py-2 text-sm"
                         >
-                          <span className="font-medium">{role}</span>
-                          <span className="text-default-500">{pick?.playerName ?? "Open"}</span>
+                          <div className="flex min-w-0 items-center gap-2">
+                            <span className="font-medium">{role}</span>
+                            {pick ? (
+                              pickImageUrl ? (
+                                <Image
+                                  alt={`${pick.playerName} portrait`}
+                                  className="h-5 w-5 rounded-full border border-default-300/50 object-cover"
+                                  height={20}
+                                  src={pickImageUrl}
+                                  width={20}
+                                />
+                              ) : pick.teamIconUrl ? (
+                                <CroppedTeamLogo
+                                  alt={`${pick.playerName} team logo`}
+                                  frameClassName="h-5 w-6"
+                                  height={20}
+                                  imageClassName="h-5"
+                                  src={pick.teamIconUrl}
+                                  width={24}
+                                />
+                              ) : null
+                            ) : null}
+                          </div>
+                          <span className="truncate text-default-500">{pick?.playerName ?? "Open"}</span>
                         </div>
                       );
                     })}
@@ -4405,24 +4785,49 @@ export const DraftRoom = ({
                           <ul className="space-y-1.5">
                             {[...userPicks]
                               .sort((left, right) => left.overallPick - right.overallPick)
-                              .map((pick) => (
-                                <li
-                                  key={`desktop-team-pick-${pick.id}`}
-                                  className="flex items-center justify-between gap-2 rounded-medium border border-default-200/30 px-2 py-1.5 text-xs"
-                                >
-                                  <div className="min-w-0">
-                                    <p className="truncate font-medium">{pick.playerName}</p>
-                                    <p className="truncate text-default-500">
-                                      {pick.playerTeam ?? "Unknown team"}
-                                    </p>
-                                  </div>
-                                  {pick.playerRole ? (
-                                    <Chip className={roleChipClassName(pick.playerRole)} size="sm" variant="flat">
-                                      {formatRoleLabel(pick.playerRole)}
-                                    </Chip>
-                                  ) : null}
-                                </li>
-                              ))}
+                              .map((pick) => {
+                                const pickImageUrl = pickPlayerImageUrl(pick);
+                                return (
+                                  <li
+                                    key={`desktop-team-pick-${pick.id}`}
+                                    className="flex items-center justify-between gap-2 rounded-medium border border-default-200/30 px-2 py-1.5 text-xs"
+                                  >
+                                    <div className="min-w-0 flex items-center gap-2">
+                                      {pickImageUrl ? (
+                                        <Image
+                                          alt={`${pick.playerName} portrait`}
+                                          className="h-6 w-6 rounded-full border border-default-300/50 object-cover"
+                                          height={24}
+                                          src={pickImageUrl}
+                                          width={24}
+                                        />
+                                      ) : pick.teamIconUrl ? (
+                                        <CroppedTeamLogo
+                                          alt={`${pick.playerName} team logo`}
+                                          frameClassName="h-6 w-7"
+                                          height={24}
+                                          imageClassName="h-6"
+                                          src={pick.teamIconUrl}
+                                          width={28}
+                                        />
+                                      ) : (
+                                        <span className="h-6 w-6 shrink-0 rounded-full border border-default-300/40 bg-content2/40" />
+                                      )}
+                                      <div className="min-w-0">
+                                        <p className="truncate font-medium">{pick.playerName}</p>
+                                        <p className="truncate text-default-500">
+                                          {pick.playerTeam ?? "Unknown team"}
+                                        </p>
+                                      </div>
+                                    </div>
+                                    {pick.playerRole ? (
+                                      <Chip className={roleChipClassName(pick.playerRole)} size="sm" variant="flat">
+                                        {formatRoleLabel(pick.playerRole)}
+                                      </Chip>
+                                    ) : null}
+                                  </li>
+                                );
+                              })}
                           </ul>
                         )}
                       </div>
@@ -4436,20 +4841,27 @@ export const DraftRoom = ({
                           {[...draft.picks]
                             .slice(-10)
                             .reverse()
-                            .map((pick) => (
-                              <li
-                                key={`desktop-activity-${pick.id}`}
-                                className="rounded-medium border border-default-200/30 px-2 py-1.5 text-xs"
-                              >
-                                <p className="font-medium">
-                                  #{pick.overallPick} {pick.participantDisplayName}
-                                </p>
-                                <p className="truncate text-default-500">
-                                  {pick.playerName}
-                                  {pick.playerRole ? ` (${formatRoleLabel(pick.playerRole)})` : ""}
-                                </p>
-                              </li>
-                            ))}
+                            .map((pick) => {
+                              const assignedParticipant = assignedParticipantByOverallPick.get(
+                                pick.overallPick,
+                              );
+                              const participantLabel =
+                                assignedParticipant?.displayName ?? pick.participantDisplayName;
+                              return (
+                                <li
+                                  key={`desktop-activity-${pick.id}`}
+                                  className="rounded-medium border border-default-200/30 px-2 py-1.5 text-xs"
+                                >
+                                  <p className="font-medium">
+                                    #{pick.overallPick} {participantLabel}
+                                  </p>
+                                  <p className="truncate text-default-500">
+                                    {pick.playerName}
+                                    {pick.playerRole ? ` (${formatRoleLabel(pick.playerRole)})` : ""}
+                                  </p>
+                                </li>
+                              );
+                            })}
                         </ul>
                       )}
                     </div>
@@ -4530,7 +4942,7 @@ export const DraftRoom = ({
         <CardHeader className="flex flex-wrap items-center justify-between gap-2">
           <h2 className="flex items-center gap-2 text-lg font-semibold">
             <TableProperties className="h-5 w-5 text-primary" />
-            Reverse-Snake Draft Board
+            3RR Draft Board
           </h2>
           <Chip variant="flat">
             Picks {draft.pickCount}/{draft.totalPickCount}
@@ -4549,21 +4961,21 @@ export const DraftRoom = ({
                     <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                       <p className="text-sm font-semibold">Round {roundNumber}</p>
                       <p className="text-xs text-default-500">
-                        {roundNumber % 2 === 1
-                          ? "Snake: high to low slot"
-                          : "Snake: low to high slot"}
+                        {isThreeRoundReversalRound(roundNumber)
+                          ? "3RR: high to low slot"
+                          : "3RR: low to high slot"}
                       </p>
                     </div>
 
                     <div className="overflow-x-auto pb-1">
                       <div className="flex w-full gap-1.5">
-                        {draft.participants.map((entry, participantIndex) => {
+                        {participantsByPosition.map((entry) => {
                           const pick = boardPickForSlot({
-                            participants: draft.participants,
-                            picksByOverallPick,
+                            picksByRoundAndParticipantUserId,
                             roundNumber,
-                            participantIndex,
+                            participantUserId: entry.userId,
                           });
+                          const pickImageUrl = pickPlayerImageUrl(pick);
                           const isOnDeck =
                             !pick &&
                             draft.nextPick?.roundNumber === roundNumber &&
@@ -4586,7 +4998,15 @@ export const DraftRoom = ({
                                   <>
                                     <div className="space-y-0.5">
                                       <div className="flex min-w-0 items-center gap-1">
-                                        {pick.teamIconUrl ? (
+                                        {pickImageUrl ? (
+                                          <Image
+                                            alt={`${pick.playerName} portrait`}
+                                            className="h-3 w-3 rounded-full border border-default-300/50 object-cover"
+                                            height={12}
+                                            src={pickImageUrl}
+                                            width={12}
+                                          />
+                                        ) : pick.teamIconUrl ? (
                                           <CroppedTeamLogo
                                             alt={`${pick.playerName} team logo`}
                                             frameClassName="h-3 w-3.5"

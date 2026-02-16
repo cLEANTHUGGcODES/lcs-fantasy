@@ -56,6 +56,8 @@ If you see a Windows `lightningcss.win32-x64-msvc.node` or `../pkg` error, run `
      1-second pick timers.
    - Apply `supabase/migrations/20260214_enforce_unique_positions_max5.sql`
      to enforce draft roster rules (one position each, max 5 players).
+   - Apply `supabase/migrations/20260216_draft_observability_metrics.sql` for
+     draft-room latency metrics and p50/p95 summaries.
 2. Copy `.env.example` to `.env.local` and fill:
    - `NEXT_PUBLIC_SUPABASE_URL`
    - `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` (preferred) or `NEXT_PUBLIC_SUPABASE_ANON_KEY`
@@ -110,6 +112,30 @@ Also included in `supabase/schema.sql`:
 - `fantasy_process_due_drafts(...)` RPC for auto-start + timeout handling
 - Realtime publication setup for draft tables
 - RLS policies for authenticated draft viewers
+
+### Draft Performance Audit
+
+The draft APIs now emit a `Server-Timing` header and record server/client
+latency metrics to `fantasy_draft_observability_events`.
+
+- Metrics endpoint: `POST /api/drafts/metrics` (client writes)
+- Metrics summary: `GET /api/drafts/metrics?windowMinutes=180` (admin only)
+
+Run synthetic multi-user load against a draft room:
+
+1. Create a users file from `scripts/draft-load-users.example.json`.
+2. Run:
+
+```bash
+npm run loadtest:draftroom -- --draft-id 123 --users-file scripts/draft-load-users.json --duration 90 --out /tmp/draft-load-summary.json
+```
+
+Key flags:
+
+- `--base-url` (default `http://127.0.0.1:3000`)
+- `--presence-ratio` (default `0.25`; remainder is draft GET requests)
+- `--think-ms` (default `280`)
+- `--window-minutes` (window for DB summary RPC)
 
 ### Draft Automation Cron
 
@@ -208,6 +234,7 @@ Scripts:
 - `npm run test:e2e:mobile:headed`
 - `npm run test:e2e:mobile:ui`
 - `npm run test:e2e:mobile:install`
+- `npm run optimize:scoring` (searches scoring weights for tighter weekly H2H margins using latest completed draft + snapshot data)
 
 ### Local Run (PowerShell)
 

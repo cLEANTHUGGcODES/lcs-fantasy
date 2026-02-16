@@ -94,6 +94,35 @@ create index if not exists fantasy_chat_observability_events_created_at_idx
 create index if not exists fantasy_chat_observability_events_metric_created_idx
   on public.fantasy_chat_observability_events (metric_name, created_at desc);
 
+create table if not exists public.fantasy_draft_observability_events (
+  id bigint generated always as identity primary key,
+  user_id uuid not null,
+  source text not null check (source in ('client', 'server')),
+  metric_name text not null check (
+    metric_name in (
+      'server_draft_detail_latency_ms',
+      'server_draft_presence_latency_ms',
+      'server_draft_pick_latency_ms',
+      'server_draft_status_latency_ms',
+      'client_draft_refresh_latency_ms',
+      'client_draft_presence_latency_ms',
+      'client_draft_pick_latency_ms',
+      'client_draft_status_latency_ms',
+      'client_realtime_disconnect',
+      'client_refresh_retry'
+    )
+  ),
+  metric_value integer not null check (metric_value >= 0),
+  metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default timezone('utc', now())
+);
+
+create index if not exists fantasy_draft_observability_events_created_at_idx
+  on public.fantasy_draft_observability_events (created_at desc, id desc);
+
+create index if not exists fantasy_draft_observability_events_metric_created_idx
+  on public.fantasy_draft_observability_events (metric_name, created_at desc);
+
 create table if not exists public.fantasy_drafts (
   id bigint generated always as identity primary key,
   name text not null,
@@ -155,6 +184,8 @@ create table if not exists public.fantasy_draft_team_pool (
   player_team text null,
   player_role text null,
   team_icon_url text null,
+  player_image_url text null,
+  projected_avg_fantasy_points numeric null,
   source_page text not null,
   created_at timestamptz not null default timezone('utc', now()),
   unique (draft_id, team_name)
@@ -166,8 +197,17 @@ alter table if exists public.fantasy_draft_team_pool
 alter table if exists public.fantasy_draft_team_pool
   add column if not exists player_role text null;
 
+alter table if exists public.fantasy_draft_team_pool
+  add column if not exists player_image_url text null;
+
+alter table if exists public.fantasy_draft_team_pool
+  add column if not exists projected_avg_fantasy_points numeric null;
+
 create index if not exists fantasy_draft_team_pool_draft_idx
   on public.fantasy_draft_team_pool (draft_id, team_name);
+
+create index if not exists fantasy_draft_team_pool_draft_role_projection_idx
+  on public.fantasy_draft_team_pool (draft_id, player_role, projected_avg_fantasy_points desc, team_name);
 
 create table if not exists public.fantasy_draft_picks (
   id bigint generated always as identity primary key,
@@ -181,6 +221,7 @@ create table if not exists public.fantasy_draft_picks (
   player_team text null,
   player_role text null,
   team_icon_url text null,
+  player_image_url text null,
   picked_by_user_id uuid not null,
   picked_by_label text null,
   picked_at timestamptz not null default timezone('utc', now()),
@@ -195,8 +236,17 @@ alter table if exists public.fantasy_draft_picks
 alter table if exists public.fantasy_draft_picks
   add column if not exists player_role text null;
 
+alter table if exists public.fantasy_draft_picks
+  add column if not exists player_image_url text null;
+
 create index if not exists fantasy_draft_picks_draft_idx
   on public.fantasy_draft_picks (draft_id, overall_pick);
+
+create index if not exists fantasy_draft_picks_draft_participant_idx
+  on public.fantasy_draft_picks (draft_id, participant_user_id);
+
+create index if not exists fantasy_draft_picks_draft_participant_role_idx
+  on public.fantasy_draft_picks (draft_id, participant_user_id, upper(btrim(coalesce(player_role, ''))));
 
 create table if not exists public.fantasy_draft_presence (
   draft_id bigint not null references public.fantasy_drafts(id) on delete cascade,
@@ -324,7 +374,7 @@ begin
 
       v_round_number := (v_pick_count / v_participant_count) + 1;
       v_offset := mod(v_pick_count, v_participant_count);
-      if mod(v_round_number, 2) = 1 then
+      if v_round_number <> 1 and (v_round_number <= 3 or mod(v_round_number, 2) = 1) then
         v_participant_position := v_participant_count - v_offset;
       else
         v_participant_position := v_offset + 1;
@@ -347,7 +397,8 @@ begin
         team_pool.team_name,
         team_pool.player_team,
         team_pool.player_role,
-        team_pool.team_icon_url
+        team_pool.team_icon_url,
+        team_pool.player_image_url
       into v_team
       from public.fantasy_draft_team_pool team_pool
       where team_pool.draft_id = v_draft.id
@@ -372,7 +423,7 @@ begin
             and picks.participant_user_id = v_on_clock.user_id
             and upper(btrim(coalesce(picks.player_role, ''))) = upper(btrim(team_pool.player_role))
         )
-      order by team_pool.team_name
+      order by team_pool.projected_avg_fantasy_points desc nulls last, team_pool.team_name
       limit 1;
 
       if v_team.team_name is null then
@@ -397,6 +448,7 @@ begin
         player_team,
         player_role,
         team_icon_url,
+        player_image_url,
         picked_by_user_id,
         picked_by_label,
         picked_at
@@ -412,6 +464,7 @@ begin
         v_team.player_team,
         v_team.player_role,
         v_team.team_icon_url,
+        v_team.player_image_url,
         v_on_clock.user_id,
         'Auto Pick (Timeout)',
         v_now
@@ -462,6 +515,7 @@ declare
   v_participant_position integer;
   v_on_clock public.fantasy_draft_participants%rowtype;
   v_team_icon_url text;
+  v_player_image_url text;
   v_player_team text;
   v_player_role text;
   v_clean_player_name text := nullif(trim(p_team_name), '');
@@ -558,7 +612,7 @@ begin
 
   v_round_number := (v_pick_count / v_participant_count) + 1;
   v_offset := mod(v_pick_count, v_participant_count);
-  if mod(v_round_number, 2) = 1 then
+  if v_round_number <> 1 and (v_round_number <= 3 or mod(v_round_number, 2) = 1) then
     v_participant_position := v_participant_count - v_offset;
   else
     v_participant_position := v_offset + 1;
@@ -647,9 +701,10 @@ begin
 
   select
     team_pool.team_icon_url,
+    team_pool.player_image_url,
     team_pool.player_team,
     team_pool.player_role
-  into v_team_icon_url, v_player_team, v_player_role
+  into v_team_icon_url, v_player_image_url, v_player_team, v_player_role
   from public.fantasy_draft_team_pool team_pool
   where team_pool.draft_id = p_draft_id
     and team_pool.team_name = v_clean_player_name
@@ -688,6 +743,7 @@ begin
     player_team,
     player_role,
     team_icon_url,
+    player_image_url,
     picked_by_user_id,
     picked_by_label,
     picked_at
@@ -703,6 +759,7 @@ begin
     v_player_team,
     v_player_role,
     v_team_icon_url,
+    v_player_image_url,
     p_user_id,
     v_clean_user_label,
     v_now
@@ -976,6 +1033,65 @@ as $$
   );
 $$;
 
+create or replace function public.fantasy_draft_observability_summary(
+  p_window_minutes integer default 1440
+)
+returns jsonb
+language sql
+set search_path = public
+as $$
+  with filtered as (
+    select
+      metric_name,
+      source,
+      metric_value::double precision as metric_value
+    from public.fantasy_draft_observability_events events
+    where events.created_at >= timezone('utc', now()) - make_interval(mins => greatest(1, p_window_minutes))
+  ),
+  by_metric as (
+    select
+      metric_name,
+      count(*)::bigint as event_count,
+      round(avg(metric_value)::numeric, 2) as avg_ms,
+      percentile_cont(0.5) within group (order by metric_value) as p50_ms,
+      percentile_cont(0.95) within group (order by metric_value) as p95_ms,
+      max(metric_value) as max_ms
+    from filtered
+    group by metric_name
+  )
+  select jsonb_build_object(
+    'window_minutes', greatest(1, p_window_minutes),
+    'total_events', coalesce((select count(*)::bigint from filtered), 0),
+    'source_counts', jsonb_build_object(
+      'server', coalesce((select count(*)::bigint from filtered where source = 'server'), 0),
+      'client', coalesce((select count(*)::bigint from filtered where source = 'client'), 0)
+    ),
+    'realtime_disconnect_count', coalesce((
+      select sum(metric_value)::bigint
+      from filtered
+      where metric_name = 'client_realtime_disconnect'
+    ), 0),
+    'refresh_retry_count', coalesce((
+      select sum(metric_value)::bigint
+      from filtered
+      where metric_name = 'client_refresh_retry'
+    ), 0),
+    'metrics', coalesce((
+      select jsonb_object_agg(
+        metric_name,
+        jsonb_build_object(
+          'count', event_count,
+          'avg_ms', avg_ms,
+          'p50_ms', p50_ms,
+          'p95_ms', p95_ms,
+          'max_ms', max_ms
+        )
+      )
+      from by_metric
+    ), '{}'::jsonb)
+  );
+$$;
+
 create or replace function public.fantasy_cleanup_chat_data(
   p_retain_days integer default 45,
   p_keep_recent integer default 5000,
@@ -1028,15 +1144,35 @@ grant usage, select on sequence public.fantasy_global_chat_messages_id_seq to au
 grant execute on function public.fantasy_chat_post_message(text, text, text, text, text, text) to authenticated;
 grant insert on public.fantasy_chat_observability_events to authenticated;
 grant usage, select on sequence public.fantasy_chat_observability_events_id_seq to authenticated;
+grant insert on public.fantasy_draft_observability_events to authenticated;
+grant usage, select on sequence public.fantasy_draft_observability_events_id_seq to authenticated;
 grant select on public.fantasy_drafts to authenticated;
 grant select on public.fantasy_draft_picks to authenticated;
 grant select on public.fantasy_draft_presence to authenticated;
 
 alter table public.fantasy_global_chat_messages enable row level security;
 alter table public.fantasy_chat_observability_events enable row level security;
+alter table public.fantasy_draft_observability_events enable row level security;
 alter table public.fantasy_drafts enable row level security;
 alter table public.fantasy_draft_picks enable row level security;
 alter table public.fantasy_draft_presence enable row level security;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_policies
+    where schemaname = 'public'
+      and tablename = 'fantasy_draft_observability_events'
+      and policyname = 'Draft observability insert own metrics'
+  ) then
+    create policy "Draft observability insert own metrics"
+      on public.fantasy_draft_observability_events
+      for insert
+      to authenticated
+      with check (auth.uid() = user_id);
+  end if;
+end $$;
 
 do $$
 begin

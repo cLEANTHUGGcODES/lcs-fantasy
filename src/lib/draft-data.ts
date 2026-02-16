@@ -391,6 +391,7 @@ type DraftPickRow = {
   player_team: string | null;
   player_role: string | null;
   team_icon_url: string | null;
+  player_image_url: string | null;
   picked_by_user_id: string;
   picked_by_label: string | null;
   picked_at: string;
@@ -403,6 +404,7 @@ type DraftTeamPoolRow = {
   player_team: string | null;
   player_role: string | null;
   team_icon_url: string | null;
+  player_image_url: string | null;
   source_page: string;
   created_at: string;
 };
@@ -468,6 +470,7 @@ const toPick = (row: DraftPickRow): DraftPick => ({
   participantDisplayName:
     formatUserLabelFromDisplayName(row.participant_display_name) ?? row.participant_display_name,
   playerName: row.team_name,
+  playerImageUrl: row.player_image_url ?? null,
   playerTeam: row.player_team,
   playerRole: row.player_role,
   teamIconUrl: row.team_icon_url,
@@ -480,6 +483,7 @@ const toPlayerPool = (row: DraftTeamPoolRow): DraftPlayerPoolEntry => ({
   id: row.id,
   draftId: row.draft_id,
   playerName: row.team_name,
+  playerImageUrl: row.player_image_url ?? null,
   playerTeam: row.player_team,
   playerRole: row.player_role,
   teamIconUrl: row.team_icon_url,

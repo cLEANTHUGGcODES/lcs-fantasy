@@ -10,6 +10,8 @@
     "build": "node ./scripts/ensure-lightningcss-win.mjs && node ./scripts/check-lightningcss-win.mjs && node ./scripts/run-next-with-css-wasm.mjs build",
     "start": "node ./scripts/ensure-lightningcss-win.mjs && node ./scripts/check-lightningcss-win.mjs && node ./scripts/run-next-with-css-wasm.mjs start",
     "lint": "eslint",
+    "optimize:scoring": "node ./scripts/optimize-scoring-settings.mjs",
+    "loadtest:draftroom": "node ./scripts/load-test-draft-room.mjs",
     "check:fonts": "node ./scripts/check-font-consistency.mjs",
     "test:e2e:mobile": "npx playwright test --config=playwright.mobile.config.mjs",
     "test:e2e:mobile:headed": "npx playwright test --config=playwright.mobile.config.mjs --headed",

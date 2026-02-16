@@ -45,11 +45,13 @@ type TeamLookup = {
 
 type RolePlayer = {
   playerName: string;
+  playerPage: string | null;
   playerRole: PlayerRole;
 };
 
 export type SupplementalRosterPlayer = {
   playerName: string;
+  playerPage: string | null;
   playerTeam: string;
   playerRole: PlayerRole;
   teamIconUrl: string | null;
@@ -89,10 +91,29 @@ const resolveRoleFromText = (value: string): PlayerRole | null => {
 const isLikelyPlayerHandle = (value: string): boolean =>
   /^[\p{L}\p{N}][\p{L}\p{N}'._-]{1,24}$/u.test(value);
 
-const extractPlayerName = (
+const toNormalizedWikiTitle = (href: string | null | undefined): string | null => {
+  if (!href) {
+    return null;
+  }
+  const trimmed = href.trim();
+  if (!trimmed.startsWith("/wiki/")) {
+    return null;
+  }
+  const encoded = trimmed.slice("/wiki/".length).split(/[?#]/)[0];
+  if (!encoded || encoded.includes(":")) {
+    return null;
+  }
+  try {
+    return decodeURIComponent(encoded).replace(/_/g, " ").trim() || null;
+  } catch {
+    return encoded.replace(/_/g, " ").trim() || null;
+  }
+};
+
+const extractPlayerInfo = (
   $: cheerio.CheerioAPI,
   node: cheerio.Cheerio<AnyNode>,
-): string | null => {
+): { playerName: string; playerPage: string | null } | null => {
   const anchors = node.find("a[href]").toArray();
   for (const anchor of anchors) {
     const href = $(anchor).attr("href") ?? "";
@@ -108,7 +129,10 @@ const extractPlayerName = (
     if (!text || !isLikelyPlayerHandle(text)) {
       continue;
     }
-    return text;
+    return {
+      playerName: text,
+      playerPage: toNormalizedWikiTitle(href),
+    };
   }
 
   const text = normalizeText(node.text());
@@ -117,16 +141,26 @@ const extractPlayerName = (
   }
 
   const token = text.split(/\s+/).find((entry) => isLikelyPlayerHandle(entry));
-  return token ?? null;
+  if (!token) {
+    return null;
+  }
+
+  return {
+    playerName: token,
+    playerPage: null,
+  };
 };
 
 const parseActiveRosterSection = (html: string): RolePlayer[] => {
   const $ = cheerio.load(html);
-  const byRole = new Map<PlayerRole, string>();
+  const byRole = new Map<PlayerRole, { playerName: string; playerPage: string | null }>();
 
-  const addRolePlayer = (role: PlayerRole, playerName: string) => {
+  const addRolePlayer = (
+    role: PlayerRole,
+    player: { playerName: string; playerPage: string | null },
+  ) => {
     if (!byRole.has(role)) {
-      byRole.set(role, playerName);
+      byRole.set(role, player);
     }
   };
 
@@ -160,12 +194,12 @@ const parseActiveRosterSection = (html: string): RolePlayer[] => {
         return;
       }
 
-      const playerName = extractPlayerName($, cells.eq(playerIndex));
-      if (!playerName) {
+      const player = extractPlayerInfo($, cells.eq(playerIndex));
+      if (!player) {
         return;
       }
 
-      addRolePlayer(role, playerName);
+      addRolePlayer(role, player);
     });
   });
 
@@ -178,17 +212,18 @@ const parseActiveRosterSection = (html: string): RolePlayer[] => {
         return;
       }
 
-      const playerName = extractPlayerName($, row);
-      if (!playerName) {
+      const player = extractPlayerInfo($, row);
+      if (!player) {
         return;
       }
 
-      addRolePlayer(role, playerName);
+      addRolePlayer(role, player);
     });
   }
 
-  return [...byRole.entries()].map(([playerRole, playerName]) => ({
-    playerName,
+  return [...byRole.entries()].map(([playerRole, player]) => ({
+    playerName: player.playerName,
+    playerPage: player.playerPage,
     playerRole,
   }));
 };
@@ -358,6 +393,7 @@ const fetchActiveStartersForTeam = async (
 
   return starters.map((starter) => ({
     playerName: starter.playerName,
+    playerPage: starter.playerPage,
     playerTeam: team.teamName,
     playerRole: starter.playerRole,
     teamIconUrl: team.teamIconUrl,
