@@ -3,8 +3,10 @@
 import { Button } from "@heroui/button";
 import { Card, CardBody, CardHeader } from "@heroui/card";
 import { Chip } from "@heroui/chip";
+import { Alert } from "@heroui/alert";
 import { Drawer, DrawerBody, DrawerContent, DrawerHeader } from "@heroui/drawer";
 import { Input } from "@heroui/input";
+import { Link } from "@heroui/link";
 import { Popover, PopoverContent, PopoverTrigger } from "@heroui/popover";
 import { Spinner } from "@heroui/spinner";
 import {
@@ -27,6 +29,7 @@ import {
   GripVertical,
   Pause,
   Play,
+  Info,
   Search,
   Shield,
   ShieldAlert,
@@ -40,7 +43,9 @@ import {
   Wifi,
   WifiOff,
   X,
+  type LucideIcon,
 } from "lucide-react";
+import { AnimatePresence, motion } from "framer-motion";
 import Image from "next/image";
 import {
   useCallback,
@@ -263,6 +268,7 @@ const PRESENCE_REFRESH_DEBOUNCE_MS = 1200;
 const REALTIME_READ_ONLY_STALE_MULTIPLIER = 4;
 const REALTIME_READ_ONLY_MIN_STALE_SECONDS = 10;
 const REALTIME_RESUBSCRIBE_DELAY_MS = 5000;
+const REALTIME_SYNC_TOAST_COOLDOWN_MS = 6000;
 const DRAFT_CLIENT_METRICS_FLUSH_INTERVAL_MS = 30000;
 const DRAFT_CLIENT_METRICS_MAX_BATCH = 24;
 const DRAFT_CLIENT_METRICS_MAX_QUEUE = 120;
@@ -304,6 +310,51 @@ type DraftSystemFeedEvent = {
   createdAtMs: number;
 };
 
+type StateBannerColor =
+  | "default"
+  | "primary"
+  | "secondary"
+  | "success"
+  | "warning"
+  | "danger";
+
+type StateBanner = {
+  label: string;
+  detail: string;
+  color: StateBannerColor;
+  icon: LucideIcon;
+  iconClassName: string;
+  iconOnly?: boolean;
+};
+
+const toastColorForMessage = (message: string): "primary" | "success" | "warning" | "danger" => {
+  const normalized = message.toLowerCase();
+  if (
+    normalized.includes("error") ||
+    normalized.includes("failed") ||
+    normalized.includes("unable") ||
+    normalized.includes("blocked")
+  ) {
+    return "danger";
+  }
+  if (
+    normalized.includes("warning") ||
+    normalized.includes("timeout") ||
+    normalized.includes("reconnect")
+  ) {
+    return "warning";
+  }
+  if (
+    normalized.includes("synced") ||
+    normalized.includes("saved") ||
+    normalized.includes("added") ||
+    normalized.includes("queued")
+  ) {
+    return "success";
+  }
+  return "primary";
+};
+
 const normalizeForSort = (value: string | null | undefined): string =>
   value?.trim().toUpperCase() ?? "";
 
@@ -319,6 +370,9 @@ const stripTrailingTeamSuffix = (value: string): string =>
 
 const buildClockRingGradient = (progressPercent: number): string =>
   `conic-gradient(rgba(199,155,59,0.95) ${progressPercent}%, rgba(199,155,59,0.18) 0)`;
+
+const sourceLinkForPage = (page: string): string =>
+  `https://lol.fandom.com/wiki/${page.replace(/\s+/g, "_")}`;
 
 const sortAvailablePlayers = (
   players: DraftDetail["availablePlayers"],
@@ -513,6 +567,7 @@ export const DraftRoom = ({
   const [isMobileQueueSheetOpen, setIsMobileQueueSheetOpen] = useState(false);
   const [timelineHighlightPick, setTimelineHighlightPick] = useState<number | null>(null);
   const [showStatusDetails, setShowStatusDetails] = useState(false);
+  const [isFormatPopoverOpen, setIsFormatPopoverOpen] = useState(false);
   const [realtimeChannelVersion, setRealtimeChannelVersion] = useState(0);
   const [selectionNotice, setSelectionNotice] = useState<string | null>(null);
   const [showShortcutsHelp, setShowShortcutsHelp] = useState(false);
@@ -533,6 +588,7 @@ export const DraftRoom = ({
   const mobilePlayerSheetTouchStartYRef = useRef<number | null>(null);
   const timeoutExpectedPickRef = useRef<number | null>(null);
   const reconnectStartedAtMsRef = useRef<number | null>(null);
+  const lastRealtimeSyncToastAtMsRef = useRef<number>(0);
   const reconnectRetryTimerRef = useRef<number | null>(null);
   const previousAutopickLockedRef = useRef<boolean | null>(null);
   const lastStalenessBucketRef = useRef<number | null>(null);
@@ -549,14 +605,18 @@ export const DraftRoom = ({
     }
   }, []);
 
+  const dismissToast = useCallback((toastId: number) => {
+    setToastNotices((prev) => prev.filter((entry) => entry.id !== toastId));
+  }, []);
+
   const pushToast = useCallback((message: string) => {
     const id = latestToastIdRef.current + 1;
     latestToastIdRef.current = id;
     setToastNotices((prev) => [...prev, { id, message }].slice(-4));
     window.setTimeout(() => {
-      setToastNotices((prev) => prev.filter((entry) => entry.id !== id));
+      dismissToast(id);
     }, TOAST_DURATION_MS);
-  }, []);
+  }, [dismissToast]);
 
   const pushSystemFeedEvent = useCallback((label: string, overallPick?: number) => {
     const id = latestSystemFeedEventIdRef.current + 1;
@@ -1034,12 +1094,19 @@ export const DraftRoom = ({
     }
     if (connectionStatus === "SUBSCRIBED") {
       const reconnectStartedAt = reconnectStartedAtMsRef.current;
-      if (typeof reconnectStartedAt === "number") {
+      const hadReconnect = typeof reconnectStartedAt === "number";
+      if (hadReconnect) {
         trackDraftEvent("reconnect.end", { durationMs: Date.now() - reconnectStartedAt });
       }
       reconnectStartedAtMsRef.current = null;
-      pushSystemFeedEvent("Realtime connection restored.");
-      pushToast("Synced to live draft.");
+      if (hadReconnect) {
+        pushSystemFeedEvent("Realtime connection restored.");
+        const nowMs = Date.now();
+        if (nowMs - lastRealtimeSyncToastAtMsRef.current >= REALTIME_SYNC_TOAST_COOLDOWN_MS) {
+          pushToast("Synced to live draft.");
+          lastRealtimeSyncToastAtMsRef.current = nowMs;
+        }
+      }
       jumpToTimelinePick(draft?.nextPick?.overallPick ?? null);
     } else if (connectionStatus === "CHANNEL_ERROR" || connectionStatus === "TIMED_OUT") {
       queueClientMetric("client_realtime_disconnect", 1, {
@@ -2674,7 +2741,7 @@ export const DraftRoom = ({
       analytics,
     };
   }, [draft?.picks, pickQueue, roleCounts, rosterNeeds, selectedPlayer]);
-  const stateBanner = useMemo(() => {
+  const stateBanner = useMemo<StateBanner>(() => {
     const isRealtimeDisconnected =
       connectionStatus === "TIMED_OUT" ||
       connectionStatus === "CHANNEL_ERROR" ||
@@ -2686,6 +2753,8 @@ export const DraftRoom = ({
         label: "Resolving timeout outcome...",
         detail: timeoutOutcomeMessage,
         color: "warning" as const,
+        icon: ShieldAlert,
+        iconClassName: "text-warning-300",
       };
     }
     if (isRedConnectionState) {
@@ -2693,6 +2762,8 @@ export const DraftRoom = ({
         label: "Reconnecting (Read-only)",
         detail: `Last synced ${secondsSinceLastSync}s ago.`,
         color: "danger" as const,
+        icon: WifiOff,
+        iconClassName: "text-danger-300",
       };
     }
     if (isYellowConnectionState) {
@@ -2701,28 +2772,53 @@ export const DraftRoom = ({
           label: "Connecting realtime...",
           detail: `Last synced ${secondsSinceLastSync}s ago.`,
           color: "default" as const,
+          icon: Wifi,
+          iconClassName: "text-default-300",
         };
       }
       return {
         label: "Live (polling fallback)",
         detail: `Realtime ${connectionLabel}. Last synced ${secondsSinceLastSync}s ago.`,
         color: "default" as const,
+        icon: Wifi,
+        iconClassName: "text-warning-300",
       };
     }
     if (pickPending) {
-      return { label: "Submitting pick...", detail: "Waiting for server confirmation.", color: "warning" as const };
+      return {
+        label: "Submitting pick...",
+        detail: "Waiting for server confirmation.",
+        color: "warning" as const,
+        icon: Gauge,
+        iconClassName: "text-warning-300",
+      };
     }
     if (draftStatusValue === "completed") {
-      return { label: "Draft complete", detail: "Board is locked.", color: "secondary" as const };
+      return {
+        label: "Draft complete",
+        detail: "Board is locked.",
+        color: "secondary" as const,
+        icon: SquareCheckBig,
+        iconClassName: "text-default-200",
+      };
     }
     if (draftStatusValue === "paused") {
-      return { label: "Paused by commissioner", detail: "Waiting for resume.", color: "warning" as const };
+      return {
+        label: "Paused by commissioner",
+        detail: "Waiting for resume.",
+        color: "warning" as const,
+        icon: Pause,
+        iconClassName: "text-warning-300",
+      };
     }
     if (canCurrentUserPick) {
       return {
         label: "Live",
         detail: autopickPreviewLine ?? "Select and confirm your pick.",
         color: "success" as const,
+        icon: Wifi,
+        iconClassName: "text-success-300",
+        iconOnly: true,
       };
     }
     if (isUpNext) {
@@ -2730,15 +2826,36 @@ export const DraftRoom = ({
         label: "Live",
         detail: "You're up next (1 pick away).",
         color: "primary" as const,
+        icon: UserCheck,
+        iconClassName: "text-primary-300",
       };
     }
     if (isLiveState) {
-      return { label: "Live", detail: "All systems normal.", color: "success" as const };
+      return {
+        label: "Live",
+        detail: "All systems normal.",
+        color: "success" as const,
+        icon: Wifi,
+        iconClassName: "text-success-300",
+        iconOnly: true,
+      };
     }
     if (isLobbyState) {
-      return { label: "Waiting room", detail: "Ready check in progress.", color: "default" as const };
+      return {
+        label: "Waiting room",
+        detail: "Ready check in progress.",
+        color: "default" as const,
+        icon: UserCheck,
+        iconClassName: "text-default-300",
+      };
     }
-    return { label: "Draft state", detail: "Awaiting updates.", color: "default" as const };
+    return {
+      label: "Draft state",
+      detail: "Awaiting updates.",
+      color: "default" as const,
+      icon: Gauge,
+      iconClassName: "text-default-300",
+    };
   }, [
     autopickPreviewLine,
     canCurrentUserPick,
@@ -2760,6 +2877,9 @@ export const DraftRoom = ({
     if (stateBanner.color === "warning") {
       return "border-warning-300/35 bg-warning-500/8";
     }
+    if (stateBanner.color === "secondary") {
+      return "border-default-300/45 bg-default-500/8";
+    }
     if (stateBanner.color === "success") {
       return "border-success-300/35 bg-success-500/8";
     }
@@ -2768,6 +2888,7 @@ export const DraftRoom = ({
     }
     return "border-default-200/45 bg-content2/30";
   }, [stateBanner.color]);
+  const StateBannerIcon = stateBanner.icon;
   const showReadOnlyInteractionOverlay = isLiveState && isRealtimeReadOnly;
   const queueAutopickTargetLine =
     settings.autoPickFromQueue && queuedEligiblePlayers.length > 0
@@ -2795,6 +2916,10 @@ export const DraftRoom = ({
     );
   }
 
+  const currentYear = new Date().getFullYear();
+  const footerUpdatedLabel = new Date(draft.serverNow).toLocaleString();
+  const footerSourceLink = sourceLinkForPage(draft.sourcePage);
+
   return (
     <section
       className={`space-y-5 pb-24 md:pb-6 ${
@@ -2811,15 +2936,32 @@ export const DraftRoom = ({
           : ""
       }`}
     >
-      <div className="fixed inset-x-3 top-20 z-50 space-y-2 md:inset-x-auto md:right-3">
-        {toastNotices.map((toast) => (
-          <div
-            key={toast.id}
-            className="max-w-[20rem] rounded-medium border border-primary-300/35 bg-content1/95 px-3 py-2 text-xs shadow-lg backdrop-blur"
-          >
-            {toast.message}
-          </div>
-        ))}
+      <div className="pointer-events-none fixed bottom-3 right-3 z-50 flex w-[min(22rem,calc(100vw-1.5rem))] flex-col gap-2">
+        <AnimatePresence initial={false}>
+          {toastNotices.map((toast) => (
+            <motion.div
+              key={toast.id}
+              layout
+              animate={{ opacity: 1, x: 0, y: 0, scale: 1 }}
+              exit={{ opacity: 0, x: 18, y: 6, scale: 0.98 }}
+              initial={{ opacity: 0, x: 24, y: 10, scale: 0.98 }}
+              transition={{ duration: 0.18, ease: "easeOut" }}
+            >
+              <Alert
+                color={toastColorForMessage(toast.message)}
+                description={toast.message}
+                isClosable
+                radius="md"
+                variant="faded"
+                className="pointer-events-auto w-full bg-content1/95 text-xs shadow-lg backdrop-blur"
+                classNames={{
+                  description: "text-xs",
+                }}
+                onClose={() => dismissToast(toast.id)}
+              />
+            </motion.div>
+          ))}
+        </AnimatePresence>
       </div>
       <Card
         className={`relative sticky top-2 z-30 border bg-gradient-to-br from-content1/95 via-content1/95 to-content2/70 shadow-md backdrop-blur ${
@@ -2866,13 +3008,46 @@ export const DraftRoom = ({
               <Chip color={statusColor(draft.status)} size="sm" variant="flat">
                 {draft.status}
               </Chip>
-              <Chip size="sm" variant="flat">
-                Snake
-              </Chip>
             </div>
             <p className="text-xs text-default-500">
               {draft.leagueSlug} {draft.seasonYear} • {draft.pickSeconds}s timer • {draft.roundCount} rounds
             </p>
+            <div className="flex items-center gap-1.5 text-xs text-default-500">
+              <span>Format: Reverse snake (3RR)</span>
+              <Popover
+                isOpen={isFormatPopoverOpen}
+                placement="bottom-start"
+                showArrow
+                onOpenChange={setIsFormatPopoverOpen}
+              >
+                <PopoverTrigger>
+                  <button
+                    aria-label="Explain reverse snake (3RR)"
+                    className="inline-flex h-5 w-5 items-center justify-center rounded-full text-default-400 transition hover:bg-content2/40 hover:text-default-200"
+                    type="button"
+                    onBlur={() => setIsFormatPopoverOpen(false)}
+                    onFocus={() => setIsFormatPopoverOpen(true)}
+                    onMouseEnter={() => setIsFormatPopoverOpen(true)}
+                    onMouseLeave={() => setIsFormatPopoverOpen(false)}
+                  >
+                    <Info className="h-3.5 w-3.5" />
+                  </button>
+                </PopoverTrigger>
+                <PopoverContent
+                  className="max-w-xs p-3 text-xs text-default-600"
+                  onMouseEnter={() => setIsFormatPopoverOpen(true)}
+                  onMouseLeave={() => setIsFormatPopoverOpen(false)}
+                >
+                  <div className="space-y-1.5">
+                    <p className="font-semibold text-default-800">Reverse snake (3RR)</p>
+                    <p>Round 1: 1 to N</p>
+                    <p>Round 2: N to 1</p>
+                    <p>Round 3: N to 1 (reversal round)</p>
+                    <p>Round 4+: alternate direction each round.</p>
+                  </div>
+                </PopoverContent>
+              </Popover>
+            </div>
           </div>
 
           <div className="mx-auto flex items-center gap-3">
@@ -2895,10 +3070,23 @@ export const DraftRoom = ({
             </div>
           </div>
 
-          <div className="space-y-2 md:justify-self-end">
-            <div className={`rounded-large border px-3 py-2 text-xs ${statusBannerToneClass}`}>
-              <p className="font-semibold">{stateBanner.label}</p>
-            </div>
+          <div className="space-y-2 md:justify-self-end md:self-start md:pt-0.5">
+            {stateBanner.iconOnly ? (
+              <Tooltip content={stateBanner.label}>
+                <div
+                  className={`ml-auto grid h-9 w-9 place-items-center rounded-large border ${statusBannerToneClass}`}
+                >
+                  <StateBannerIcon className={`h-4 w-4 ${stateBanner.iconClassName}`} />
+                </div>
+              </Tooltip>
+            ) : (
+              <div
+                className={`ml-auto flex items-center gap-2 rounded-large border px-3 py-2 text-xs ${statusBannerToneClass}`}
+              >
+                <StateBannerIcon className={`h-4 w-4 ${stateBanner.iconClassName}`} />
+                <p className="font-semibold">{stateBanner.label}</p>
+              </div>
+            )}
             {!isMobileViewport ? (
               <div className="flex flex-wrap items-center justify-start gap-2 md:justify-end">
                 <Tooltip content={showStatusDetails ? "Hide status details" : "Show status details"}>
@@ -4014,7 +4202,7 @@ export const DraftRoom = ({
                     <div className="overflow-x-auto pb-1">
                       <Tabs
                         aria-label="Position filter"
-                        className="w-max min-w-full"
+                        className="mx-auto w-max"
                         color="primary"
                         selectedKey={roleFilter}
                         size="sm"
@@ -4574,86 +4762,6 @@ export const DraftRoom = ({
                     </Button>
                   </div>
                 </div>
-                <div className="rounded-large border border-default-200/35 bg-content2/35 p-2.5">
-                  <div className="grid grid-cols-1 gap-2 lg:grid-cols-[minmax(0,1fr)_180px]">
-                    <Input
-                      aria-label="Search players"
-                      id="draft-player-search"
-                      placeholder="Search player, team, or role"
-                      size="sm"
-                      startContent={<Search className="h-4 w-4 text-default-500" />}
-                      value={searchInputValue}
-                      onValueChange={setSearchInputValue}
-                    />
-                    <label className="text-xs font-medium text-default-500">
-                      Sort by
-                      <select
-                        className="mt-1 w-full rounded-medium border border-default-300/40 bg-content1 px-2 py-1.5 text-sm"
-                        value={playerSort}
-                        onChange={(event) => setPlayerSort(event.target.value as PlayerSortKey)}
-                      >
-                        <option value="name">Name</option>
-                        <option value="rank">OVR Rank</option>
-                        <option value="pos">POS Rank</option>
-                        <option value="team">Team</option>
-                        <option value="role">Role</option>
-                      </select>
-                    </label>
-                  </div>
-                  <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <Button
-                        color={showNeededRolesOnly ? "primary" : "default"}
-                        size="sm"
-                        variant={showNeededRolesOnly ? "solid" : "flat"}
-                        onPress={() => setShowNeededRolesOnly((prev) => !prev)}
-                      >
-                        {showNeededRolesOnly ? "Needs only: On" : "Needs only: Off"}
-                      </Button>
-                      {hasAnyPlayerFilter ? (
-                        <Button
-                          size="sm"
-                          variant="light"
-                          onPress={resetPlayerFilters}
-                        >
-                          Reset filters
-                        </Button>
-                      ) : null}
-                    </div>
-                    <p className="text-[11px] text-default-500">
-                      {hasAnyPlayerFilter
-                        ? `${activePlayerFilterCount} filter${activePlayerFilterCount === 1 ? "" : "s"} active`
-                        : "No active filters"}
-                    </p>
-                  </div>
-                  {showNeededRolesOnly ? (
-                    <p className="mt-1 text-[11px] text-primary-200">Showing roles you still need</p>
-                  ) : null}
-                </div>
-                <div className="rounded-large border border-default-200/30 bg-content2/25 px-2 py-1.5">
-                  <p className="px-1 text-[11px] font-semibold uppercase tracking-wide text-default-500">
-                    Role filter
-                  </p>
-                  <div className="overflow-x-auto pb-1">
-                    <Tabs
-                      aria-label="Position filter"
-                      className="w-max min-w-full"
-                      color="primary"
-                      selectedKey={roleFilter}
-                      size="sm"
-                      variant="underlined"
-                      onSelectionChange={(key) => applyRoleFilter(String(key))}
-                    >
-                      {roleFilters.map((filter) => (
-                        <Tab
-                          key={filter.value}
-                          isDisabled={filter.value !== "ALL" && filter.count === 0}
-                          title={`${filter.label} (${filter.count})${filter.isScarce ? " • Low" : ""}`}
-                        />
-                      ))}
-                    </Tabs>
-                  </div>
-                </div>
               </CardHeader>
               <CardBody className="flex min-h-0 flex-1 flex-col gap-3">
                 {showShortcutsHelp ? (
@@ -4791,6 +4899,84 @@ export const DraftRoom = ({
                     </div>
                   </div>
                 ) : null}
+                <div className="rounded-large border border-default-200/30 bg-content2/25 px-2 py-1.5">
+                  <p className="px-1 text-[11px] font-semibold uppercase tracking-wide text-default-500">
+                    Role filter
+                  </p>
+                  <div className="overflow-x-auto pb-1">
+                    <Tabs
+                      aria-label="Position filter"
+                      className="mx-auto w-max"
+                      color="primary"
+                      selectedKey={roleFilter}
+                      size="sm"
+                      variant="underlined"
+                      onSelectionChange={(key) => applyRoleFilter(String(key))}
+                    >
+                      {roleFilters.map((filter) => (
+                        <Tab
+                          key={filter.value}
+                          isDisabled={filter.value !== "ALL" && filter.count === 0}
+                          title={`${filter.label} (${filter.count})${filter.isScarce ? " • Low" : ""}`}
+                        />
+                      ))}
+                    </Tabs>
+                  </div>
+                </div>
+                <div className="rounded-large border border-default-200/35 bg-content2/35 p-2.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button
+                        color={showNeededRolesOnly ? "primary" : "default"}
+                        size="sm"
+                        variant={showNeededRolesOnly ? "solid" : "flat"}
+                        onPress={() => setShowNeededRolesOnly((prev) => !prev)}
+                      >
+                        {showNeededRolesOnly ? "Needs only: On" : "Needs only: Off"}
+                      </Button>
+                      {hasAnyPlayerFilter ? (
+                        <Button
+                          size="sm"
+                          variant="light"
+                          onPress={resetPlayerFilters}
+                        >
+                          Reset filters
+                        </Button>
+                      ) : null}
+                    </div>
+                    <p className="text-[11px] text-default-500">
+                      {hasAnyPlayerFilter
+                        ? `${activePlayerFilterCount} filter${activePlayerFilterCount === 1 ? "" : "s"} active`
+                        : "No active filters"}
+                    </p>
+                  </div>
+                  {showNeededRolesOnly ? (
+                    <p className="mt-1 text-[11px] text-primary-200">Showing roles you still need</p>
+                  ) : null}
+                  <div className="mt-2 grid grid-cols-1 gap-2 lg:grid-cols-[minmax(0,1fr)_180px]">
+                    <Input
+                      aria-label="Search players"
+                      id="draft-player-search"
+                      placeholder="Search player, team, or role"
+                      size="sm"
+                      startContent={<Search className="h-4 w-4 text-default-500" />}
+                      value={searchInputValue}
+                      onValueChange={setSearchInputValue}
+                    />
+                    <select
+                      aria-label="Sort players"
+                      className="w-full rounded-medium border border-default-300/40 bg-content1 px-2 py-1.5 text-sm"
+                      value={playerSort}
+                      onChange={(event) => setPlayerSort(event.target.value as PlayerSortKey)}
+                    >
+                      <option value="name">Name</option>
+                      <option value="rank">OVR Rank</option>
+                      <option value="pos">POS Rank</option>
+                      <option value="team">Team</option>
+                      <option value="role">Role</option>
+                    </select>
+                  </div>
+                </div>
                 <div className="min-h-0 flex-1 overflow-hidden rounded-large border border-default-200/40 bg-content2/45">
                   <div className="h-full min-h-0 overflow-auto">
                     <HeroTable
@@ -5600,6 +5786,33 @@ export const DraftRoom = ({
           </div>
         </div>
       ) : null}
+
+      <footer className="mt-8 border-t border-default-200/28 pt-4">
+        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 text-[11px] text-[#d8e0ee]">
+          <div className="min-w-0">
+            <p className="truncate font-semibold uppercase tracking-[0.14em] text-[#f5f8ff]">
+              INSIGHT GAMING FANTASY LEAGUE
+            </p>
+            <p className="mt-1 text-[#d2dced]">© {currentYear} Insight Gaming Fantasy League. All rights reserved.</p>
+          </div>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[#dce4f2] md:justify-end">
+            <span className="mono-points text-[11px] text-[#e4ebf8]">Updated: {footerUpdatedLabel}</span>
+            <span className="hidden text-[#a9b4c9] md:inline">•</span>
+            <span className="inline-flex items-center gap-1 text-[11px] text-[#e4ebf8]">
+              Source:
+              <Link
+                href={footerSourceLink}
+                target="_blank"
+                rel="noreferrer"
+                underline="hover"
+                className="max-w-[280px] truncate text-[11px] text-[#f2f6ff] data-[hover=true]:text-[#f0d58e]"
+              >
+                {draft.sourcePage}
+              </Link>
+            </span>
+          </div>
+        </div>
+      </footer>
     </section>
   );
 };
