@@ -1553,9 +1553,13 @@ export const DraftRoom = ({
         .filter((player): player is DraftDetail["availablePlayers"][number] => Boolean(player)),
     [availablePlayersByName, pickQueue],
   );
+  const queuedPlayerNameSet = useMemo(() => new Set(pickQueue), [pickQueue]);
   const selectedPlayer = selectedPlayerName
     ? availablePlayersByName.get(selectedPlayerName) ?? null
     : null;
+  const isSelectedPlayerQueued = selectedPlayer
+    ? queuedPlayerNameSet.has(selectedPlayer.playerName)
+    : false;
 
   useEffect(() => {
     const previous = previousAutopickLockedRef.current;
@@ -1597,6 +1601,18 @@ export const DraftRoom = ({
         return participantUserId === currentUserId;
       }),
     [assignedParticipantByOverallPick, currentUserId, draft?.picks],
+  );
+  const orderedUserPicks = useMemo(
+    () => [...userPicks].sort((left, right) => left.overallPick - right.overallPick),
+    [userPicks],
+  );
+  const recentActivityPicks = useMemo(
+    () => [...(draft?.picks ?? []).slice(-10)].reverse(),
+    [draft?.picks],
+  );
+  const boardRoundNumbers = useMemo(
+    () => Array.from({ length: draft?.roundCount ?? 0 }, (_, roundOffset) => roundOffset + 1),
+    [draft?.roundCount],
   );
   const userRoleSet = useMemo(
     () => new Set(userPicks.map((pick) => normalizeRole(pick.playerRole))),
@@ -1662,7 +1678,7 @@ export const DraftRoom = ({
   const quickQueueSuggestions = useMemo(() => {
     const suggestions: Array<{ label: string; playerName: string }> = [];
     const seen = new Set<string>();
-    const queueSet = new Set(pickQueue);
+    const queueSet = queuedPlayerNameSet;
 
     for (const role of rosterNeeds) {
       const candidate = sortedAvailablePlayers.find(
@@ -1695,7 +1711,7 @@ export const DraftRoom = ({
       }
     }
     return suggestions;
-  }, [pickQueue, rosterNeeds, sortedAvailablePlayers]);
+  }, [queuedPlayerNameSet, rosterNeeds, sortedAvailablePlayers]);
   const hasSearchFilter = searchInputValue.trim().length > 0;
   const hasRoleFilter = roleFilter !== "ALL";
   const activePlayerFilterCount =
@@ -1892,16 +1908,17 @@ export const DraftRoom = ({
     if (!draft?.availablePlayers || userPicks.length >= 5) {
       return null;
     }
-    const eligible = draft.availablePlayers
-      .filter((player) => {
-        const normalizedRole = normalizeRole(player.playerRole);
-        if (normalizedRole === UNASSIGNED_ROLE) {
-          return false;
-        }
-        return !userRoleSet.has(normalizedRole);
-      })
-      .sort(compareAutopickCandidates);
-    return eligible[0] ?? null;
+    let bestCandidate: DraftDetail["availablePlayers"][number] | null = null;
+    for (const player of draft.availablePlayers) {
+      const normalizedRole = normalizeRole(player.playerRole);
+      if (normalizedRole === UNASSIGNED_ROLE || userRoleSet.has(normalizedRole)) {
+        continue;
+      }
+      if (!bestCandidate || compareAutopickCandidates(player, bestCandidate) < 0) {
+        bestCandidate = player;
+      }
+    }
+    return bestCandidate;
   }, [draft?.availablePlayers, userPicks.length, userRoleSet]);
   const queueFirstFallbackPlayerName = useMemo(
     () => nextQueuedEligiblePlayerName ?? serverTimeoutFallbackPlayer?.playerName ?? null,
@@ -2425,42 +2442,45 @@ export const DraftRoom = ({
     });
   };
 
-  const handlePlayerTapOrClick = (
-    playerName: string,
-    event?: { target: EventTarget | null },
-  ) => {
-    const target = event?.target;
-    if (target instanceof HTMLElement && target.closest("button")) {
-      return;
-    }
-
-    setSelectedPlayerName(playerName);
-    setSelectionNotice(null);
-    if (!isMobileViewport) {
-      setIsPlayerDetailDrawerOpen(true);
-    }
-
-    const nowMs = Date.now();
-    const previous = lastPlayerTapRef.current;
-    if (
-      previous &&
-      previous.playerName === playerName &&
-      nowMs - previous.atMs <= DOUBLE_TAP_WINDOW_MS
-    ) {
-      lastPlayerTapRef.current = null;
-      if (pickQueue.includes(playerName)) {
+  const handlePlayerTapOrClick = useCallback(
+    (
+      playerName: string,
+      event?: { target: EventTarget | null },
+    ) => {
+      const target = event?.target;
+      if (target instanceof HTMLElement && target.closest("button")) {
         return;
       }
-      addPlayerToQueue(playerName);
-      pushToast(`${playerName} added to queue.`);
-      return;
-    }
 
-    lastPlayerTapRef.current = {
-      playerName,
-      atMs: nowMs,
-    };
-  };
+      setSelectedPlayerName(playerName);
+      setSelectionNotice(null);
+      if (!isMobileViewport) {
+        setIsPlayerDetailDrawerOpen(true);
+      }
+
+      const nowMs = Date.now();
+      const previous = lastPlayerTapRef.current;
+      if (
+        previous &&
+        previous.playerName === playerName &&
+        nowMs - previous.atMs <= DOUBLE_TAP_WINDOW_MS
+      ) {
+        lastPlayerTapRef.current = null;
+        if (queuedPlayerNameSet.has(playerName)) {
+          return;
+        }
+        addPlayerToQueue(playerName);
+        pushToast(`${playerName} added to queue.`);
+        return;
+      }
+
+      lastPlayerTapRef.current = {
+        playerName,
+        atMs: nowMs,
+      };
+    },
+    [addPlayerToQueue, isMobileViewport, pushToast, queuedPlayerNameSet],
+  );
 
   const requestManualDraft = useCallback(
     (playerName: string | null = draftActionPlayerName) => {
@@ -2536,7 +2556,7 @@ export const DraftRoom = ({
         (event.key === "q" || event.key === "Q") &&
         selectedPlayerName &&
         canQueueActions &&
-        !pickQueue.includes(selectedPlayerName)
+        !queuedPlayerNameSet.has(selectedPlayerName)
       ) {
         event.preventDefault();
         addPlayerToQueue(selectedPlayerName);
@@ -2579,8 +2599,8 @@ export const DraftRoom = ({
     addPlayerToQueue,
     canQueueActions,
     isMobileViewport,
-    pickQueue,
     pushToast,
+    queuedPlayerNameSet,
     requestManualDraft,
     selectedPlayerName,
     displayAvailablePlayers,
@@ -4003,12 +4023,12 @@ export const DraftRoom = ({
                   </div>
                   <div className="grid grid-cols-2 gap-2">
                     <Button
-                      color={pickQueue.includes(selectedPlayer.playerName) ? "primary" : "default"}
-                      isDisabled={pickQueue.includes(selectedPlayer.playerName) || !canQueueActions}
+                      color={isSelectedPlayerQueued ? "primary" : "default"}
+                      isDisabled={isSelectedPlayerQueued || !canQueueActions}
                       variant="flat"
                       onPress={() => addPlayerToQueue(selectedPlayer.playerName)}
                     >
-                      {pickQueue.includes(selectedPlayer.playerName) ? "Queued" : "Queue"}
+                      {isSelectedPlayerQueued ? "Queued" : "Queue"}
                     </Button>
                     <Button
                       color="primary"
@@ -4220,7 +4240,7 @@ export const DraftRoom = ({
                     </div>
                     <div className="space-y-2">
                       {displayAvailablePlayers.map((player) => {
-                        const isQueued = pickQueue.includes(player.playerName);
+                        const isQueued = queuedPlayerNameSet.has(player.playerName);
                         const isSelected = selectedPlayerName === player.playerName;
                         return (
                           <div
@@ -4855,10 +4875,10 @@ export const DraftRoom = ({
                         ) : null}
                         {!hasPendingManualConfirm ? (
                           <Button
-                            color={selectedPlayer && pickQueue.includes(selectedPlayer.playerName) ? "primary" : "default"}
+                            color={selectedPlayer && isSelectedPlayerQueued ? "primary" : "default"}
                             isDisabled={
                               !selectedPlayer ||
-                              pickQueue.includes(selectedPlayer.playerName) ||
+                              isSelectedPlayerQueued ||
                               !canQueueActions
                             }
                             size="sm"
@@ -4870,7 +4890,7 @@ export const DraftRoom = ({
                               addPlayerToQueue(selectedPlayer.playerName);
                             }}
                           >
-                            {selectedPlayer && pickQueue.includes(selectedPlayer.playerName)
+                            {selectedPlayer && isSelectedPlayerQueued
                               ? "Queued"
                               : "Queue"}
                           </Button>
@@ -5001,7 +5021,7 @@ export const DraftRoom = ({
                         emptyContent={<span className="text-xs text-default-500">No players found.</span>}
                       >
                         {displayAvailablePlayers.map((player) => {
-                          const isQueued = pickQueue.includes(player.playerName);
+                          const isQueued = queuedPlayerNameSet.has(player.playerName);
                           const isSelected = selectedPlayerName === player.playerName;
                           const playerRoleIconUrl = roleIconUrl(player.playerRole);
                           return (
@@ -5218,51 +5238,49 @@ export const DraftRoom = ({
                           <p className="text-xs text-default-500">No picks yet.</p>
                         ) : (
                           <ul className="space-y-1.5">
-                            {[...userPicks]
-                              .sort((left, right) => left.overallPick - right.overallPick)
-                              .map((pick) => {
-                                const pickImageUrl = pickPlayerImageUrl(pick);
-                                return (
-                                  <li
-                                    key={`desktop-team-pick-${pick.id}`}
-                                    className="flex items-center justify-between gap-2 rounded-medium border border-default-200/30 px-2 py-1.5 text-xs"
-                                  >
-                                    <div className="min-w-0 flex items-center gap-2">
-                                      {pickImageUrl ? (
-                                        <Image
-                                          alt={`${pick.playerName} portrait`}
-                                          className="h-6 w-6 rounded-full border border-default-300/50 object-cover"
-                                          height={24}
-                                          src={pickImageUrl}
-                                          width={24}
-                                        />
-                                      ) : pick.teamIconUrl ? (
-                                        <CroppedTeamLogo
-                                          alt={`${pick.playerName} team logo`}
-                                          frameClassName="h-6 w-7"
-                                          height={24}
-                                          imageClassName="h-6"
-                                          src={pick.teamIconUrl}
-                                          width={28}
-                                        />
-                                      ) : (
-                                        <span className="h-6 w-6 shrink-0 rounded-full border border-default-300/40 bg-content2/40" />
-                                      )}
-                                      <div className="min-w-0">
-                                        <p className="truncate font-medium">{pick.playerName}</p>
-                                        <p className="truncate text-default-500">
-                                          {pick.playerTeam ?? "Unknown team"}
-                                        </p>
-                                      </div>
+                            {orderedUserPicks.map((pick) => {
+                              const pickImageUrl = pickPlayerImageUrl(pick);
+                              return (
+                                <li
+                                  key={`desktop-team-pick-${pick.id}`}
+                                  className="flex items-center justify-between gap-2 rounded-medium border border-default-200/30 px-2 py-1.5 text-xs"
+                                >
+                                  <div className="min-w-0 flex items-center gap-2">
+                                    {pickImageUrl ? (
+                                      <Image
+                                        alt={`${pick.playerName} portrait`}
+                                        className="h-6 w-6 rounded-full border border-default-300/50 object-cover"
+                                        height={24}
+                                        src={pickImageUrl}
+                                        width={24}
+                                      />
+                                    ) : pick.teamIconUrl ? (
+                                      <CroppedTeamLogo
+                                        alt={`${pick.playerName} team logo`}
+                                        frameClassName="h-6 w-7"
+                                        height={24}
+                                        imageClassName="h-6"
+                                        src={pick.teamIconUrl}
+                                        width={28}
+                                      />
+                                    ) : (
+                                      <span className="h-6 w-6 shrink-0 rounded-full border border-default-300/40 bg-content2/40" />
+                                    )}
+                                    <div className="min-w-0">
+                                      <p className="truncate font-medium">{pick.playerName}</p>
+                                      <p className="truncate text-default-500">
+                                        {pick.playerTeam ?? "Unknown team"}
+                                      </p>
                                     </div>
-                                    {pick.playerRole ? (
-                                      <Chip className={roleChipClassName(pick.playerRole)} size="sm" variant="flat">
-                                        {formatRoleLabel(pick.playerRole)}
-                                      </Chip>
-                                    ) : null}
-                                  </li>
-                                );
-                              })}
+                                  </div>
+                                  {pick.playerRole ? (
+                                    <Chip className={roleChipClassName(pick.playerRole)} size="sm" variant="flat">
+                                      {formatRoleLabel(pick.playerRole)}
+                                    </Chip>
+                                  ) : null}
+                                </li>
+                              );
+                            })}
                           </ul>
                         )}
                       </div>
@@ -5273,30 +5291,27 @@ export const DraftRoom = ({
                         <p className="text-xs text-default-500">No picks yet.</p>
                       ) : (
                         <ul className="space-y-1.5">
-                          {[...draft.picks]
-                            .slice(-10)
-                            .reverse()
-                            .map((pick) => {
-                              const assignedParticipant = assignedParticipantByOverallPick.get(
-                                pick.overallPick,
-                              );
-                              const participantLabel =
-                                assignedParticipant?.displayName ?? pick.participantDisplayName;
-                              return (
-                                <li
-                                  key={`desktop-activity-${pick.id}`}
-                                  className="rounded-medium border border-default-200/30 px-2 py-1.5 text-xs"
-                                >
-                                  <p className="font-medium">
-                                    #{pick.overallPick} {participantLabel}
-                                  </p>
-                                  <p className="truncate text-default-500">
-                                    {pick.playerName}
-                                    {pick.playerRole ? ` (${formatRoleLabel(pick.playerRole)})` : ""}
-                                  </p>
-                                </li>
-                              );
-                            })}
+                          {recentActivityPicks.map((pick) => {
+                            const assignedParticipant = assignedParticipantByOverallPick.get(
+                              pick.overallPick,
+                            );
+                            const participantLabel =
+                              assignedParticipant?.displayName ?? pick.participantDisplayName;
+                            return (
+                              <li
+                                key={`desktop-activity-${pick.id}`}
+                                className="rounded-medium border border-default-200/30 px-2 py-1.5 text-xs"
+                              >
+                                <p className="font-medium">
+                                  #{pick.overallPick} {participantLabel}
+                                </p>
+                                <p className="truncate text-default-500">
+                                  {pick.playerName}
+                                  {pick.playerRole ? ` (${formatRoleLabel(pick.playerRole)})` : ""}
+                                </p>
+                              </li>
+                            );
+                          })}
                         </ul>
                       )}
                     </div>
@@ -5386,8 +5401,7 @@ export const DraftRoom = ({
         <CardBody className="space-y-3">
           <div className="rounded-large border border-default-200/40 bg-content2/35 p-3 sm:p-4">
             <div className="space-y-4">
-              {Array.from({ length: draft.roundCount }, (_, roundOffset) => {
-                const roundNumber = roundOffset + 1;
+              {boardRoundNumbers.map((roundNumber) => {
                 return (
                   <section
                     key={roundNumber}
@@ -5650,12 +5664,12 @@ export const DraftRoom = ({
             <p className="text-[11px] text-default-500">Swipe down to close</p>
             <div className="grid grid-cols-2 gap-2">
               <Button
-                color={pickQueue.includes(selectedPlayer.playerName) ? "primary" : "default"}
-                isDisabled={pickQueue.includes(selectedPlayer.playerName) || !canQueueActions}
+                color={isSelectedPlayerQueued ? "primary" : "default"}
+                isDisabled={isSelectedPlayerQueued || !canQueueActions}
                 variant="flat"
                 onPress={() => addPlayerToQueue(selectedPlayer.playerName)}
               >
-                {pickQueue.includes(selectedPlayer.playerName) ? "Queued" : "Add to queue"}
+                {isSelectedPlayerQueued ? "Queued" : "Add to queue"}
               </Button>
               <Button
                 color="primary"
