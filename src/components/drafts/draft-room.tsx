@@ -45,7 +45,7 @@ import {
   X,
   type LucideIcon,
 } from "lucide-react";
-import { AnimatePresence, motion } from "framer-motion";
+import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import Image from "next/image";
 import {
   useCallback,
@@ -281,6 +281,9 @@ const QUEUE_UNAVAILABLE_AUTOPICK_WARNING =
 const QUEUE_INELIGIBLE_AUTOPICK_WARNING =
   "Queued players do not match your open roles - autopick will use Best Available with server constraints.";
 const TOP_PICK_STRIP_OFFSETS = [-2, -1, 0, 1, 2] as const;
+const TOP_PICK_STRIP_LAYOUT_DURATION = 0.34;
+const TOP_PICK_STRIP_FADE_DURATION = 0.24;
+const TOP_PICK_STRIP_HIGHLIGHT_MS = 900;
 
 type PlayerSortKey = "name" | "team" | "role" | "rank" | "pos";
 
@@ -566,12 +569,14 @@ export const DraftRoom = ({
   const [isQueueDrawerOpen, setIsQueueDrawerOpen] = useState(false);
   const [isMobileQueueSheetOpen, setIsMobileQueueSheetOpen] = useState(false);
   const [timelineHighlightPick, setTimelineHighlightPick] = useState<number | null>(null);
+  const [topStripHighlightPick, setTopStripHighlightPick] = useState<number | null>(null);
   const [showStatusDetails, setShowStatusDetails] = useState(false);
   const [isFormatPopoverOpen, setIsFormatPopoverOpen] = useState(false);
   const [realtimeChannelVersion, setRealtimeChannelVersion] = useState(0);
   const [selectionNotice, setSelectionNotice] = useState<string | null>(null);
   const [showShortcutsHelp, setShowShortcutsHelp] = useState(false);
   const [timeoutOutcomeMessage, setTimeoutOutcomeMessage] = useState<string | null>(null);
+  const prefersReducedMotion = useReducedMotion();
   const latestToastIdRef = useRef(0);
   const latestSystemFeedEventIdRef = useRef(0);
   const previousConnectionStatusRef = useRef<string | null>(null);
@@ -2133,6 +2138,18 @@ export const DraftRoom = ({
   }, [timelineHighlightPick]);
 
   useEffect(() => {
+    if (topStripHighlightPick === null) {
+      return;
+    }
+    const id = window.setTimeout(() => {
+      setTopStripHighlightPick(null);
+    }, TOP_PICK_STRIP_HIGHLIGHT_MS);
+    return () => {
+      window.clearTimeout(id);
+    };
+  }, [topStripHighlightPick]);
+
+  useEffect(() => {
     if (!draft) {
       return;
     }
@@ -2156,6 +2173,7 @@ export const DraftRoom = ({
     if (previous.pickCount !== nextSnapshot.pickCount) {
       const latestPick = draft.picks[draft.picks.length - 1];
       if (latestPick) {
+        setTopStripHighlightPick(latestPick.overallPick);
         pushToast(
           `Pick #${latestPick.overallPick}: ${latestPick.participantDisplayName} drafted ${latestPick.playerName}`,
         );
@@ -3180,122 +3198,153 @@ export const DraftRoom = ({
           </div>
         </CardHeader>
         <CardBody className="space-y-3 pt-0">
-          <div className="overflow-x-auto pt-1 pb-1 md:overflow-visible md:pt-0 md:pb-0">
-            <div className="flex w-max items-end gap-1.5 md:w-full md:gap-2">
-              {topPickStripSlots.map((item) => {
-              const isNowTile = item.offset === 0;
-              const isPastTile = item.offset < 0;
-              const mobileStripLabel =
-                isNowTile
-                  ? "NOW"
-                  : isPastTile
-                  ? `${Math.abs(item.offset)} ${Math.abs(item.offset) === 1 ? "PICK" : "PICKS"} AGO`
-                  : item.offset === 1
-                  ? "NEXT PICK"
-                  : `IN ${item.offset} PICKS`;
-              const roleBackgroundIconUrl = item.slot?.pickedPlayerRole
-                ? roleIconUrl(item.slot.pickedPlayerRole)
-                : null;
-              const teamLabel = item.slot?.participantDisplayName ?? "Pending";
-              const shortPlayerLabel = item.slot?.pickedPlayerName
-                ? formatShortPlayerName(item.slot.pickedPlayerName)
-                : item.offset === 0
-                ? "On the clock"
-                : item.offset < 0
-                ? "Pending"
-                : "Upcoming";
-              return (
-                <div
-                  key={item.key}
-                  className={`relative shrink-0 overflow-hidden rounded-large border ${
-                    isNowTile
-                      ? "h-[6.6rem] w-[7.35rem] p-2.5 md:h-[6.8rem] md:min-w-0 md:flex-[1.25] md:p-3"
-                      : "h-[4.9rem] w-[6rem] p-2 md:h-[5rem] md:min-w-0 md:flex-1 md:p-2.5"
-                  } ${
-                    item.slot?.pickedPlayerName
-                      ? roleTileClassName(item.slot.pickedPlayerRole)
-                      : isNowTile
-                      ? item.slot
-                        ? "border-primary-300/70 bg-primary-500/14 shadow-[0_0_0_1px_rgba(147,197,253,0.35)]"
-                        : "border-default-200/35 bg-content2/24"
-                      : isPastTile
-                      ? "border-default-200/30 bg-content2/18"
-                      : "border-default-200/25 bg-content2/14"
-                  } ${
-                    isNowTile
-                      ? "ring-1 ring-primary-300/75 shadow-[0_0_0_1px_rgba(147,197,253,0.4),0_0_18px_rgba(59,130,246,0.24)]"
-                      : ""
-                  }`}
-                >
-                  <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-black/28 via-black/16 to-black/30" />
-                  {item.slot && (item.slot.pickedPlayerImageUrl || item.slot.pickedTeamIconUrl || roleBackgroundIconUrl) ? (
-                    <div className="pointer-events-none absolute inset-y-1.5 right-1.5 z-20 flex flex-col items-end justify-between">
-                      {item.slot.pickedPlayerImageUrl ? (
-                        <Image
-                          alt={`${item.slot.pickedPlayerName ?? "Picked player"} portrait`}
-                          className={`rounded-full border border-white/35 object-cover shadow-[0_2px_8px_rgba(0,0,0,0.45)] ${
-                            isNowTile ? "h-9 w-9 md:h-10 md:w-10" : "h-7 w-7 md:h-8 md:w-8"
-                          }`}
-                          height={40}
-                          src={item.slot.pickedPlayerImageUrl}
-                          width={40}
-                        />
-                      ) : item.slot.pickedTeamIconUrl ? (
-                        <Image
-                          alt={`${item.slot.pickedPlayerName ?? "Picked player"} team logo`}
-                          className={`translate-x-1.5 -translate-y-1 object-contain opacity-90 drop-shadow-[0_1px_2px_rgba(0,0,0,0.55)] ${
-                            isNowTile ? "h-7 w-11 md:h-8 md:w-12" : "h-6 w-9 md:h-7 md:w-10"
-                          }`}
-                          height={32}
-                          src={item.slot.pickedTeamIconUrl}
-                          width={48}
-                        />
-                      ) : (
-                        <span className="h-8 w-8" />
-                      )}
-                      {roleBackgroundIconUrl ? (
-                        <Image
-                          alt={`${formatRoleLabel(item.slot.pickedPlayerRole)} role icon`}
-                          className={`-translate-x-0.5 object-contain opacity-95 drop-shadow-[0_1px_2px_rgba(0,0,0,0.55)] ${
-                            isNowTile ? "h-5 w-5 md:h-6 md:w-6" : "h-4 w-4 md:h-5 md:w-5"
-                          }`}
-                          height={24}
-                          src={roleBackgroundIconUrl}
-                          width={24}
-                        />
+          <div className="overflow-x-clip">
+            <div className="overflow-x-auto overflow-y-visible pt-1 pb-1 [overscroll-behavior-x:contain] [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden md:overflow-visible md:pt-0 md:pb-0">
+              <motion.div layout className="flex w-max items-end gap-1.5 md:w-full md:gap-2">
+              <AnimatePresence initial={false}>
+                {topPickStripSlots.map((item) => {
+                  const isNowTile = item.offset === 0;
+                  const isPastTile = item.offset < 0;
+                  const isRecentlyLockedPick =
+                    item.slot?.overallPick === topStripHighlightPick && Boolean(item.slot?.pickedPlayerName);
+                  const mobileStripLabel = isNowTile
+                    ? "NOW"
+                    : isPastTile
+                    ? `${Math.abs(item.offset)} ${Math.abs(item.offset) === 1 ? "PICK" : "PICKS"} AGO`
+                    : item.offset === 1
+                    ? "NEXT PICK"
+                    : `IN ${item.offset} PICKS`;
+                  const roleBackgroundIconUrl = item.slot?.pickedPlayerRole
+                    ? roleIconUrl(item.slot.pickedPlayerRole)
+                    : null;
+                  const teamLabel = item.slot?.participantDisplayName ?? "Pending";
+                  const shortPlayerLabel = item.slot?.pickedPlayerName
+                    ? formatShortPlayerName(item.slot.pickedPlayerName)
+                    : item.offset === 0
+                    ? "On the clock"
+                    : item.offset < 0
+                    ? "Pending"
+                    : "Upcoming";
+                  return (
+                    <motion.div
+                      key={item.key}
+                      layout
+                      animate={
+                        prefersReducedMotion
+                          ? { opacity: 1, filter: "brightness(1)" }
+                          : isRecentlyLockedPick
+                          ? { opacity: 1, filter: ["brightness(1)", "brightness(1.08)", "brightness(1)"] }
+                          : { opacity: 1, filter: "brightness(1)" }
+                      }
+                      exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, scale: 0.98, filter: "brightness(1)" }}
+                      initial={prefersReducedMotion ? { opacity: 1 } : { opacity: 0, scale: 0.98, filter: "brightness(1)" }}
+                      transition={
+                        prefersReducedMotion
+                          ? { duration: 0.01 }
+                          : {
+                              duration: TOP_PICK_STRIP_FADE_DURATION,
+                              ease: [0.22, 1, 0.36, 1],
+                              layout: { duration: TOP_PICK_STRIP_LAYOUT_DURATION, ease: [0.22, 1, 0.36, 1] },
+                            }
+                      }
+                      className={`relative shrink-0 overflow-hidden rounded-large border will-change-transform ${
+                        isNowTile
+                          ? "h-[6.6rem] w-[7.35rem] p-2.5 md:h-[6.8rem] md:min-w-0 md:flex-[1.25] md:p-3"
+                          : "h-[4.9rem] w-[6rem] p-2 md:h-[5rem] md:min-w-0 md:flex-1 md:p-2.5"
+                      } ${
+                        item.slot?.pickedPlayerName
+                          ? roleTileClassName(item.slot.pickedPlayerRole)
+                          : isNowTile
+                          ? item.slot
+                            ? "border-primary-300/70 bg-primary-500/14 shadow-[0_0_0_1px_rgba(147,197,253,0.35)]"
+                            : "border-default-200/35 bg-content2/24"
+                          : isPastTile
+                          ? "border-default-200/30 bg-content2/18"
+                          : "border-default-200/25 bg-content2/14"
+                      } ${
+                        isNowTile
+                          ? "ring-1 ring-primary-300/75 shadow-[0_0_0_1px_rgba(147,197,253,0.4),0_0_18px_rgba(59,130,246,0.24)]"
+                          : ""
+                      } ${
+                        isRecentlyLockedPick
+                          ? "shadow-[0_0_0_1px_rgba(110,231,183,0.45),0_0_20px_rgba(16,185,129,0.28)]"
+                          : ""
+                      }`}
+                    >
+                      <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-black/28 via-black/16 to-black/30" />
+                      {item.slot &&
+                      (item.slot.pickedPlayerImageUrl || item.slot.pickedTeamIconUrl || roleBackgroundIconUrl) ? (
+                        <div className="pointer-events-none absolute inset-y-1.5 right-1.5 z-20 flex flex-col items-end justify-between">
+                          {item.slot.pickedPlayerImageUrl ? (
+                            <Image
+                              alt={`${item.slot.pickedPlayerName ?? "Picked player"} portrait`}
+                              className={`rounded-full border border-white/35 object-cover shadow-[0_2px_8px_rgba(0,0,0,0.45)] ${
+                                isNowTile ? "h-9 w-9 md:h-10 md:w-10" : "h-7 w-7 md:h-8 md:w-8"
+                              }`}
+                              height={40}
+                              src={item.slot.pickedPlayerImageUrl}
+                              width={40}
+                            />
+                          ) : item.slot.pickedTeamIconUrl ? (
+                            <Image
+                              alt={`${item.slot.pickedPlayerName ?? "Picked player"} team logo`}
+                              className={`translate-x-1.5 -translate-y-1 object-contain opacity-90 drop-shadow-[0_1px_2px_rgba(0,0,0,0.55)] ${
+                                isNowTile ? "h-7 w-11 md:h-8 md:w-12" : "h-6 w-9 md:h-7 md:w-10"
+                              }`}
+                              height={32}
+                              src={item.slot.pickedTeamIconUrl}
+                              width={48}
+                            />
+                          ) : (
+                            <span className="h-8 w-8" />
+                          )}
+                          {roleBackgroundIconUrl ? (
+                            <Image
+                              alt={`${formatRoleLabel(item.slot.pickedPlayerRole)} role icon`}
+                              className={`-translate-x-0.5 object-contain opacity-95 drop-shadow-[0_1px_2px_rgba(0,0,0,0.55)] ${
+                                isNowTile ? "h-5 w-5 md:h-6 md:w-6" : "h-4 w-4 md:h-5 md:w-5"
+                              }`}
+                              height={24}
+                              src={roleBackgroundIconUrl}
+                              width={24}
+                            />
+                          ) : null}
+                        </div>
                       ) : null}
-                    </div>
-                  ) : null}
-                  <div className="relative z-10">
-                    <p
-                      className={`truncate whitespace-nowrap text-[8px] font-semibold uppercase tracking-wide drop-shadow-[0_1px_1px_rgba(0,0,0,0.65)] ${
-                        isNowTile ? "text-white/72" : "text-white/55"
-                      }`}
-                    >
-                      <span className="md:hidden">{mobileStripLabel}</span>
-                      <span className="hidden md:inline">{item.label}</span>
-                    </p>
-                    <p className={`mt-0.5 truncate font-semibold text-white/92 drop-shadow-[0_1px_1px_rgba(0,0,0,0.7)] ${
-                      isNowTile ? "text-xs md:text-sm" : "text-[11px] md:text-xs"
-                    }`}>
-                      {teamLabel}
-                    </p>
-                    <p
-                      className={`mt-0.5 truncate text-[10px] drop-shadow-[0_1px_1px_rgba(0,0,0,0.65)] ${
-                        item.slot?.pickedPlayerName ? "text-white/86" : "text-white/62"
-                      }`}
-                    >
-                      {shortPlayerLabel}
-                    </p>
-                    {isNowTile ? (
-                      <p className="mt-0.5 hidden text-[10px] text-white/72 drop-shadow-[0_1px_1px_rgba(0,0,0,0.65)] md:block">
-                        {item.slot ? `#${item.slot.overallPick} • Round ${item.slot.roundNumber}` : "—"}
-                      </p>
-                    ) : null}
-                  </div>
-                </div>
-              );
-              })}
+                      <div className="relative z-10">
+                        <p
+                          className={`truncate whitespace-nowrap text-[8px] font-semibold uppercase tracking-wide drop-shadow-[0_1px_1px_rgba(0,0,0,0.65)] ${
+                            isNowTile ? "text-white/72" : "text-white/55"
+                          }`}
+                        >
+                          <span className="md:hidden">{mobileStripLabel}</span>
+                          <span className="hidden md:inline">{item.label}</span>
+                        </p>
+                        <p
+                          className={`mt-0.5 truncate font-semibold text-white/92 drop-shadow-[0_1px_1px_rgba(0,0,0,0.7)] ${
+                            isNowTile ? "text-xs md:text-sm" : "text-[11px] md:text-xs"
+                          }`}
+                        >
+                          {teamLabel}
+                        </p>
+                        <p
+                          className={`mt-0.5 truncate text-[10px] drop-shadow-[0_1px_1px_rgba(0,0,0,0.65)] ${
+                            item.slot?.pickedPlayerName ? "text-white/86" : "text-white/62"
+                          }`}
+                        >
+                          {shortPlayerLabel}
+                        </p>
+                        {isNowTile ? (
+                          <p className="mt-0.5 hidden text-[10px] text-white/72 drop-shadow-[0_1px_1px_rgba(0,0,0,0.65)] md:block">
+                            {item.slot ? `#${item.slot.overallPick} • Round ${item.slot.roundNumber}` : "—"}
+                          </p>
+                        ) : null}
+                      </div>
+                    </motion.div>
+                  );
+                })}
+              </AnimatePresence>
+              </motion.div>
             </div>
           </div>
           <div className="grid grid-cols-1 gap-2 lg:grid-cols-[minmax(0,1.05fr)_minmax(0,1.55fr)]">
