@@ -9,6 +9,77 @@ type PlayerPoolSeed = {
   teamIconUrl: string | null;
 };
 
+const normalizePageTitleForCompare = (value: string | null | undefined): string =>
+  value?.trim().replace(/_/g, " ").replace(/\s+/g, " ").toLowerCase() ?? "";
+
+const scorePlayerPageSpecificity = ({
+  pageTitle,
+  baseName,
+}: {
+  pageTitle: string | null | undefined;
+  baseName: string;
+}): number => {
+  if (!pageTitle) {
+    return 0;
+  }
+  const normalizedPage = normalizePageTitleForCompare(pageTitle);
+  if (!normalizedPage) {
+    return 0;
+  }
+
+  const normalizedBaseName = normalizePageTitleForCompare(baseName);
+  if (normalizedPage === normalizedBaseName) {
+    return 1;
+  }
+
+  if (
+    normalizedBaseName &&
+    normalizedPage.startsWith(`${normalizedBaseName} (`) &&
+    normalizedPage.endsWith(")")
+  ) {
+    return 4;
+  }
+
+  if (normalizedPage.includes("(") && normalizedPage.includes(")")) {
+    return 3;
+  }
+
+  return 2;
+};
+
+const pickPreferredPlayerPage = ({
+  existingPage,
+  candidatePage,
+  baseName,
+}: {
+  existingPage: string | null | undefined;
+  candidatePage: string | null | undefined;
+  baseName: string;
+}): string | null => {
+  const candidate = candidatePage?.trim() ?? "";
+  if (!candidate) {
+    return existingPage?.trim() ?? null;
+  }
+  const existing = existingPage?.trim() ?? "";
+  if (!existing) {
+    return candidate;
+  }
+
+  const existingScore = scorePlayerPageSpecificity({
+    pageTitle: existing,
+    baseName,
+  });
+  const candidateScore = scorePlayerPageSpecificity({
+    pageTitle: candidate,
+    baseName,
+  });
+
+  if (candidateScore > existingScore) {
+    return candidate;
+  }
+  return existing;
+};
+
 export interface PickSlot {
   overallPick: number;
   roundNumber: number;
@@ -97,7 +168,11 @@ export const buildPlayerPoolFromGames = (
       }
 
       const existing = byPlayerKey.get(key)!;
-      existing.playerPage = existing.playerPage ?? player.pageTitle ?? null;
+      existing.playerPage = pickPreferredPlayerPage({
+        existingPage: existing.playerPage,
+        candidatePage: player.pageTitle ?? null,
+        baseName: existing.baseName,
+      });
       existing.teamIconUrl = existing.teamIconUrl ?? teamIconUrl;
       existing.roleCounts.set(player.role, (existing.roleCounts.get(player.role) ?? 0) + 1);
     }
@@ -125,7 +200,11 @@ export const buildPlayerPoolFromGames = (
     }
 
     const existing = byPlayerKey.get(key)!;
-    existing.playerPage = existing.playerPage ?? player.playerPage;
+    existing.playerPage = pickPreferredPlayerPage({
+      existingPage: existing.playerPage,
+      candidatePage: player.playerPage,
+      baseName,
+    });
     existing.teamIconUrl = existing.teamIconUrl ?? player.teamIconUrl;
     if (player.playerRole) {
       existing.roleCounts.set(

@@ -1,6 +1,7 @@
 import type { User } from "@supabase/supabase-js";
 import { isGlobalAdminUser } from "@/lib/admin-access";
 import { getPickSlot, resolveCurrentPickDeadline, resolveNextPick } from "@/lib/draft-engine";
+import { withResolvedDraftPlayerImages } from "@/lib/draft-player-images";
 import { calculateFantasyPoints, DEFAULT_SCORING } from "@/lib/fantasy";
 import { getLatestSnapshotFromSupabase } from "@/lib/supabase-match-store";
 import { getSupabaseServerClient } from "@/lib/supabase-server";
@@ -816,9 +817,10 @@ export const getDraftDetail = async ({
 
   const serverNow = new Date();
   const summary = toDraftSummary(draftRow, participants.length, picks.length);
+  const playerPoolWithPortraits = await withResolvedDraftPlayerImages(basePlayerPool);
   const playerPool = await addAnalyticsToPlayerPool({
     sourcePage: summary.sourcePage,
-    playerPool: basePlayerPool,
+    playerPool: playerPoolWithPortraits,
   });
   const pickedPlayers = new Set(picks.map((pick) => pick.playerName));
   const availablePlayers = playerPool.filter((player) => !pickedPlayers.has(player.playerName));

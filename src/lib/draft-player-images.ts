@@ -31,11 +31,26 @@ export const withResolvedDraftPlayerImages = async <T extends DraftImageCandidat
   }
 
   try {
-    const imageRequests = players.map((entry, index) => ({
+    const unresolved = players
+      .map((entry, index) => ({
+        entry,
+        index,
+      }))
+      .filter(({ entry }) => !entry.playerImageUrl);
+
+    if (unresolved.length === 0) {
+      return players;
+    }
+
+    const imageRequests = unresolved.map(({ entry, index }) => ({
       key: `${index}`,
       lookupTitles: [entry.playerPage ?? null, resolvePoolBasePlayerName(entry)],
     }));
     const imagesByKey = await resolveLeaguepediaPlayerImages(imageRequests);
+    if (imagesByKey.size === 0) {
+      return players;
+    }
+
     return players.map((entry, index) => ({
       ...entry,
       playerImageUrl: imagesByKey.get(`${index}`) ?? entry.playerImageUrl ?? null,

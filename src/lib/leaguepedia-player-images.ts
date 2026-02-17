@@ -5,6 +5,9 @@ const REQUEST_HEADERS = {
 const PAGE_IMAGE_CACHE_TTL_MS = 12 * 60 * 60 * 1000;
 const PAGE_IMAGE_REVALIDATE_SECONDS = 6 * 60 * 60;
 const PAGE_IMAGE_BATCH_SIZE = 24;
+const PAGE_SEARCH_REVALIDATE_SECONDS = 6 * 60 * 60;
+const PAGE_SEARCH_BATCH_SIZE = 8;
+const DISAMBIGUATION_SEARCH_LIMIT = 8;
 
 type LeaguepediaPageImageResponse = {
   query?: {
@@ -31,6 +34,8 @@ type CachedPageImage = {
   expiresAtMs: number;
 };
 
+type LeaguepediaOpenSearchResponse = [string, string[], string[], string[]];
+
 const pageImageCache = new Map<string, CachedPageImage>();
 
 const normalizeText = (value: string): string =>
@@ -40,6 +45,9 @@ const normalizeTitleKey = (value: string): string => {
   const normalized = normalizeText(value).replace(/_/g, " ");
   return normalized.toLowerCase();
 };
+
+const normalizeTitleForQuery = (value: string): string =>
+  normalizeText(value).replace(/_/g, " ");
 
 const normalizeImageUrl = (value: string | undefined): string | null => {
   if (!value) {
@@ -64,6 +72,22 @@ const chunk = <T>(values: T[], size: number): T[][] => {
     groups.push(values.slice(index, index + size));
   }
   return groups;
+};
+
+const isLikelyDisambiguationAlias = (normalizedTitle: string): boolean => {
+  const title = normalizedTitle.trim();
+  if (!title) {
+    return false;
+  }
+  if (
+    title.includes("(") ||
+    title.includes(")") ||
+    title.includes("/") ||
+    title.includes(":")
+  ) {
+    return false;
+  }
+  return title.length <= 40;
 };
 
 const readCachedImage = (normalizedTitle: string): string | null | undefined => {
@@ -99,7 +123,7 @@ const fetchPageImagesForTitles = async (
       format: "json",
       redirects: "1",
       prop: "pageimages",
-      piprop: "thumbnail",
+      piprop: "thumbnail|original",
       pithumbsize: "220",
       titles: titleGroup.join("|"),
     });
@@ -147,6 +171,105 @@ const fetchPageImagesForTitles = async (
   return byNormalizedTitle;
 };
 
+const fetchOpenSearchCandidates = async (searchTerm: string): Promise<string[]> => {
+  const query = new URLSearchParams({
+    action: "opensearch",
+    format: "json",
+    search: searchTerm,
+    namespace: "0",
+    limit: `${DISAMBIGUATION_SEARCH_LIMIT}`,
+  });
+
+  const response = await fetch(`${LEAGUEPEDIA_API}?${query.toString()}`, {
+    next: { revalidate: PAGE_SEARCH_REVALIDATE_SECONDS },
+    headers: REQUEST_HEADERS,
+  });
+  if (!response.ok) {
+    return [];
+  }
+
+  const payload = (await response.json()) as LeaguepediaOpenSearchResponse | { error?: unknown };
+  if (!Array.isArray(payload) || !Array.isArray(payload[1])) {
+    return [];
+  }
+
+  return payload[1]
+    .map((entry) => normalizeText(entry).replace(/_/g, " "))
+    .filter((entry, index, all) => Boolean(entry) && all.indexOf(entry) === index);
+};
+
+const pickDisambiguatedTitle = ({
+  aliasTitle,
+  candidates,
+}: {
+  aliasTitle: string;
+  candidates: string[];
+}): string | null => {
+  const normalizedAlias = normalizeTitleKey(aliasTitle);
+  if (!normalizedAlias) {
+    return null;
+  }
+
+  for (const candidate of candidates) {
+    const normalizedCandidate = normalizeTitleKey(candidate);
+    if (!normalizedCandidate || normalizedCandidate === normalizedAlias) {
+      continue;
+    }
+    if (
+      normalizedCandidate.startsWith(`${normalizedAlias} (`) &&
+      normalizedCandidate.endsWith(")")
+    ) {
+      return candidate;
+    }
+  }
+
+  for (const candidate of candidates) {
+    const normalizedCandidate = normalizeTitleKey(candidate);
+    if (!normalizedCandidate || normalizedCandidate === normalizedAlias) {
+      continue;
+    }
+    if (normalizedCandidate.startsWith(`${normalizedAlias} `)) {
+      return candidate;
+    }
+  }
+
+  return null;
+};
+
+const resolveDisambiguatedTitles = async (
+  aliasTitles: string[],
+): Promise<Map<string, string>> => {
+  const resolved = new Map<string, string>();
+  if (aliasTitles.length === 0) {
+    return resolved;
+  }
+
+  for (const titleGroup of chunk(aliasTitles, PAGE_SEARCH_BATCH_SIZE)) {
+    const results = await Promise.all(
+      titleGroup.map(async (aliasTitle) => {
+        const candidates = await fetchOpenSearchCandidates(aliasTitle);
+        const disambiguated = pickDisambiguatedTitle({
+          aliasTitle,
+          candidates,
+        });
+        return {
+          aliasKey: normalizeTitleKey(aliasTitle),
+          disambiguated,
+        };
+      }),
+    );
+
+    for (const result of results) {
+      if (!result.aliasKey || !result.disambiguated) {
+        continue;
+      }
+      resolved.set(result.aliasKey, result.disambiguated);
+    }
+  }
+
+  return resolved;
+};
+
 export type PlayerImageLookupRequest = {
   key: string;
   lookupTitles: Array<string | null | undefined>;
@@ -160,13 +283,30 @@ export const resolveLeaguepediaPlayerImages = async (
   }
 
   const normalizedTitlesToFetch = new Set<string>();
+  const queryTitleByNormalizedKey = new Map<string, string>();
   const requestTitlePreferences = requests.map((request) => {
-    const normalizedTitles = request.lookupTitles
-      .map((title) => (title ? normalizeTitleKey(title) : ""))
-      .filter((title, index, all) => Boolean(title) && all.indexOf(title) === index);
-    for (const title of normalizedTitles) {
-      if (readCachedImage(title) === undefined) {
-        normalizedTitlesToFetch.add(title);
+    const titleCandidates = request.lookupTitles
+      .map((title) => {
+        const queryTitle = title ? normalizeTitleForQuery(title) : "";
+        const normalizedTitle = queryTitle ? normalizeTitleKey(queryTitle) : "";
+        return {
+          normalizedTitle,
+          queryTitle,
+        };
+      })
+      .filter(
+        (entry, index, all) =>
+          Boolean(entry.normalizedTitle) &&
+          all.findIndex((candidate) => candidate.normalizedTitle === entry.normalizedTitle) === index,
+      );
+    const normalizedTitles = titleCandidates.map((entry) => entry.normalizedTitle);
+
+    for (const { normalizedTitle, queryTitle } of titleCandidates) {
+      if (!queryTitleByNormalizedKey.has(normalizedTitle)) {
+        queryTitleByNormalizedKey.set(normalizedTitle, queryTitle);
+      }
+      if (readCachedImage(normalizedTitle) === undefined) {
+        normalizedTitlesToFetch.add(normalizedTitle);
       }
     }
     return {
@@ -176,9 +316,38 @@ export const resolveLeaguepediaPlayerImages = async (
   });
 
   if (normalizedTitlesToFetch.size > 0) {
-    const fetched = await fetchPageImagesForTitles([...normalizedTitlesToFetch.values()]);
+    const titlesForLookup = [...normalizedTitlesToFetch.values()].map(
+      (normalizedTitle) => queryTitleByNormalizedKey.get(normalizedTitle) ?? normalizedTitle,
+    );
+    const fetched = await fetchPageImagesForTitles(titlesForLookup);
     for (const title of normalizedTitlesToFetch.values()) {
       writeCachedImage(title, fetched.get(title) ?? null);
+    }
+
+    const unresolvedAliases = [...normalizedTitlesToFetch.values()].filter((title) => {
+      if (!isLikelyDisambiguationAlias(title)) {
+        return false;
+      }
+      return fetched.get(title) === undefined || fetched.get(title) === null;
+    });
+
+    if (unresolvedAliases.length > 0) {
+      const disambiguatedByAlias = await resolveDisambiguatedTitles(unresolvedAliases);
+      if (disambiguatedByAlias.size > 0) {
+        const disambiguatedTitles = [...new Set(disambiguatedByAlias.values())];
+        const disambiguatedImages = await fetchPageImagesForTitles(disambiguatedTitles);
+
+        for (const [aliasKey, disambiguatedTitle] of disambiguatedByAlias.entries()) {
+          const disambiguatedKey = normalizeTitleKey(disambiguatedTitle);
+          const resolvedImage =
+            disambiguatedImages.get(disambiguatedKey) ??
+            readCachedImage(disambiguatedKey) ??
+            null;
+          if (resolvedImage) {
+            writeCachedImage(aliasKey, resolvedImage);
+          }
+        }
+      }
     }
   }
 

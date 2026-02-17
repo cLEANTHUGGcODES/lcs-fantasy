@@ -5,10 +5,9 @@ import { Card, CardBody, CardHeader } from "@heroui/card";
 import { Chip } from "@heroui/chip";
 import { Input } from "@heroui/input";
 import { Link } from "@heroui/link";
-import { Popover, PopoverContent, PopoverTrigger } from "@heroui/popover";
 import { Spinner } from "@heroui/spinner";
 import { Tooltip } from "@heroui/tooltip";
-import { Check, ChevronDown, ChevronUp, MoreHorizontal, Trash2 } from "lucide-react";
+import { Check, ChevronDown, ChevronUp, Shuffle, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState, type DragEvent } from "react";
 import type { DraftDetail, DraftSummary, RegisteredUser } from "@/types/draft";
 
@@ -137,17 +136,6 @@ const shuffleUserIdsWithSeed = (userIds: string[], seed: number): string[] => {
   return shuffled;
 };
 
-const shuffleUserIds = (userIds: string[]): string[] => {
-  const shuffled = [...userIds];
-  for (let index = shuffled.length - 1; index > 0; index -= 1) {
-    const swapIndex = Math.floor(Math.random() * (index + 1));
-    const temp = shuffled[index];
-    shuffled[index] = shuffled[swapIndex];
-    shuffled[swapIndex] = temp;
-  }
-  return shuffled;
-};
-
 const arraysEqual = (left: string[], right: string[]): boolean =>
   left.length === right.length && left.every((entry, index) => entry === right[index]);
 
@@ -190,8 +178,10 @@ const sourceResolutionSummary = (sourcePage: string): string | null => {
     : `League: ${league} • ${stage}`;
 };
 
-const scrollAreaClass =
-  "max-h-[24rem] overflow-auto pr-1 [scrollbar-width:thin] [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-default-300/70";
+const scrollAreaBaseClass =
+  "overflow-auto pr-1 [scrollbar-width:thin] [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-default-300/70";
+const participantsScrollAreaClass = `max-h-[24rem] ${scrollAreaBaseClass}`;
+const draftOrderScrollAreaClass = `max-h-[30rem] ${scrollAreaBaseClass}`;
 
 export const DraftsManager = ({
   canManageAllDrafts,
@@ -228,10 +218,8 @@ export const DraftsManager = ({
   const [selectedAvailableUserIds, setSelectedAvailableUserIds] = useState<string[]>([]);
   const [participantSortMode, setParticipantSortMode] = useState<ParticipantSortMode>("name");
   const [draggedUserId, setDraggedUserId] = useState<string | null>(null);
-  const [randomizeUndoOrder, setRandomizeUndoOrder] = useState<string[] | null>(null);
   const [lastRandomizeSeed, setLastRandomizeSeed] = useState<number | null>(null);
   const [lastRandomizeAt, setLastRandomizeAt] = useState<string | null>(null);
-  const [orderActionsOpen, setOrderActionsOpen] = useState(false);
 
   const [draftSortMode, setDraftSortMode] = useState<DraftSortMode>("newest");
   const [draftLeagueFilter, setDraftLeagueFilter] = useState("");
@@ -401,27 +389,6 @@ export const DraftsManager = ({
     [scheduledAt, nowMs],
   );
 
-  const roundOnePreview = useMemo(
-    () => selectedUsers.map((entry) => entry.displayName).join(" -> "),
-    [selectedUsers],
-  );
-  const roundTwoPreview = useMemo(
-    () =>
-      [...selectedUsers]
-        .reverse()
-        .map((entry) => entry.displayName)
-        .join(" -> "),
-    [selectedUsers],
-  );
-  const roundThreePreview = useMemo(
-    () =>
-      [...selectedUsers]
-        .reverse()
-        .map((entry) => entry.displayName)
-        .join(" -> "),
-    [selectedUsers],
-  );
-
   const activeDraftCount = useMemo(
     () => drafts.filter((entry) => entry.status !== "completed").length,
     [drafts],
@@ -587,7 +554,6 @@ export const DraftsManager = ({
     setSelectedAvailableUserIds([]);
     setShowTimingSection(true);
     setShowDataSourceSection(true);
-    setRandomizeUndoOrder(null);
     setLastRandomizeSeed(null);
     setLastRandomizeAt(null);
     setSubmitMessage(null);
@@ -656,18 +622,6 @@ export const DraftsManager = ({
     setSelectedAvailableUserIds([]);
   };
 
-  const clearParticipantOrder = () => {
-    if (participantUserIds.length === 0) {
-      return;
-    }
-    const confirmed = window.confirm("Clear the current draft order?");
-    if (!confirmed) {
-      return;
-    }
-    setRandomizeUndoOrder(participantUserIds);
-    setParticipantUserIds([]);
-  };
-
   const removeParticipant = (userId: string) => {
     setParticipantUserIds((previous) => previous.filter((entry) => entry !== userId));
   };
@@ -732,40 +686,10 @@ export const DraftsManager = ({
       attempts += 1;
     }
 
-    const preview = shuffled
-      .map((userId, index) => `#${index + 1} ${usersById.get(userId)?.displayName ?? userId}`)
-      .join("\n");
-    const confirmed = window.confirm(
-      `Preview randomized order\nSeed: ${seed}\nGenerated: ${randomizedAt.toLocaleTimeString()}\n\n${preview}\n\nApply this order?`,
-    );
-    if (!confirmed) {
-      return;
-    }
-
-    setRandomizeUndoOrder(previous);
     setParticipantUserIds(shuffled);
     setLastRandomizeSeed(seed);
     setLastRandomizeAt(randomizedAt.toISOString());
-    setSubmitMessage(`Draft order randomized (seed ${seed}). Undo is available.`);
-  };
-
-  const undoLastRandomize = () => {
-    if (!randomizeUndoOrder) {
-      return;
-    }
-    setParticipantUserIds(randomizeUndoOrder);
-    setRandomizeUndoOrder(null);
-    setLastRandomizeSeed(null);
-    setLastRandomizeAt(null);
-  };
-
-  const generateOrderFromParticipants = () => {
-    if (participantUserIds.length < 2) {
-      return;
-    }
-    setRandomizeUndoOrder([...participantUserIds]);
-    setParticipantUserIds(shuffleUserIds(participantUserIds));
-    setSubmitMessage("Generated draft order from selected participants.");
+    setSubmitMessage(`Draft order randomized (seed ${seed}).`);
   };
 
   const validateSourcePage = async () => {
@@ -857,7 +781,6 @@ export const DraftsManager = ({
       }
 
       setSubmitMessage(`Draft #${payload.draftId} created successfully.`);
-      setRandomizeUndoOrder(null);
       await reloadData();
     } catch (createError) {
       setError(createError instanceof Error ? createError.message : "Unable to create draft.");
@@ -898,7 +821,6 @@ export const DraftsManager = ({
       setPickSeconds(String(draftDetail.pickSeconds));
       setParticipantUserIds(orderedParticipants.map((entry) => entry.userId));
       setSelectedAvailableUserIds([]);
-      setRandomizeUndoOrder(null);
       setSubmitMessage(`Copied settings from draft #${draft.id}.`);
     } catch (duplicateError) {
       setError(
@@ -1139,7 +1061,6 @@ export const DraftsManager = ({
                   <Input
                     isRequired
                     className="flex-1 min-w-[18rem]"
-                    description="Use the same source page synced into Supabase snapshots."
                     label="League Source Page"
                     labelPlacement="outside"
                     value={sourcePage}
@@ -1154,6 +1075,9 @@ export const DraftsManager = ({
                     Validate
                   </Button>
                 </div>
+                <p className="text-xs text-default-500">
+                  Use the same source page synced into Supabase snapshots.
+                </p>
                 {sourceValidationStatus === "valid" ? (
                   <div className="space-y-1">
                     <p className="text-sm text-success-500">
@@ -1240,7 +1164,7 @@ export const DraftsManager = ({
                     onValueChange={setParticipantSearch}
                   />
                 </CardHeader>
-                <CardBody className={`space-y-2 ${scrollAreaClass}`}>
+                <CardBody className={`space-y-2 ${participantsScrollAreaClass}`}>
                   {filteredParticipantUsers.length === 0 ? (
                     <p className="text-sm text-default-500">No users match this filter.</p>
                   ) : (
@@ -1293,64 +1217,20 @@ export const DraftsManager = ({
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <h3 className="text-base font-semibold">Draft Order</h3>
                     <div className="flex flex-wrap items-center gap-1">
-                      <Button
-                        color={participantUserIds.length < 2 && users.length >= 2 ? "primary" : "default"}
-                        isDisabled={participantUserIds.length < 2}
-                        size="sm"
-                        variant={participantUserIds.length < 2 && users.length >= 2 ? "solid" : "flat"}
-                        onPress={generateOrderFromParticipants}
-                      >
-                        Generate Order from Participants
-                      </Button>
-                      <Popover
-                        isOpen={orderActionsOpen}
-                        placement="bottom-end"
-                        onOpenChange={setOrderActionsOpen}
-                      >
-                        <PopoverTrigger>
-                          <Button size="sm" variant="flat">
-                            <MoreHorizontal className="h-4 w-4" /> Order Actions
+                      <Tooltip content="Randomize draft order">
+                        <span className="inline-flex">
+                          <Button
+                            isIconOnly
+                            aria-label="Randomize draft order"
+                            isDisabled={selectedUsers.length < 2}
+                            size="sm"
+                            variant="flat"
+                            onPress={randomizeParticipantOrder}
+                          >
+                            <Shuffle className="h-4 w-4" />
                           </Button>
-                        </PopoverTrigger>
-                        <PopoverContent>
-                          <div className="flex min-w-[12rem] flex-col gap-1 p-1">
-                            <Button
-                              isDisabled={selectedUsers.length < 2}
-                              size="sm"
-                              variant="flat"
-                              onPress={() => {
-                                setOrderActionsOpen(false);
-                                randomizeParticipantOrder();
-                              }}
-                            >
-                              Randomize
-                            </Button>
-                            <Button
-                              isDisabled={!randomizeUndoOrder}
-                              size="sm"
-                              variant="flat"
-                              onPress={() => {
-                                setOrderActionsOpen(false);
-                                undoLastRandomize();
-                              }}
-                            >
-                              Undo
-                            </Button>
-                            <Button
-                              color="danger"
-                              isDisabled={selectedUsers.length === 0}
-                              size="sm"
-                              variant="flat"
-                              onPress={() => {
-                                setOrderActionsOpen(false);
-                                clearParticipantOrder();
-                              }}
-                            >
-                              Clear
-                            </Button>
-                          </div>
-                        </PopoverContent>
-                      </Popover>
+                        </span>
+                      </Tooltip>
                     </div>
                   </div>
                   {lastRandomizeAt && lastRandomizeSeed !== null ? (
@@ -1358,20 +1238,12 @@ export const DraftsManager = ({
                       Randomized at {formatDate(lastRandomizeAt)} (seed {lastRandomizeSeed}).
                     </p>
                   ) : null}
-                  {selectedUsers.length >= 2 ? (
-                    <div className="space-y-1 rounded-medium border border-default-200/40 px-3 py-2 text-xs text-default-500">
-                      <p>3RR format: round 3 repeats round 2 direction.</p>
-                      <p>Round 1 order: {roundOnePreview}</p>
-                      <p>Round 2 order: {roundTwoPreview}</p>
-                      <p>Round 3 order: {roundThreePreview}</p>
-                    </div>
-                  ) : null}
                 </CardHeader>
-                <CardBody className={`space-y-2 ${scrollAreaClass}`}>
+                <CardBody className={`space-y-2 ${draftOrderScrollAreaClass}`}>
                   {selectedUsers.length === 0 ? (
                     <div className="rounded-medium border border-dashed border-default-300/50 px-4 py-8 text-center">
                       <p className="text-sm text-default-500">
-                        Add at least 2 participants, then generate order.
+                        Add at least 2 participants, then randomize order.
                       </p>
                       <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
                         <Button
@@ -1382,13 +1254,6 @@ export const DraftsManager = ({
                         >
                           Add All Participants
                         </Button>
-                        <Tooltip content="Add at least 2 participants first.">
-                          <span className="inline-flex">
-                            <Button isDisabled size="sm" variant="flat">
-                              Generate Order from Participants
-                            </Button>
-                          </span>
-                        </Tooltip>
                       </div>
                     </div>
                   ) : (
