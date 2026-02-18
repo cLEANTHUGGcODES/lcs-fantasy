@@ -1,5 +1,9 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
+import {
+  isRecoverableSupabaseAuthError,
+  isSupabaseAuthCookieName,
+} from "@/lib/supabase-auth-errors";
 
 export async function middleware(request: NextRequest) {
   let response = NextResponse.next({
@@ -36,7 +40,42 @@ export async function middleware(request: NextRequest) {
     },
   });
 
-  await supabase.auth.getUser();
+  const clearSupabaseAuthCookies = () => {
+    const cookieNames = request.cookies
+      .getAll()
+      .map(({ name }) => name)
+      .filter(isSupabaseAuthCookieName);
+
+    if (cookieNames.length === 0) {
+      return;
+    }
+
+    response = NextResponse.next({
+      request,
+    });
+
+    cookieNames.forEach((name) => {
+      request.cookies.set(name, "");
+      response.cookies.set(name, "", {
+        path: "/",
+        expires: new Date(0),
+        maxAge: 0,
+      });
+    });
+  };
+
+  try {
+    const { error } = await supabase.auth.getUser();
+    if (error && isRecoverableSupabaseAuthError(error)) {
+      clearSupabaseAuthCookies();
+    }
+  } catch (error) {
+    if (isRecoverableSupabaseAuthError(error)) {
+      clearSupabaseAuthCookies();
+    } else {
+      throw error;
+    }
+  }
 
   return response;
 }

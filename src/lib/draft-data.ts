@@ -3,10 +3,12 @@ import { isGlobalAdminUser } from "@/lib/admin-access";
 import { getPickSlot, resolveCurrentPickDeadline, resolveNextPick } from "@/lib/draft-engine";
 import { withResolvedDraftPlayerImages } from "@/lib/draft-player-images";
 import { calculateFantasyPoints, DEFAULT_SCORING } from "@/lib/fantasy";
+import { getSupabaseAuthEnv } from "@/lib/supabase-auth-env";
 import { getLatestSnapshotFromSupabase } from "@/lib/supabase-match-store";
 import { getSupabaseServerClient } from "@/lib/supabase-server";
 import {
   formatUserLabelFromDisplayName,
+  getUserAvatarUrl,
   getUserDisplayName,
   getUserFirstName,
   getUserLastName,
@@ -35,6 +37,7 @@ const MAX_ROSTER_PLAYERS = 5;
 const PLAYER_ANALYTICS_LOOKBACK_DAYS = 365;
 const PLAYER_ANALYTICS_CACHE_TTL_MS = 60_000;
 const TOP_CHAMPION_LIMIT = 3;
+const DRAFT_PARTICIPANT_AVATAR_CACHE_TTL_MS = 10 * 60_000;
 
 type SnapshotPayloadWithGames = {
   games: ParsedGame[];
@@ -60,6 +63,13 @@ type CachedPlayerAnalytics = {
 };
 
 const draftPlayerAnalyticsCache = new Map<string, CachedPlayerAnalytics>();
+const draftParticipantAvatarCache = new Map<
+  string,
+  {
+    avatarUrl: string | null;
+    cachedAtMs: number;
+  }
+>();
 
 const normalizeForKey = (value: string | null | undefined): string =>
   value?.trim().toLowerCase() ?? "";
@@ -457,6 +467,7 @@ const toParticipant = (row: DraftParticipantRow): DraftParticipant => ({
   firstName: row.first_name,
   lastName: row.last_name,
   teamName: row.team_name,
+  avatarUrl: null,
   draftPosition: row.draft_position,
   createdAt: row.created_at,
 });
@@ -500,6 +511,60 @@ const mapRegisteredUser = (user: User): RegisteredUser => ({
   lastName: getUserLastName(user),
   teamName: getUserTeamName(user),
 });
+
+const resolveParticipantAvatarUrls = async (
+  userIds: string[],
+): Promise<Map<string, string | null>> => {
+  const uniqueUserIds = [...new Set(userIds.filter((userId) => userId.trim().length > 0))];
+  const resolved = new Map<string, string | null>();
+  if (uniqueUserIds.length < 1) {
+    return resolved;
+  }
+
+  const nowMs = Date.now();
+  const userIdsToFetch: string[] = [];
+
+  for (const userId of uniqueUserIds) {
+    const cached = draftParticipantAvatarCache.get(userId);
+    if (cached && nowMs - cached.cachedAtMs <= DRAFT_PARTICIPANT_AVATAR_CACHE_TTL_MS) {
+      resolved.set(userId, cached.avatarUrl);
+      continue;
+    }
+    userIdsToFetch.push(userId);
+  }
+
+  if (userIdsToFetch.length < 1) {
+    return resolved;
+  }
+
+  const supabase = getSupabaseServerClient();
+  const { supabaseUrl } = getSupabaseAuthEnv();
+
+  await Promise.all(
+    userIdsToFetch.map(async (userId) => {
+      let avatarUrl: string | null = null;
+      try {
+        const { data, error } = await supabase.auth.admin.getUserById(userId);
+        if (error) {
+          throw new Error(error.message);
+        }
+        avatarUrl = getUserAvatarUrl({
+          user: data.user ?? null,
+          supabaseUrl,
+        });
+      } catch {
+        avatarUrl = null;
+      }
+      draftParticipantAvatarCache.set(userId, {
+        avatarUrl,
+        cachedAtMs: Date.now(),
+      });
+      resolved.set(userId, avatarUrl);
+    }),
+  );
+
+  return resolved;
+};
 
 export const listRegisteredUsers = async (): Promise<RegisteredUser[]> => {
   const supabase = getSupabaseServerClient();
@@ -814,9 +879,16 @@ export const getDraftDetail = async ({
     loadPresence(draftId),
     isGlobalAdminUser({ userId: currentUserId }),
   ]);
+  const participantAvatarUrlsByUserId = await resolveParticipantAvatarUrls(
+    participants.map((participant) => participant.userId),
+  );
+  const participantsWithAvatars = participants.map((participant) => ({
+    ...participant,
+    avatarUrl: participantAvatarUrlsByUserId.get(participant.userId) ?? null,
+  }));
 
   const serverNow = new Date();
-  const summary = toDraftSummary(draftRow, participants.length, picks.length);
+  const summary = toDraftSummary(draftRow, participantsWithAvatars.length, picks.length);
   const playerPoolWithPortraits = await withResolvedDraftPlayerImages(basePlayerPool);
   const playerPool = await addAnalyticsToPlayerPool({
     sourcePage: summary.sourcePage,
@@ -825,23 +897,25 @@ export const getDraftDetail = async ({
   const pickedPlayers = new Set(picks.map((pick) => pick.playerName));
   const availablePlayers = playerPool.filter((player) => !pickedPlayers.has(player.playerName));
   const participantPresence = buildParticipantPresence({
-    participants,
+    participants: participantsWithAvatars,
     presenceRows,
     now: serverNow,
   });
   const presentParticipantCount = participantPresence.filter((entry) => entry.isOnline).length;
   const readyParticipantCount = participantPresence.filter((entry) => entry.isReady).length;
-  const allParticipantsPresent = participants.length > 0 && presentParticipantCount === participants.length;
-  const allParticipantsReady = participants.length > 0 && readyParticipantCount === participants.length;
+  const allParticipantsPresent =
+    participantsWithAvatars.length > 0 && presentParticipantCount === participantsWithAvatars.length;
+  const allParticipantsReady =
+    participantsWithAvatars.length > 0 && readyParticipantCount === participantsWithAvatars.length;
 
   return {
     ...summary,
-    participants,
+    participants: participantsWithAvatars,
     picks,
     playerPool,
     availablePlayers,
     nextPick: resolveNextPick({
-      participants,
+      participants: participantsWithAvatars,
       picks,
       roundCount: summary.roundCount,
     }),

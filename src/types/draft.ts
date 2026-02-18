@@ -37,6 +37,7 @@ export interface DraftParticipant {
   firstName: string | null;
   lastName: string | null;
   teamName: string | null;
+  avatarUrl: string | null;
   draftPosition: number;
   createdAt: string;
 }

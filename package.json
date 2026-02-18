@@ -6,7 +6,7 @@
     "postinstall": "node ./scripts/ensure-lightningcss-win.mjs",
     "predev": "node ./scripts/ensure-lightningcss-win.mjs && node ./scripts/check-lightningcss-win.mjs && powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./cleanup-dev.ps1",
     "prebuild": "node ./scripts/ensure-lightningcss-win.mjs",
-    "dev": "node ./scripts/ensure-lightningcss-win.mjs && node ./scripts/check-lightningcss-win.mjs && node ./scripts/run-next-with-css-wasm.mjs dev",
+    "dev": "node ./scripts/ensure-lightningcss-win.mjs && node ./scripts/check-lightningcss-win.mjs && node ./scripts/run-next-with-css-wasm.mjs dev --webpack",
     "build": "node ./scripts/ensure-lightningcss-win.mjs && node ./scripts/check-lightningcss-win.mjs && node ./scripts/run-next-with-css-wasm.mjs build",
     "start": "node ./scripts/ensure-lightningcss-win.mjs && node ./scripts/check-lightningcss-win.mjs && node ./scripts/run-next-with-css-wasm.mjs start",
     "lint": "eslint",

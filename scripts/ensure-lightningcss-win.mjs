@@ -101,9 +101,13 @@ if (!existsSync(lightningcssFallbackBinding)) {
 
 if (existsSync(lightningcssNodeIndexPath)) {
   const source = readFileSync(lightningcssNodeIndexPath, "utf8");
-  const needle = "if (process.env.CSS_TRANSFORMER_WASM) {";
-  const replacement = "if (false && process.env.CSS_TRANSFORMER_WASM) {";
-  if (source.includes(needle) && !source.includes(replacement)) {
-    writeFileSync(lightningcssNodeIndexPath, source.replace(needle, replacement), "utf8");
+  const forcedNativeCondition = "if (false && process.env.CSS_TRANSFORMER_WASM) {";
+  const defaultCondition = "if (process.env.CSS_TRANSFORMER_WASM) {";
+  if (source.includes(forcedNativeCondition)) {
+    writeFileSync(
+      lightningcssNodeIndexPath,
+      source.replace(forcedNativeCondition, defaultCondition),
+      "utf8",
+    );
   }
 }

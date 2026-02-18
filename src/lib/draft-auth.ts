@@ -1,5 +1,6 @@
 import type { SupabaseClient, User } from "@supabase/supabase-js";
 import { getSupabaseAuthServerClient } from "@/lib/supabase-auth-server";
+import { isRecoverableSupabaseAuthError } from "@/lib/supabase-auth-errors";
 import { getSupabaseServerClient } from "@/lib/supabase-server";
 
 const readBearerToken = (authorization: string | null): string | null => {
@@ -32,13 +33,20 @@ export const requireAuthUser = async (
   }
 
   const supabase = providedSupabase ?? await getSupabaseAuthServerClient();
-  const {
-    data: { user },
-    error,
-  } = await supabase.auth.getUser();
+  try {
+    const {
+      data: { user },
+      error,
+    } = await supabase.auth.getUser();
 
-  if (error || !user) {
-    throw new Error("UNAUTHORIZED");
+    if (error || !user) {
+      throw new Error("UNAUTHORIZED");
+    }
+    return user;
+  } catch (error) {
+    if (isRecoverableSupabaseAuthError(error)) {
+      throw new Error("UNAUTHORIZED");
+    }
+    throw error;
   }
-  return user;
 };

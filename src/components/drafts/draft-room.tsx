@@ -134,6 +134,20 @@ const formatShortPlayerName = (value: string | null | undefined): string => {
   return lastInitial ? `${firstName} ${lastInitial}.` : firstName;
 };
 
+const initialsForLabel = (value: string | null | undefined): string => {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return "??";
+  }
+  const parts = trimmed.split(/\s+/).filter(Boolean);
+  if (parts.length === 1) {
+    return parts[0].slice(0, 2).toUpperCase();
+  }
+  const first = parts[0]?.[0] ?? "";
+  const last = parts[parts.length - 1]?.[0] ?? "";
+  return `${first}${last}`.toUpperCase();
+};
+
 const parseServerTimingTotalMs = (headerValue: string | null): number | null => {
   if (!headerValue) {
     return null;
@@ -280,7 +294,7 @@ const QUEUE_UNAVAILABLE_AUTOPICK_WARNING =
   "Queued players are unavailable - autopick will use Best Available with server constraints.";
 const QUEUE_INELIGIBLE_AUTOPICK_WARNING =
   "Queued players do not match your open roles - autopick will use Best Available with server constraints.";
-const TOP_PICK_STRIP_OFFSETS = [-2, -1, 0, 1, 2] as const;
+const TOP_PICK_STRIP_OFFSETS = [-4, -3, -2, -1, 0, 1, 2, 3, 4] as const;
 const TOP_PICK_STRIP_LAYOUT_DURATION = 0.34;
 const TOP_PICK_STRIP_FADE_DURATION = 0.24;
 const TOP_PICK_STRIP_HIGHLIGHT_MS = 900;
@@ -371,8 +385,49 @@ const normalizePlayerLookupKey = (value: string | null | undefined): string =>
 const stripTrailingTeamSuffix = (value: string): string =>
   value.replace(/\s+\([^)]*\)\s*$/, "").trim();
 
-const buildClockRingGradient = (progressPercent: number): string =>
-  `conic-gradient(rgba(199,155,59,0.95) ${progressPercent}%, rgba(199,155,59,0.18) 0)`;
+type ClockRingPalette = {
+  active: string;
+  faded: string;
+  border: string;
+};
+
+const CLOCK_RING_WARNING_THRESHOLD_PERCENT = 45;
+const CLOCK_RING_DANGER_THRESHOLD_PERCENT = 20;
+const CLOCK_RING_NEUTRAL_PALETTE: ClockRingPalette = {
+  active: "rgba(199,155,59,0.95)",
+  faded: "rgba(199,155,59,0.18)",
+  border: "rgba(199,155,59,0.45)",
+};
+const CLOCK_RING_SAFE_PALETTE: ClockRingPalette = {
+  active: "rgba(74,222,128,0.95)",
+  faded: "rgba(74,222,128,0.2)",
+  border: "rgba(74,222,128,0.55)",
+};
+const CLOCK_RING_WARNING_PALETTE: ClockRingPalette = {
+  active: "rgba(250,204,21,0.95)",
+  faded: "rgba(250,204,21,0.2)",
+  border: "rgba(250,204,21,0.55)",
+};
+const CLOCK_RING_DANGER_PALETTE: ClockRingPalette = {
+  active: "rgba(248,113,113,0.95)",
+  faded: "rgba(248,113,113,0.2)",
+  border: "rgba(248,113,113,0.55)",
+};
+
+const clockRingPaletteForProgress = (progressPercent: number): ClockRingPalette => {
+  if (progressPercent <= CLOCK_RING_DANGER_THRESHOLD_PERCENT) {
+    return CLOCK_RING_DANGER_PALETTE;
+  }
+  if (progressPercent <= CLOCK_RING_WARNING_THRESHOLD_PERCENT) {
+    return CLOCK_RING_WARNING_PALETTE;
+  }
+  return CLOCK_RING_SAFE_PALETTE;
+};
+
+const buildClockRingGradient = (
+  progressPercent: number,
+  palette: ClockRingPalette = clockRingPaletteForProgress(progressPercent),
+): string => `conic-gradient(${palette.active} ${progressPercent}%, ${palette.faded} 0)`;
 
 const sourceLinkForPage = (page: string): string =>
   `https://lol.fandom.com/wiki/${page.replace(/\s+/g, "_")}`;
@@ -449,11 +504,23 @@ const DraftClockBadge = ({
   pickSeconds,
   draftStatus,
   serverOffsetMs,
+  size = "md",
+  centerImageUrl = null,
+  centerFallbackLabel = null,
+  centerImageAlt = "On clock avatar",
+  preferCenterFallbackLabel = false,
+  showCountdownBelow = false,
 }: {
   deadlineIso: string | null;
   pickSeconds: number;
   draftStatus: DraftStatus | null;
   serverOffsetMs: number;
+  size?: "md" | "sm";
+  centerImageUrl?: string | null;
+  centerFallbackLabel?: string | null;
+  centerImageAlt?: string;
+  preferCenterFallbackLabel?: boolean;
+  showCountdownBelow?: boolean;
 }) => {
   const ringRef = useRef<HTMLDivElement | null>(null);
   const [countdownLabel, setCountdownLabel] = useState(() =>
@@ -473,7 +540,8 @@ const DraftClockBadge = ({
       const nowMs = Date.now() + serverOffsetMs;
       updateLabel(nowMs);
       if (ringElement) {
-        ringElement.style.background = buildClockRingGradient(0);
+        ringElement.style.background = buildClockRingGradient(0, CLOCK_RING_NEUTRAL_PALETTE);
+        ringElement.style.borderColor = CLOCK_RING_NEUTRAL_PALETTE.border;
       }
       return;
     }
@@ -489,7 +557,9 @@ const DraftClockBadge = ({
       const progressPercent = Math.max(0, Math.min(100, (remainingMs / totalMs) * 100));
 
       if (ringElement && (nowMs - lastPaintNowMs >= 33 || remainingMs <= 0)) {
-        ringElement.style.background = buildClockRingGradient(progressPercent);
+        const palette = clockRingPaletteForProgress(progressPercent);
+        ringElement.style.background = buildClockRingGradient(progressPercent, palette);
+        ringElement.style.borderColor = palette.border;
         lastPaintNowMs = nowMs;
       }
 
@@ -511,17 +581,43 @@ const DraftClockBadge = ({
     };
   }, [deadlineIso, draftStatus, pickSeconds, serverOffsetMs]);
 
+  const outerSizeClass = size === "sm" ? "h-11 w-11" : "h-14 w-14";
+  const innerSizeClass = size === "sm" ? "h-8 w-8" : "h-10 w-10";
+  const countdownTextClass = size === "sm" ? "text-[11px]" : "text-xs";
+
   return (
-    <div
-      ref={ringRef}
-      className="grid h-14 w-14 place-items-center rounded-full border border-primary-300/45"
-      style={{
-        background: buildClockRingGradient(0),
-      }}
-    >
-      <div className="grid h-10 w-10 place-items-center rounded-full bg-content1 text-xs font-semibold">
-        {countdownLabel}
+    <div className={`grid justify-items-center ${showCountdownBelow ? "gap-1.5" : ""}`}>
+      <div
+        ref={ringRef}
+        className={`grid ${outerSizeClass} place-items-center rounded-full border`}
+        style={{
+          background: buildClockRingGradient(0, CLOCK_RING_NEUTRAL_PALETTE),
+          borderColor: CLOCK_RING_NEUTRAL_PALETTE.border,
+        }}
+      >
+        <div className={`grid ${innerSizeClass} place-items-center overflow-hidden rounded-full bg-content1 font-semibold`}>
+          {centerImageUrl ? (
+            <Image
+              alt={centerImageAlt}
+              className="h-full w-full object-cover"
+              height={40}
+              src={centerImageUrl}
+              width={40}
+            />
+          ) : showCountdownBelow || preferCenterFallbackLabel ? (
+            <span className={`${countdownTextClass} font-bold uppercase tracking-wide text-white/90`}>
+              {centerFallbackLabel ?? "??"}
+            </span>
+          ) : (
+            <span className={countdownTextClass}>{countdownLabel}</span>
+          )}
+        </div>
       </div>
+      {showCountdownBelow ? (
+        <p className={`mono-points ${countdownTextClass} font-semibold tabular-nums text-white/90`}>
+          {countdownLabel}
+        </p>
+      ) : null}
     </div>
   );
 };
@@ -1284,7 +1380,10 @@ export const DraftRoom = ({
   useEffect(() => {
     const isCurrentUserClocked =
       draftStatus === "live" && draft?.nextPick?.participantUserId === currentUserId;
+    const hasLiveDraftClock =
+      draftStatus === "live" && Boolean(draft?.currentPickDeadlineAt);
     const shouldTick =
+      hasLiveDraftClock ||
       isCurrentUserClocked ||
       connectionStatus !== "SUBSCRIBED" ||
       Boolean(timeoutOutcomeMessage);
@@ -1298,7 +1397,14 @@ export const DraftRoom = ({
       setClientNowMs(Date.now());
     }, intervalMs);
     return () => window.clearInterval(id);
-  }, [connectionStatus, currentUserId, draft?.nextPick?.participantUserId, draftStatus, timeoutOutcomeMessage]);
+  }, [
+    connectionStatus,
+    currentUserId,
+    draft?.currentPickDeadlineAt,
+    draft?.nextPick?.participantUserId,
+    draftStatus,
+    timeoutOutcomeMessage,
+  ]);
 
   useEffect(() => {
     if (!isMobileViewport) {
@@ -1811,19 +1917,21 @@ export const DraftRoom = ({
       return `Next +${offset - 1}`;
     };
     if (!draft || participantsByPosition.length < 1 || draft.totalPickCount < 1) {
-      return [] as Array<{
-        key: string;
-        label: string;
-        offset: number;
-        slot: {
-          overallPick: number;
-          roundNumber: number;
-          participantDisplayName: string;
-          pickedPlayerName: string | null;
-          pickedPlayerTeam: string | null;
-          pickedPlayerRole: string | null;
-          pickedPlayerImageUrl: string | null;
-          pickedTeamIconUrl: string | null;
+          return [] as Array<{
+            key: string;
+            label: string;
+            offset: number;
+            slot: {
+              overallPick: number;
+              roundNumber: number;
+              participantDisplayName: string;
+              participantTeamName: string | null;
+              participantAvatarUrl: string | null;
+              pickedPlayerName: string | null;
+              pickedPlayerTeam: string | null;
+              pickedPlayerRole: string | null;
+              pickedPlayerImageUrl: string | null;
+              pickedTeamIconUrl: string | null;
         } | null;
       }>;
     }
@@ -1839,6 +1947,8 @@ export const DraftRoom = ({
         overallPick: number;
         roundNumber: number;
         participantDisplayName: string;
+        participantTeamName: string | null;
+        participantAvatarUrl: string | null;
         pickedPlayerName: string | null;
         pickedPlayerTeam: string | null;
         pickedPlayerRole: string | null;
@@ -1874,6 +1984,8 @@ export const DraftRoom = ({
           overallPick,
           roundNumber,
           participantDisplayName: participant.displayName,
+          participantTeamName: participant.teamName,
+          participantAvatarUrl: participant.avatarUrl,
           pickedPlayerName: picked?.playerName ?? null,
           pickedPlayerTeam: picked?.playerTeam ?? null,
           pickedPlayerRole: picked?.playerRole ?? null,
@@ -2802,6 +2914,7 @@ export const DraftRoom = ({
         color: "danger" as const,
         icon: WifiOff,
         iconClassName: "text-danger-300",
+        iconOnly: true,
       };
     }
     if (isYellowConnectionState) {
@@ -2812,6 +2925,7 @@ export const DraftRoom = ({
           color: "default" as const,
           icon: Wifi,
           iconClassName: "text-default-300",
+          iconOnly: true,
         };
       }
       return {
@@ -2820,6 +2934,7 @@ export const DraftRoom = ({
         color: "default" as const,
         icon: Wifi,
         iconClassName: "text-warning-300",
+        iconOnly: true,
       };
     }
     if (pickPending) {
@@ -2927,6 +3042,12 @@ export const DraftRoom = ({
     return "border-default-200/45 bg-content2/30";
   }, [stateBanner.color]);
   const StateBannerIcon = stateBanner.icon;
+  const isConnectedIndicator =
+    stateBanner.iconOnly &&
+    stateBanner.color === "success" &&
+    stateBanner.icon === Wifi &&
+    connectionStatus === "SUBSCRIBED" &&
+    !isRealtimeReadOnly;
   const showReadOnlyInteractionOverlay = isLiveState && isRealtimeReadOnly;
   const queueAutopickTargetLine =
     settings.autoPickFromQueue && queuedEligiblePlayers.length > 0
@@ -3010,42 +3131,53 @@ export const DraftRoom = ({
       >
         {isMobileViewport ? (
           <div className="absolute right-2 top-2 z-20 flex items-center gap-2 rounded-large border border-default-200/40 bg-content1/92 p-1.5 shadow-sm backdrop-blur">
-            <Button
-              isIconOnly
-              size="sm"
-              variant="flat"
-              onPress={() => setShowStatusDetails((prev) => !prev)}
-            >
-              <MoreHorizontal className="h-4 w-4" />
-            </Button>
-            <Button
-              isIconOnly
-              size="sm"
-              variant="flat"
-              onPress={() => setShowDraftSettings((prev) => !prev)}
-            >
-              <Cog className="h-4 w-4" />
-            </Button>
-            {draft.isCommissioner ? (
+            <Tooltip content={showStatusDetails ? "Hide status details" : "Show status details"} showArrow>
               <Button
                 isIconOnly
-                color="warning"
+                aria-label={showStatusDetails ? "Hide status details" : "Show status details"}
                 size="sm"
                 variant="flat"
-                onPress={() => setIsCommissionerDrawerOpen(true)}
+                onPress={() => setShowStatusDetails((prev) => !prev)}
               >
-                <Shield className="h-4 w-4" />
+                <MoreHorizontal className="h-4 w-4" />
               </Button>
+            </Tooltip>
+            <Tooltip content={showDraftSettings ? "Hide draft settings" : "Show draft settings"} showArrow>
+              <Button
+                isIconOnly
+                aria-label={showDraftSettings ? "Hide draft settings" : "Show draft settings"}
+                size="sm"
+                variant="flat"
+                onPress={() => setShowDraftSettings((prev) => !prev)}
+              >
+                <Cog className="h-4 w-4" />
+              </Button>
+            </Tooltip>
+            {draft.isCommissioner ? (
+              <Tooltip content="Open commissioner controls" showArrow>
+                <Button
+                  isIconOnly
+                  aria-label="Open commissioner controls"
+                  color="warning"
+                  size="sm"
+                  variant="flat"
+                  onPress={() => setIsCommissionerDrawerOpen(true)}
+                >
+                  <Shield className="h-4 w-4" />
+                </Button>
+              </Tooltip>
             ) : null}
           </div>
         ) : null}
-        <CardHeader className="grid grid-cols-1 gap-3 md:grid-cols-[1fr_auto_1fr] md:items-center">
+        <CardHeader className="grid grid-cols-1 gap-3 md:grid-cols-[1fr_auto] md:items-center">
           <div className="space-y-1">
             <div className="flex flex-wrap items-center gap-2">
               <h1 className="text-xl font-semibold md:text-2xl">{draft.name}</h1>
-              <Chip color={statusColor(draft.status)} size="sm" variant="flat">
-                {draft.status}
-              </Chip>
+              {draft.status !== "live" ? (
+                <Chip color={statusColor(draft.status)} size="sm" variant="flat">
+                  {draft.status}
+                </Chip>
+              ) : null}
             </div>
             <p className="text-xs text-default-500">
               {draft.leagueSlug} {draft.seasonYear} • {draft.pickSeconds}s timer • {draft.roundCount} rounds
@@ -3086,93 +3218,104 @@ export const DraftRoom = ({
                 </PopoverContent>
               </Popover>
             </div>
+            <p className="text-[11px] text-default-500">
+              {draft.status === "live"
+                ? draft.nextPick
+                  ? `Live • Pick #${draft.nextPick.overallPick} • R${draft.nextPick.roundNumber}`
+                  : "Live"
+                : draft.status === "paused"
+                ? "Paused"
+                : draft.status === "completed"
+                ? "Completed"
+                : "Scheduled"}
+            </p>
           </div>
 
-          <div className="mx-auto flex items-center gap-3">
-            <DraftClockBadge
-              deadlineIso={draft.currentPickDeadlineAt}
-              draftStatus={draft.status}
-              pickSeconds={draft.pickSeconds}
-              serverOffsetMs={serverOffsetMs}
-            />
-            <div className="min-w-[12rem]">
-              <p className="text-[11px] uppercase tracking-wide text-default-500">On The Clock</p>
-              <p className="text-sm font-semibold">
-                {draft.nextPick?.participantDisplayName ?? "Draft Complete"}
-              </p>
-              <p className="text-xs text-default-500">
-                {draft.nextPick
-                  ? `Pick #${draft.nextPick.overallPick} • Round ${draft.nextPick.roundNumber}`
-                  : "No upcoming picks"}
-              </p>
-            </div>
-          </div>
-
-          <div className="space-y-2 md:justify-self-end md:self-start md:pt-0.5">
-            {stateBanner.iconOnly ? (
-              <Tooltip content={stateBanner.label}>
+          <div className="w-full self-start pt-0.5 md:w-auto md:justify-self-end">
+            <div className="flex items-center justify-end gap-2">
+              {stateBanner.iconOnly ? (
+                <Tooltip content={stateBanner.label} showArrow>
+                  <div
+                    className={
+                      isConnectedIndicator
+                        ? "inline-flex h-9 w-9 items-center justify-center"
+                        : `grid h-9 w-9 place-items-center rounded-large border ${statusBannerToneClass}`
+                    }
+                  >
+                    <StateBannerIcon
+                      className={
+                        isConnectedIndicator
+                          ? "h-4 w-4 text-emerald-300 animate-pulse [animation-duration:1.7s] drop-shadow-[0_0_8px_rgba(74,222,128,0.65)]"
+                          : `h-4 w-4 ${stateBanner.iconClassName}`
+                      }
+                    />
+                  </div>
+                </Tooltip>
+              ) : (
                 <div
-                  className={`ml-auto grid h-9 w-9 place-items-center rounded-large border ${statusBannerToneClass}`}
+                  className={`flex items-center gap-2 rounded-large border px-3 py-2 text-xs ${statusBannerToneClass}`}
                 >
                   <StateBannerIcon className={`h-4 w-4 ${stateBanner.iconClassName}`} />
+                  <p className="font-semibold">{stateBanner.label}</p>
                 </div>
-              </Tooltip>
-            ) : (
-              <div
-                className={`ml-auto flex items-center gap-2 rounded-large border px-3 py-2 text-xs ${statusBannerToneClass}`}
-              >
-                <StateBannerIcon className={`h-4 w-4 ${stateBanner.iconClassName}`} />
-                <p className="font-semibold">{stateBanner.label}</p>
-              </div>
-            )}
-            {!isMobileViewport ? (
-              <div className="flex flex-wrap items-center justify-start gap-2 md:justify-end">
-                <Tooltip content={showStatusDetails ? "Hide status details" : "Show status details"}>
-                  <Button
-                    isIconOnly
-                    size="sm"
-                    variant="flat"
-                    onPress={() => setShowStatusDetails((prev) => !prev)}
-                  >
-                    <MoreHorizontal className="h-4 w-4" />
-                  </Button>
-                </Tooltip>
-                <Button
-                  isIconOnly
-                  size="sm"
-                  variant="flat"
-                  onPress={() =>
-                    setSettings((prev) => ({
-                      ...prev,
-                      muted: !prev.muted,
-                    }))
-                  }
-                >
-                  {settings.muted ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
-                </Button>
-                <Button
-                  isIconOnly
-                  size="sm"
-                  variant="flat"
-                  onPress={() => setShowDraftSettings((prev) => !prev)}
-                >
-                  <Cog className="h-4 w-4" />
-                </Button>
-                {draft.isCommissioner ? (
-                  <Tooltip content="Commissioner controls">
+              )}
+              {!isMobileViewport ? (
+                <>
+                  <Tooltip content={showStatusDetails ? "Hide status details" : "Show status details"} showArrow>
                     <Button
                       isIconOnly
-                      color="warning"
+                      aria-label={showStatusDetails ? "Hide status details" : "Show status details"}
                       size="sm"
                       variant="flat"
-                      onPress={() => setIsCommissionerDrawerOpen(true)}
+                      onPress={() => setShowStatusDetails((prev) => !prev)}
                     >
-                      <Shield className="h-4 w-4" />
+                      <MoreHorizontal className="h-4 w-4" />
                     </Button>
                   </Tooltip>
-                ) : null}
-              </div>
-            ) : null}
+                  <Tooltip content={settings.muted ? "Unmute draft sounds" : "Mute draft sounds"} showArrow>
+                    <Button
+                      isIconOnly
+                      aria-label={settings.muted ? "Unmute draft sounds" : "Mute draft sounds"}
+                      size="sm"
+                      variant="flat"
+                      onPress={() =>
+                        setSettings((prev) => ({
+                          ...prev,
+                          muted: !prev.muted,
+                        }))
+                      }
+                    >
+                      {settings.muted ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
+                    </Button>
+                  </Tooltip>
+                  <Tooltip content={showDraftSettings ? "Hide draft settings" : "Show draft settings"} showArrow>
+                    <Button
+                      isIconOnly
+                      aria-label={showDraftSettings ? "Hide draft settings" : "Show draft settings"}
+                      size="sm"
+                      variant="flat"
+                      onPress={() => setShowDraftSettings((prev) => !prev)}
+                    >
+                      <Cog className="h-4 w-4" />
+                    </Button>
+                  </Tooltip>
+                  {draft.isCommissioner ? (
+                    <Tooltip content="Open commissioner controls" showArrow>
+                      <Button
+                        isIconOnly
+                        aria-label="Open commissioner controls"
+                        color="warning"
+                        size="sm"
+                        variant="flat"
+                        onPress={() => setIsCommissionerDrawerOpen(true)}
+                      >
+                        <Shield className="h-4 w-4" />
+                      </Button>
+                    </Tooltip>
+                  ) : null}
+                </>
+              ) : null}
+            </div>
             {showStatusDetails ? (
               <div className="rounded-large border border-default-200/35 bg-content2/35 px-3 py-2 text-xs">
                 <p className="font-medium">{stateBanner.detail}</p>
@@ -3207,6 +3350,11 @@ export const DraftRoom = ({
                   const isPastTile = item.offset < 0;
                   const isRecentlyLockedPick =
                     item.slot?.overallPick === topStripHighlightPick && Boolean(item.slot?.pickedPlayerName);
+                  const showNowClock =
+                    isNowTile &&
+                    draft.status === "live" &&
+                    !item.slot?.pickedPlayerName &&
+                    Boolean(draft.currentPickDeadlineAt);
                   const mobileStripLabel = isNowTile
                     ? "NOW"
                     : isPastTile
@@ -3217,6 +3365,15 @@ export const DraftRoom = ({
                   const roleBackgroundIconUrl = item.slot?.pickedPlayerRole
                     ? roleIconUrl(item.slot.pickedPlayerRole)
                     : null;
+                  const onClockParticipantAvatarUrl =
+                    isNowTile && !item.slot?.pickedPlayerName ? item.slot?.participantAvatarUrl ?? null : null;
+                  const onClockTeamLabel =
+                    item.slot?.participantTeamName?.trim() || item.slot?.participantDisplayName || "Pending";
+                  const onClockParticipantShortLabel = formatShortPlayerName(
+                    item.slot?.participantDisplayName,
+                  );
+                  const rightPortraitImageUrl =
+                    item.slot?.pickedPlayerImageUrl ?? (showNowClock ? null : onClockParticipantAvatarUrl);
                   const teamLabel = item.slot?.participantDisplayName ?? "Pending";
                   const shortPlayerLabel = item.slot?.pickedPlayerName
                     ? formatShortPlayerName(item.slot.pickedPlayerName)
@@ -3247,10 +3404,12 @@ export const DraftRoom = ({
                               layout: { duration: TOP_PICK_STRIP_LAYOUT_DURATION, ease: [0.22, 1, 0.36, 1] },
                             }
                       }
-                      className={`relative shrink-0 overflow-hidden rounded-large border will-change-transform ${
+                      className={`relative shrink-0 rounded-large border will-change-transform ${
+                        isNowTile ? "overflow-visible" : "overflow-hidden"
+                      } ${
                         isNowTile
                           ? "h-[6.6rem] w-[7.35rem] p-2.5 md:h-[6.8rem] md:min-w-0 md:flex-[1.25] md:p-3"
-                          : "h-[4.9rem] w-[6rem] p-2 md:h-[5rem] md:min-w-0 md:flex-1 md:p-2.5"
+                          : "h-[4.9rem] w-[3rem] p-1.5 md:h-[5rem] md:min-w-0 md:flex-[0.5] md:p-2"
                       } ${
                         item.slot?.pickedPlayerName
                           ? roleTileClassName(item.slot.pickedPlayerRole)
@@ -3271,18 +3430,58 @@ export const DraftRoom = ({
                           : ""
                       }`}
                     >
+                      {isNowTile ? (
+                        <p className="pointer-events-none absolute -top-2.5 left-1/2 z-40 min-w-[7rem] -translate-x-1/2 whitespace-nowrap rounded-full border border-primary-200/65 bg-content1/96 px-3 py-1 text-center text-[10px] font-black uppercase tracking-[0.1em] text-white md:min-w-[7.5rem] md:text-[11px]">
+                          On the clock
+                        </p>
+                      ) : null}
+                      {isNowTile ? (
+                        <p
+                          className="pointer-events-none absolute left-1 top-1/2 z-35 -translate-y-1/2 rotate-180 text-[10px] font-normal tracking-[0.08em] text-white/92 drop-shadow-[0_1px_1px_rgba(0,0,0,0.75)]"
+                          style={{ writingMode: "vertical-rl", textOrientation: "mixed" }}
+                        >
+                          {onClockParticipantShortLabel}
+                        </p>
+                      ) : null}
+                      {isNowTile ? (
+                        <p className="pointer-events-none absolute -bottom-2.5 left-1/2 z-40 max-w-[7.5rem] -translate-x-1/2 overflow-hidden text-ellipsis whitespace-nowrap rounded-full border border-primary-200/65 bg-content1/96 px-3 py-1 text-center text-[10px] font-black uppercase tracking-[0.1em] text-white md:max-w-[8rem] md:text-[11px]">
+                          {onClockTeamLabel}
+                        </p>
+                      ) : null}
                       <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-black/28 via-black/16 to-black/30" />
-                      {item.slot &&
-                      (item.slot.pickedPlayerImageUrl || item.slot.pickedTeamIconUrl || roleBackgroundIconUrl) ? (
+                      {showNowClock ? (
+                        <div className="pointer-events-none absolute inset-x-2 top-1/2 z-30 -translate-y-1/2">
+                          <div className="grid grid-cols-[auto_auto] items-center justify-center gap-2">
+                            <DraftClockBadge
+                              deadlineIso={draft.currentPickDeadlineAt}
+                              draftStatus={draft.status}
+                              pickSeconds={draft.pickSeconds}
+                              serverOffsetMs={serverOffsetMs}
+                              centerFallbackLabel={initialsForLabel(onClockTeamLabel)}
+                              centerImageAlt={`${item.slot?.participantDisplayName ?? "On clock"} avatar`}
+                              centerImageUrl={onClockParticipantAvatarUrl}
+                              preferCenterFallbackLabel
+                            />
+                            <p className="mono-points text-xl font-black leading-none tabular-nums text-white drop-shadow-[0_1px_1px_rgba(0,0,0,0.75)] md:text-2xl">
+                              {liveTimeLeftLabel}
+                            </p>
+                          </div>
+                        </div>
+                      ) : null}
+                      {item.slot && (rightPortraitImageUrl || item.slot.pickedTeamIconUrl || roleBackgroundIconUrl) ? (
                         <div className="pointer-events-none absolute inset-y-1.5 right-1.5 z-20 flex flex-col items-end justify-between">
-                          {item.slot.pickedPlayerImageUrl ? (
+                          {rightPortraitImageUrl ? (
                             <Image
-                              alt={`${item.slot.pickedPlayerName ?? "Picked player"} portrait`}
+                              alt={
+                                item.slot.pickedPlayerName
+                                  ? `${item.slot.pickedPlayerName} portrait`
+                                  : `${item.slot.participantDisplayName} avatar`
+                              }
                               className={`rounded-full border border-white/35 object-cover shadow-[0_2px_8px_rgba(0,0,0,0.45)] ${
                                 isNowTile ? "h-9 w-9 md:h-10 md:w-10" : "h-7 w-7 md:h-8 md:w-8"
                               }`}
                               height={40}
-                              src={item.slot.pickedPlayerImageUrl}
+                              src={rightPortraitImageUrl}
                               width={40}
                             />
                           ) : item.slot.pickedTeamIconUrl ? (
@@ -3301,7 +3500,7 @@ export const DraftRoom = ({
                           {roleBackgroundIconUrl ? (
                             <Image
                               alt={`${formatRoleLabel(item.slot.pickedPlayerRole)} role icon`}
-                              className={`-translate-x-0.5 object-contain opacity-95 drop-shadow-[0_1px_2px_rgba(0,0,0,0.55)] ${
+                              className={`-translate-x-1.5 object-contain opacity-95 drop-shadow-[0_1px_2px_rgba(0,0,0,0.55)] ${
                                 isNowTile ? "h-5 w-5 md:h-6 md:w-6" : "h-4 w-4 md:h-5 md:w-5"
                               }`}
                               height={24}
@@ -3311,35 +3510,34 @@ export const DraftRoom = ({
                           ) : null}
                         </div>
                       ) : null}
-                      <div className="relative z-10">
-                        <p
-                          className={`truncate whitespace-nowrap text-[8px] font-semibold uppercase tracking-wide drop-shadow-[0_1px_1px_rgba(0,0,0,0.65)] ${
-                            isNowTile ? "text-white/72" : "text-white/55"
-                          }`}
-                        >
-                          <span className="md:hidden">{mobileStripLabel}</span>
-                          <span className="hidden md:inline">{item.label}</span>
-                        </p>
-                        <p
-                          className={`mt-0.5 truncate font-semibold text-white/92 drop-shadow-[0_1px_1px_rgba(0,0,0,0.7)] ${
-                            isNowTile ? "text-xs md:text-sm" : "text-[11px] md:text-xs"
-                          }`}
-                        >
-                          {teamLabel}
-                        </p>
-                        <p
-                          className={`mt-0.5 truncate text-[10px] drop-shadow-[0_1px_1px_rgba(0,0,0,0.65)] ${
-                            item.slot?.pickedPlayerName ? "text-white/86" : "text-white/62"
-                          }`}
-                        >
-                          {shortPlayerLabel}
-                        </p>
-                        {isNowTile ? (
-                          <p className="mt-0.5 hidden text-[10px] text-white/72 drop-shadow-[0_1px_1px_rgba(0,0,0,0.65)] md:block">
-                            {item.slot ? `#${item.slot.overallPick} • Round ${item.slot.roundNumber}` : "—"}
-                          </p>
-                        ) : null}
-                      </div>
+                      {showNowClock ? null : (
+                        <div className="relative z-10">
+                          {!isNowTile ? (
+                            <p
+                              className={`truncate whitespace-nowrap text-[8px] font-semibold uppercase tracking-wide drop-shadow-[0_1px_1px_rgba(0,0,0,0.65)] ${
+                                isNowTile ? "text-white/72" : "text-white/55"
+                              }`}
+                            >
+                              <span className="md:hidden">{mobileStripLabel}</span>
+                              <span className="hidden md:inline">{item.label}</span>
+                            </p>
+                          ) : null}
+                          {!isNowTile ? (
+                            <p className="mt-0.5 truncate font-semibold text-[11px] text-white/92 drop-shadow-[0_1px_1px_rgba(0,0,0,0.7)] md:text-xs">
+                              {teamLabel}
+                            </p>
+                          ) : null}
+                          {!isNowTile ? (
+                            <p
+                              className={`mt-0.5 truncate text-[10px] drop-shadow-[0_1px_1px_rgba(0,0,0,0.65)] ${
+                                item.slot?.pickedPlayerName ? "text-white/86" : "text-white/62"
+                              }`}
+                            >
+                              {shortPlayerLabel}
+                            </p>
+                          ) : null}
+                        </div>
+                      )}
                     </motion.div>
                   );
                 })}
@@ -3348,7 +3546,13 @@ export const DraftRoom = ({
             </div>
           </div>
           <div className="grid grid-cols-1 gap-2 lg:grid-cols-[minmax(0,1.05fr)_minmax(0,1.55fr)]">
-            <div className="rounded-large border border-primary-300/35 bg-gradient-to-br from-primary-500/10 via-content2/40 to-content2/30 p-3.5">
+            <div
+              className={`rounded-large border p-3.5 ${
+                canCurrentUserPick
+                  ? "border-primary-300/35 bg-gradient-to-br from-primary-500/10 via-content2/40 to-content2/30"
+                  : "border-default-200/25 bg-content2/20"
+              }`}
+            >
               <div className="flex items-center justify-between gap-2">
                 <p className="text-[10px] font-semibold uppercase tracking-wide text-default-500">
                   {canCurrentUserPick ? "On the clock" : "Your next pick"}
@@ -3361,7 +3565,7 @@ export const DraftRoom = ({
                 ) : null}
               </div>
               {canCurrentUserPick && draft.nextPick ? (
-                <div className="mt-2 grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3">
+                <div className="mt-2 mx-auto grid w-fit grid-cols-[auto_minmax(0,1fr)] items-center gap-3">
                   <div className="grid h-28 w-28 place-items-center rounded-large border border-white/25 bg-black/62 shadow-[0_8px_22px_rgba(0,0,0,0.35)]">
                     <p className="text-3xl font-black leading-none text-white tabular-nums sm:text-4xl">
                       {liveTimeLeftLabel}
@@ -3459,6 +3663,7 @@ export const DraftRoom = ({
                 {PRIMARY_ROLE_FILTERS.map((role) => {
                   const pick = rosterSlots.byRole.get(role);
                   const pickImageUrl = pickPlayerImageUrl(pick);
+                  const slotRoleIconUrl = roleIconUrl(role);
                   return (
                     <button
                       key={`roster-slot-${role}`}
@@ -3473,21 +3678,31 @@ export const DraftRoom = ({
                         setShowNeededRolesOnly(true);
                       }}
                     >
-                      <div className="grid h-full grid-cols-2">
-                        <div className="flex min-w-0 flex-col justify-between p-2">
-                          <p className="text-[9px] font-semibold uppercase tracking-wide text-default-500">
-                            {role}
-                          </p>
-                          <div className="min-w-0">
-                            <p className="truncate text-xs font-semibold">{pick?.playerName ?? "Open"}</p>
-                            <p className="truncate text-[10px] text-default-500">
-                              {pick?.playerTeam ?? "Add player..."}
-                            </p>
+                      {pick ? (
+                        <div className="grid h-full grid-cols-2">
+                          <div className="flex min-w-0 flex-col justify-between p-2">
+                            {slotRoleIconUrl ? (
+                              <Image
+                                alt={`${role} role icon`}
+                                className="h-3.5 w-3.5 object-contain opacity-90"
+                                height={14}
+                                src={slotRoleIconUrl}
+                                width={14}
+                              />
+                            ) : (
+                              <p className="text-[9px] font-semibold uppercase tracking-wide text-default-500">
+                                {role}
+                              </p>
+                            )}
+                            <div className="min-w-0">
+                              <p className="truncate text-xs font-semibold">{pick.playerName}</p>
+                              <p className="truncate text-[10px] text-default-500">
+                                {pick.playerTeam ?? "Unknown team"}
+                              </p>
+                            </div>
                           </div>
-                        </div>
-                        <div className="relative border-l border-default-200/25 bg-content1/20">
-                          {pick ? (
-                            pickImageUrl ? (
+                          <div className="relative border-l border-default-200/25 bg-content1/20">
+                            {pickImageUrl ? (
                               <Image
                                 alt={`${pick.playerName} portrait`}
                                 className="h-full w-full object-cover"
@@ -3510,16 +3725,31 @@ export const DraftRoom = ({
                               <div className="grid h-full place-items-center">
                                 <span className="h-8 w-8 rounded-full border border-default-300/40 bg-content2/40" />
                               </div>
-                            )
-                          ) : (
-                            <div className="grid h-full place-items-center">
-                              <span className="text-[10px] font-medium uppercase tracking-wide text-default-400">
-                                Open
-                              </span>
-                            </div>
-                          )}
+                            )}
+                          </div>
                         </div>
-                      </div>
+                      ) : (
+                        <div className="relative grid h-full place-items-center p-2">
+                          <div className="absolute left-2 top-2">
+                            {slotRoleIconUrl ? (
+                              <Image
+                                alt={`${role} role icon`}
+                                className="h-3.5 w-3.5 object-contain opacity-70"
+                                height={14}
+                                src={slotRoleIconUrl}
+                                width={14}
+                              />
+                            ) : (
+                              <p className="text-[9px] font-semibold uppercase tracking-wide text-default-500">
+                                {role}
+                              </p>
+                            )}
+                          </div>
+                          <span className="text-[11px] font-medium uppercase tracking-[0.08em] text-default-400/85">
+                            Pick Pending
+                          </span>
+                        </div>
+                      )}
                     </button>
                   );
                 })}
@@ -4511,7 +4741,7 @@ export const DraftRoom = ({
                               ) : null
                             ) : null}
                           </div>
-                          <span className="truncate text-default-500">{pick?.playerName ?? "Open"}</span>
+                          <span className="truncate text-default-500">{pick?.playerName ?? "Pick Pending"}</span>
                         </div>
                       );
                     })}
