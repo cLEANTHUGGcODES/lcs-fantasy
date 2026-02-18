@@ -23,6 +23,7 @@ import type {
   DraftPick,
   DraftStatus,
   DraftSummary,
+  DraftTimeoutEvent,
   RegisteredUser,
 } from "@/types/draft";
 import type { FantasyScoring, ParsedGame } from "@/types/fantasy";
@@ -30,6 +31,7 @@ import type { FantasyScoring, ParsedGame } from "@/types/fantasy";
 const DRAFTS_TABLE = "fantasy_drafts";
 const PARTICIPANTS_TABLE = "fantasy_draft_participants";
 const PICKS_TABLE = "fantasy_draft_picks";
+const TIMEOUT_EVENTS_TABLE = "fantasy_draft_timeout_events";
 const TEAM_POOL_TABLE = "fantasy_draft_team_pool";
 const PRESENCE_TABLE = "fantasy_draft_presence";
 const ONLINE_HEARTBEAT_WINDOW_MS = 45_000;
@@ -408,6 +410,19 @@ type DraftPickRow = {
   picked_at: string;
 };
 
+type DraftTimeoutEventRow = {
+  id: number;
+  draft_id: number;
+  overall_pick: number;
+  round_number: number;
+  round_pick: number;
+  participant_user_id: string;
+  participant_display_name: string;
+  outcome: "autopicked" | "skipped";
+  picked_team_name: string | null;
+  created_at: string;
+};
+
 type DraftTeamPoolRow = {
   id: number;
   draft_id: number;
@@ -489,6 +504,20 @@ const toPick = (row: DraftPickRow): DraftPick => ({
   pickedByUserId: row.picked_by_user_id,
   pickedByLabel: row.picked_by_label,
   pickedAt: row.picked_at,
+});
+
+const toTimeoutEvent = (row: DraftTimeoutEventRow): DraftTimeoutEvent => ({
+  id: row.id,
+  draftId: row.draft_id,
+  overallPick: row.overall_pick,
+  roundNumber: row.round_number,
+  roundPick: row.round_pick,
+  participantUserId: row.participant_user_id,
+  participantDisplayName:
+    formatUserLabelFromDisplayName(row.participant_display_name) ?? row.participant_display_name,
+  outcome: row.outcome,
+  pickedTeamName: row.picked_team_name,
+  createdAt: row.created_at,
 });
 
 const toPlayerPool = (row: DraftTeamPoolRow): DraftPlayerPoolEntry => ({
@@ -788,6 +817,25 @@ const loadPicks = async (draftId: number): Promise<DraftPick[]> => {
   return ((data ?? []) as DraftPickRow[]).map(toPick);
 };
 
+const loadTimeoutEvents = async (draftId: number): Promise<DraftTimeoutEvent[]> => {
+  const supabase = getSupabaseServerClient();
+  const { data, error } = await supabase
+    .from(TIMEOUT_EVENTS_TABLE)
+    .select("*")
+    .eq("draft_id", draftId)
+    .order("overall_pick", { ascending: true });
+
+  if (error) {
+    if (error.code === "42P01") {
+      // Backward-compatible fallback before timeout-events migration is applied.
+      return [];
+    }
+    throw new Error(`Unable to load draft timeout events: ${error.message}`);
+  }
+
+  return ((data ?? []) as DraftTimeoutEventRow[]).map(toTimeoutEvent);
+};
+
 const loadPlayerPool = async (draftId: number): Promise<DraftPlayerPoolEntry[]> => {
   const supabase = getSupabaseServerClient();
   const { data, error } = await supabase
@@ -871,10 +919,11 @@ export const getDraftDetail = async ({
   draftId: number;
   currentUserId: string;
 }): Promise<DraftDetail> => {
-  const [draftRow, participants, picks, basePlayerPool, presenceRows, isGlobalAdmin] = await Promise.all([
+  const [draftRow, participants, picks, timeoutEvents, basePlayerPool, presenceRows, isGlobalAdmin] = await Promise.all([
     loadDraftRow(draftId),
     loadParticipants(draftId),
     loadPicks(draftId),
+    loadTimeoutEvents(draftId),
     loadPlayerPool(draftId),
     loadPresence(draftId),
     isGlobalAdminUser({ userId: currentUserId }),
@@ -912,6 +961,7 @@ export const getDraftDetail = async ({
     ...summary,
     participants: participantsWithAvatars,
     picks,
+    timeoutEvents,
     playerPool,
     availablePlayers,
     nextPick: resolveNextPick({

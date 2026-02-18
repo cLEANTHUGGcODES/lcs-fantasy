@@ -2,6 +2,7 @@
 
 import { Button } from "@heroui/button";
 import { Card, CardBody, CardHeader } from "@heroui/card";
+import { ScrollShadow } from "@heroui/scroll-shadow";
 import { Spinner } from "@heroui/spinner";
 import { ChevronDown, ChevronLeft, ImagePlus, MessageCircle, Send, X } from "lucide-react";
 import Image from "next/image";
@@ -1226,13 +1227,14 @@ export const GlobalChatPanel = ({
 
   const renderedMessageList = useMemo(
     () => (
-      <div
+      <ScrollShadow
         ref={messageListRef}
-        className={`chat-scrollbar flex-1 min-h-0 overflow-x-hidden overflow-y-auto overscroll-contain touch-pan-y ${
+        className={`chat-scrollbar flex-1 min-h-0 overflow-x-hidden overscroll-contain touch-pan-y ${
           isEmbedded
             ? "space-y-1 px-0 pb-0 rounded-large border border-[#334767]/45 bg-[#081326]/82 p-2"
             : "space-y-1.5 px-1 pb-1 sm:space-y-2 sm:rounded-large sm:border sm:border-[#334767]/55 sm:bg-[#081326]/88 sm:p-3"
         }`}
+        orientation="vertical"
         style={{ WebkitOverflowScrolling: "touch" }}
         onScroll={(event) => {
           const nearBottom = isNearBottom(event.currentTarget);
@@ -1388,7 +1390,7 @@ export const GlobalChatPanel = ({
             })
           )}
         </div>
-      </div>
+      </ScrollShadow>
     ),
     [groupedMessages, hasOlderMessages, isEmbedded, loadOlderMessages, loadingOlder, sortedMessages.length],
   );

@@ -30,6 +30,19 @@ export const isRecoverableSupabaseAuthError = (error: unknown): boolean => {
     return true;
   }
 
+  if (code === "auth_session_missing" || code === "session_not_found") {
+    return true;
+  }
+
+  if (
+    isAuthError &&
+    typeof candidate.status === "number" &&
+    candidate.status === 400 &&
+    message.toLowerCase().includes("auth session missing")
+  ) {
+    return true;
+  }
+
   return (
     isAuthError &&
     typeof candidate.status === "number" &&

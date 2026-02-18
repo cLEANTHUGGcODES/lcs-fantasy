@@ -248,6 +248,26 @@ create index if not exists fantasy_draft_picks_draft_participant_idx
 create index if not exists fantasy_draft_picks_draft_participant_role_idx
   on public.fantasy_draft_picks (draft_id, participant_user_id, upper(btrim(coalesce(player_role, ''))));
 
+create table if not exists public.fantasy_draft_timeout_events (
+  id bigint generated always as identity primary key,
+  draft_id bigint not null references public.fantasy_drafts(id) on delete cascade,
+  overall_pick integer not null check (overall_pick > 0),
+  round_number integer not null check (round_number > 0),
+  round_pick integer not null check (round_pick > 0),
+  participant_user_id uuid not null,
+  participant_display_name text not null,
+  outcome text not null check (outcome in ('autopicked', 'skipped')),
+  picked_team_name text null,
+  created_at timestamptz not null default timezone('utc', now()),
+  unique (draft_id, overall_pick)
+);
+
+create index if not exists fantasy_draft_timeout_events_draft_idx
+  on public.fantasy_draft_timeout_events (draft_id, overall_pick desc);
+
+create index if not exists fantasy_draft_timeout_events_draft_participant_idx
+  on public.fantasy_draft_timeout_events (draft_id, participant_user_id, overall_pick desc);
+
 create table if not exists public.fantasy_draft_presence (
   draft_id bigint not null references public.fantasy_drafts(id) on delete cascade,
   user_id uuid not null,
@@ -427,6 +447,31 @@ begin
       limit 1;
 
       if v_team.team_name is null then
+        insert into public.fantasy_draft_timeout_events (
+          draft_id,
+          overall_pick,
+          round_number,
+          round_pick,
+          participant_user_id,
+          participant_display_name,
+          outcome,
+          picked_team_name,
+          created_at
+        )
+        values (
+          v_draft.id,
+          v_pick_count + 1,
+          v_round_number,
+          v_offset + 1,
+          v_on_clock.user_id,
+          v_on_clock.display_name,
+          'skipped',
+          null,
+          v_now
+        )
+        on conflict (draft_id, overall_pick)
+        do nothing;
+
         update public.fantasy_drafts
         set status = 'completed'
         where id = v_draft.id
@@ -475,6 +520,31 @@ begin
       if not found then
         exit;
       end if;
+
+      insert into public.fantasy_draft_timeout_events (
+        draft_id,
+        overall_pick,
+        round_number,
+        round_pick,
+        participant_user_id,
+        participant_display_name,
+        outcome,
+        picked_team_name,
+        created_at
+      )
+      values (
+        v_draft.id,
+        v_pick_count + 1,
+        v_round_number,
+        v_offset + 1,
+        v_on_clock.user_id,
+        v_on_clock.display_name,
+        'autopicked',
+        v_team.team_name,
+        v_now
+      )
+      on conflict (draft_id, overall_pick)
+      do nothing;
 
       v_auto_picks := v_auto_picks + 1;
     end loop;

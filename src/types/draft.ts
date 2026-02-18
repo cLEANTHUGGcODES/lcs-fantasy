@@ -107,9 +107,23 @@ export interface DraftParticipantPresence {
   lastSeenAt: string | null;
 }
 
+export interface DraftTimeoutEvent {
+  id: number;
+  draftId: number;
+  overallPick: number;
+  roundNumber: number;
+  roundPick: number;
+  participantUserId: string;
+  participantDisplayName: string;
+  outcome: "autopicked" | "skipped";
+  pickedTeamName: string | null;
+  createdAt: string;
+}
+
 export interface DraftDetail extends DraftSummary {
   participants: DraftParticipant[];
   picks: DraftPick[];
+  timeoutEvents: DraftTimeoutEvent[];
   playerPool: DraftPlayerPoolEntry[];
   availablePlayers: DraftPlayerPoolEntry[];
   nextPick: DraftNextPick | null;

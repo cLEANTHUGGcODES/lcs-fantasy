@@ -16,6 +16,11 @@ const nextConfig: NextConfig = {
         hostname: "**.supabase.co",
       },
     ],
+    localPatterns: [
+      {
+        pathname: "/img/**",
+      },
+    ],
   },
 };
 
