@@ -2,6 +2,7 @@ type ErrorLike = {
   code?: unknown;
   status?: unknown;
   message?: unknown;
+  name?: unknown;
   __isAuthError?: unknown;
 };
 
@@ -19,7 +20,10 @@ export const isRecoverableSupabaseAuthError = (error: unknown): boolean => {
   }
 
   const code = typeof candidate.code === "string" ? candidate.code : "";
+  const name = typeof candidate.name === "string" ? candidate.name : "";
   const message = typeof candidate.message === "string" ? candidate.message : "";
+  const normalizedName = name.toLowerCase();
+  const normalizedMessage = message.toLowerCase();
   const isAuthError = candidate.__isAuthError === true;
 
   if (code === "refresh_token_not_found") {
@@ -34,11 +38,22 @@ export const isRecoverableSupabaseAuthError = (error: unknown): boolean => {
     return true;
   }
 
+  if (normalizedName === "authsessionmissingerror") {
+    return true;
+  }
+
+  if (
+    normalizedMessage.includes("auth session missing") ||
+    normalizedMessage.includes("session not found")
+  ) {
+    return true;
+  }
+
   if (
     isAuthError &&
     typeof candidate.status === "number" &&
     candidate.status === 400 &&
-    message.toLowerCase().includes("auth session missing")
+    normalizedMessage.includes("auth session missing")
   ) {
     return true;
   }
@@ -47,7 +62,7 @@ export const isRecoverableSupabaseAuthError = (error: unknown): boolean => {
     isAuthError &&
     typeof candidate.status === "number" &&
     candidate.status === 400 &&
-    message.toLowerCase().includes("refresh token")
+    normalizedMessage.includes("refresh token")
   );
 };
 

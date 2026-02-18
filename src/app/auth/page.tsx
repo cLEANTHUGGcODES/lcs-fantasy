@@ -61,8 +61,9 @@ export default async function AuthPage({
             <p>
               Add <code>NEXT_PUBLIC_SUPABASE_URL</code> and{" "}
               <code>NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY</code> (or{" "}
-              <code>NEXT_PUBLIC_SUPABASE_ANON_KEY</code>) to{" "}
-              <code>.env.local</code>, then restart <code>npm run dev</code>.
+              <code>NEXT_PUBLIC_SUPABASE_ANON_KEY</code>) to your environment
+              configuration (<code>.env.local</code> locally, or your hosting
+              provider settings in production), then restart/redeploy.
             </p>
           </CardBody>
         </Card>
