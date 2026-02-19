@@ -720,9 +720,20 @@ const DesktopAvailablePlayersTable = memo(({
   onOpenPlayerDetails: (playerName: string) => void;
 }) => {
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const scrollRafRef = useRef<number | null>(null);
+  const latestScrollTopRef = useRef(0);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(0);
   const virtualizationEnabled = players.length >= DESKTOP_PLAYER_TABLE_VIRTUALIZE_THRESHOLD;
+
+  useEffect(() => {
+    return () => {
+      if (scrollRafRef.current !== null) {
+        window.cancelAnimationFrame(scrollRafRef.current);
+        scrollRafRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     const scroller = scrollRef.current;
@@ -746,7 +757,22 @@ const DesktopAvailablePlayersTable = memo(({
     return () => {
       observer.disconnect();
     };
-  }, [players.length]);
+  }, []);
+
+  useEffect(() => {
+    if (!virtualizationEnabled) {
+      return;
+    }
+    const scroller = scrollRef.current;
+    if (!scroller) {
+      return;
+    }
+    const maxScrollTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+    if (scroller.scrollTop > maxScrollTop) {
+      scroller.scrollTop = maxScrollTop;
+      setScrollTop(maxScrollTop);
+    }
+  }, [players.length, virtualizationEnabled]);
 
   const { startIndex, endIndex, topSpacerHeight, bottomSpacerHeight } = useMemo(() => {
     if (!virtualizationEnabled) {
@@ -807,10 +833,17 @@ const DesktopAvailablePlayersTable = memo(({
           if (!virtualizationEnabled) {
             return;
           }
-          const nextScrollTop = event.currentTarget.scrollTop;
-          setScrollTop((current) => (
-            Math.abs(current - nextScrollTop) < 1 ? current : nextScrollTop
-          ));
+          latestScrollTopRef.current = event.currentTarget.scrollTop;
+          if (scrollRafRef.current !== null) {
+            return;
+          }
+          scrollRafRef.current = window.requestAnimationFrame(() => {
+            scrollRafRef.current = null;
+            const nextScrollTop = latestScrollTopRef.current;
+            setScrollTop((current) => (
+              Math.abs(current - nextScrollTop) < 1 ? current : nextScrollTop
+            ));
+          });
         }}
       >
         {players.length === 0 ? (
@@ -2125,28 +2158,21 @@ export const DraftRoom = ({
   }, []);
 
   useEffect(() => {
-    const isCurrentUserClocked =
-      draftStatus === "live" && draft?.nextPick?.participantUserId === currentUserId;
     const shouldTick =
-      isCurrentUserClocked ||
       connectionStatus !== "SUBSCRIBED" ||
       Boolean(timeoutOutcomeMessage);
     if (!shouldTick) {
       setClientNowMs(Date.now());
       return;
     }
-    // Keep a stable one-second cadence so large live-draft panes do not rerender at sub-second frequency.
-    const intervalMs = 1000;
+    // Only tick while disconnected/degraded so the main draft room does not rerender every second during healthy realtime.
+    const intervalMs = 2000;
     const id = window.setInterval(() => {
       setClientNowMs(Date.now());
     }, intervalMs);
     return () => window.clearInterval(id);
   }, [
     connectionStatus,
-    currentUserId,
-    draft?.currentPickDeadlineAt,
-    draft?.nextPick?.participantUserId,
-    draftStatus,
     timeoutOutcomeMessage,
   ]);
 
@@ -3161,6 +3187,9 @@ export const DraftRoom = ({
       const expectedPick = draft.nextPick?.overallPick ?? null;
       setPickPending(true);
       setError(null);
+      setPendingManualDraftPlayerName(null);
+      setSelectedPlayerName((current) => (current === playerName ? null : current));
+      setSelectionNotice("Submitting pick...");
       const startedAt = performance.now();
       let responseStatus = 0;
       let serverTimingTotalMs: number | null = null;
@@ -3249,10 +3278,16 @@ export const DraftRoom = ({
         trackDraftEvent("draft.failed", { source, playerName, reason: message });
         setPendingManualDraftPlayerName(null);
         setSelectedPlayerName(null);
+        const deadlineMs = draft.currentPickDeadlineAt
+          ? new Date(draft.currentPickDeadlineAt).getTime()
+          : Number.NaN;
+        const remainingMsNow = Number.isFinite(deadlineMs)
+          ? deadlineMs - (Date.now() + serverOffsetMs)
+          : null;
         const likelyClockRaceFromTiming =
           expectedPick !== null &&
-          currentPickRemainingMs !== null &&
-          currentPickRemainingMs <= 1200;
+          remainingMsNow !== null &&
+          remainingMsNow <= 1200;
         const autopickShouldRetry = source === "autopick" && !likelyClockRaceFromTiming;
         if (autopickShouldRetry) {
           autoPickAttemptedForPickRef.current = null;
@@ -3291,10 +3326,10 @@ export const DraftRoom = ({
       canDraftActions,
       draft,
       draftActionPlayerName,
-      currentPickRemainingMs,
       pushToast,
       queueClientMetric,
       requestDraftRefresh,
+      serverOffsetMs,
       trackDraftEvent,
     ],
   );
@@ -4896,7 +4931,7 @@ export const DraftRoom = ({
       </Card>
       ) : null}
 
-      {draft.isCommissioner ? (
+      {draft.isCommissioner && isCommissionerDrawerOpen ? (
         <Drawer
           classNames={{
             wrapper: "z-[260]",
@@ -5050,14 +5085,14 @@ export const DraftRoom = ({
         </Drawer>
       ) : null}
 
-      {!isMobileViewport ? (
+      {!isMobileViewport && isPlayerDetailDrawerOpen && Boolean(selectedPlayer) ? (
         <Drawer
           classNames={{
             wrapper: "z-[250]",
             base: "border-l border-default-200/40 bg-content1 text-default-foreground",
             backdrop: "bg-black/55",
           }}
-          isOpen={isPlayerDetailDrawerOpen && Boolean(selectedPlayer)}
+          isOpen={isPlayerDetailDrawerOpen}
           placement="right"
           scrollBehavior="inside"
           size="sm"
@@ -5267,7 +5302,7 @@ export const DraftRoom = ({
         </Drawer>
       ) : null}
 
-      {!isMobileViewport ? (
+      {!isMobileViewport && isQueueDrawerOpen ? (
         <Drawer
           classNames={{
             wrapper: "z-[255]",
@@ -5415,6 +5450,7 @@ export const DraftRoom = ({
             <Tabs
               aria-label="Live draft mobile tabs"
               color="primary"
+              destroyInactiveTabPanel
               selectedKey={mobileLiveTab}
               size="sm"
               variant="underlined"
