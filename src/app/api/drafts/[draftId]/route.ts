@@ -14,6 +14,14 @@ const parseDraftId = (raw: string): number => {
   return value;
 };
 
+const parseProcessDueFlag = (value: string | null): boolean => {
+  if (!value) {
+    return false;
+  }
+  const normalized = value.trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes";
+};
+
 export async function GET(
   request: Request,
   { params }: { params: Promise<{ draftId: string }> },
@@ -33,12 +41,16 @@ export async function GET(
   try {
     const user = await timer.measure("auth", () => requireAuthUser(undefined, request));
     metricUserId = user.id;
+    const requestUrl = new URL(request.url);
+    const shouldProcessDue = parseProcessDueFlag(requestUrl.searchParams.get("processDue"));
     const draftId = await timer.measure(
       "parse_draft_id",
       async () => parseDraftId((await params).draftId),
     );
     metricDraftId = draftId;
-    await timer.measure("process_due", () => processDueDrafts({ draftId }));
+    if (shouldProcessDue) {
+      await timer.measure("process_due", () => processDueDrafts({ draftId }));
+    }
     const draft = await timer.measure("load_draft_detail", () =>
       getDraftDetail({
         draftId,

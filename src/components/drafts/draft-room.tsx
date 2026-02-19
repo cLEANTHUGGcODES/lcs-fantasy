@@ -51,6 +51,7 @@ import {
 } from "lucide-react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import Image from "next/image";
+import dynamic from "next/dynamic";
 import {
   type CSSProperties,
   useCallback,
@@ -59,11 +60,22 @@ import {
   useRef,
   useState,
 } from "react";
-import { GlobalChatPanel } from "@/components/chat/global-chat-panel";
 import { CroppedTeamLogo } from "@/components/cropped-team-logo";
 import { getPickSlot, isThreeRoundReversalRound } from "@/lib/draft-engine";
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 import type { DraftDetail, DraftStatus } from "@/types/draft";
+
+const GlobalChatPanel = dynamic(
+  () => import("@/components/chat/global-chat-panel").then((entry) => entry.GlobalChatPanel),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex min-h-[120px] items-center justify-center text-xs text-default-500">
+        Loading chat...
+      </div>
+    ),
+  },
+);
 
 type DraftDetailResponse = {
   draft?: DraftDetail;
@@ -823,7 +835,6 @@ export const DraftRoom = ({
   const [readyPending, setReadyPending] = useState(false);
   const [pickQueue, setPickQueue] = useState<string[]>([]);
   const [isQueueHydrated, setIsQueueHydrated] = useState(false);
-  const [draggedQueueIndex, setDraggedQueueIndex] = useState<number | null>(null);
   const [selectedPlayerName, setSelectedPlayerName] = useState<string | null>(null);
   const [searchInputValue, setSearchInputValue] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
@@ -880,6 +891,7 @@ export const DraftRoom = ({
   const clientMetricsQueueRef = useRef<DraftClientMetricEvent[]>([]);
   const clientMetricsFlushInFlightRef = useRef(false);
   const autoPickAutoEnabledForPickRef = useRef<string | null>(null);
+  const draggedQueueIndexRef = useRef<number | null>(null);
   const [lastDraftSyncMs, setLastDraftSyncMs] = useState(() => Date.now());
 
   const applyDraft = useCallback((nextDraft: DraftDetail) => {
@@ -1092,12 +1104,21 @@ export const DraftRoom = ({
     [settings.muted],
   );
 
-  const loadDraft = useCallback(async () => {
+  const loadDraft = useCallback(async ({
+    processDue = false,
+  }: {
+    processDue?: boolean;
+  } = {}) => {
     const startedAt = performance.now();
     let responseStatus = 0;
     let serverTimingTotalMs: number | null = null;
     try {
-      const response = await fetch(`/api/drafts/${draftId}`, {
+      const params = new URLSearchParams();
+      if (processDue) {
+        params.set("processDue", "1");
+      }
+      const query = params.toString();
+      const response = await fetch(query ? `/api/drafts/${draftId}?${query}` : `/api/drafts/${draftId}`, {
         cache: "no-store",
       });
       responseStatus = response.status;
@@ -1114,25 +1135,45 @@ export const DraftRoom = ({
         statusCode: responseStatus,
         serverTotalMs: serverTimingTotalMs,
         draftId,
+        processDue,
       });
     }
   }, [applyDraft, draftId, queueClientMetric]);
   const draftStatus = draft?.status ?? null;
 
-  const requestDraftRefresh = useCallback(async () => {
+  const requestDraftRefresh = useCallback(async ({
+    processDue = false,
+    reason = "refresh",
+  }: {
+    processDue?: boolean;
+    reason?: string;
+  } = {}) => {
     if (loadDraftInFlightRef.current) {
-      queueClientMetric("client_refresh_retry", 1, { reason: "refresh_in_flight", draftId });
+      queueClientMetric("client_refresh_retry", 1, {
+        reason: `refresh_in_flight:${reason}`,
+        draftId,
+        processDue,
+      });
       return;
     }
     loadDraftInFlightRef.current = true;
     try {
-      await loadDraft();
+      await loadDraft({ processDue });
     } finally {
       loadDraftInFlightRef.current = false;
     }
   }, [draftId, loadDraft, queueClientMetric]);
   const scheduleDraftRefresh = useCallback(
-    (delayMs: number = REALTIME_REFRESH_DEBOUNCE_MS) => {
+    (
+      delayMs: number = REALTIME_REFRESH_DEBOUNCE_MS,
+      {
+        processDue = false,
+        reason = "scheduled",
+      }: {
+        processDue?: boolean;
+        reason?: string;
+      } = {},
+    ) => {
       if (typeof window === "undefined") {
         return;
       }
@@ -1141,7 +1182,10 @@ export const DraftRoom = ({
       }
       draftRefreshTimerRef.current = window.setTimeout(() => {
         draftRefreshTimerRef.current = null;
-        void requestDraftRefresh().catch(() => undefined);
+        void requestDraftRefresh({
+          processDue,
+          reason,
+        }).catch(() => undefined);
       }, Math.max(0, delayMs));
     },
     [requestDraftRefresh],
@@ -1306,7 +1350,10 @@ export const DraftRoom = ({
       try {
         setLoading(true);
         setError(null);
-        await requestDraftRefresh();
+        await requestDraftRefresh({
+          processDue: true,
+          reason: "initial_load",
+        });
       } catch (loadError) {
         if (!canceled) {
           setError(loadError instanceof Error ? loadError.message : "Unable to load draft.");
@@ -1328,12 +1375,25 @@ export const DraftRoom = ({
     if (!draftStatus) {
       return;
     }
-    const intervalMs = draftStatus === "live" ? 3000 : draftStatus === "scheduled" ? 5000 : 10000;
+    const isRealtimeHealthy = connectionStatus === "SUBSCRIBED";
+    const intervalMs = isRealtimeHealthy
+      ? draftStatus === "live"
+        ? 15000
+        : 30000
+      : draftStatus === "live"
+      ? 3000
+      : draftStatus === "scheduled"
+      ? 5000
+      : 10000;
+    const shouldProcessDue = draftStatus === "live" || draftStatus === "scheduled";
     const id = window.setInterval(() => {
-      void requestDraftRefresh().catch(() => undefined);
+      void requestDraftRefresh({
+        processDue: shouldProcessDue,
+        reason: isRealtimeHealthy ? "realtime_true_up" : "fallback_poll",
+      }).catch(() => undefined);
     }, intervalMs);
     return () => window.clearInterval(id);
-  }, [draftStatus, requestDraftRefresh]);
+  }, [connectionStatus, draftStatus, requestDraftRefresh]);
 
   useEffect(() => {
     const supabase = getSupabaseBrowserClient();
@@ -1441,6 +1501,10 @@ export const DraftRoom = ({
           pushToast("Synced to live draft.");
           lastRealtimeSyncToastAtMsRef.current = nowMs;
         }
+        scheduleDraftRefresh(0, {
+          processDue: true,
+          reason: "reconnect_true_up",
+        });
       }
       jumpToTimelinePick(draft?.nextPick?.overallPick ?? null);
     } else if (connectionStatus === "CHANNEL_ERROR" || connectionStatus === "TIMED_OUT") {
@@ -1503,6 +1567,7 @@ export const DraftRoom = ({
     pushToast,
     queueClientMetric,
     settings.autoPickFromQueue,
+    scheduleDraftRefresh,
     trackDraftEvent,
   ]);
 
@@ -1645,10 +1710,7 @@ export const DraftRoom = ({
   useEffect(() => {
     const isCurrentUserClocked =
       draftStatus === "live" && draft?.nextPick?.participantUserId === currentUserId;
-    const hasLiveDraftClock =
-      draftStatus === "live" && Boolean(draft?.currentPickDeadlineAt);
     const shouldTick =
-      hasLiveDraftClock ||
       isCurrentUserClocked ||
       connectionStatus !== "SUBSCRIBED" ||
       Boolean(timeoutOutcomeMessage);
@@ -2739,7 +2801,10 @@ export const DraftRoom = ({
             setSelectionNotice("Resolving pick outcome from server...");
           }
 
-          void requestDraftRefresh()
+          void requestDraftRefresh({
+            processDue: likelyClockRace,
+            reason: "pick_reconcile",
+          })
             .then(() => {
               if (!likelyClockRace && !(source === "autopick" && autopickShouldRetry)) {
                 setSelectionNotice("Pick outcome resolved by server.");
@@ -2784,7 +2849,10 @@ export const DraftRoom = ({
         } else {
           setSelectionNotice("Resolving pick outcome from server...");
         }
-        void requestDraftRefresh()
+        void requestDraftRefresh({
+          processDue: likelyClockRaceFromTiming,
+          reason: "pick_reconcile",
+        })
           .then(() => {
             if (!expectedPick && source !== "autopick") {
               setSelectionNotice("Pick outcome resolved by server.");
@@ -3060,7 +3128,9 @@ export const DraftRoom = ({
       return;
     }
 
-    const id = window.setInterval(() => {
+    let timeoutId: number | null = null;
+
+    const queueAutopickIfNeeded = () => {
       if (pickPending) {
         return;
       }
@@ -3078,6 +3148,18 @@ export const DraftRoom = ({
         !queueTargetPlayerName && remainingMs <= AUTOPICK_TRIGGER_MS;
       const targetPlayerName = queueTargetPlayerName ?? (useLowTimeFallback ? queueFirstFallbackPlayerName : null);
       if (!targetPlayerName) {
+        if (remainingMs <= 0) {
+          return;
+        }
+        const nextDelayMs = queueTargetPlayerName
+          ? Math.min(500, Math.max(90, remainingMs))
+          : remainingMs > AUTOPICK_TRIGGER_MS
+          ? Math.max(90, remainingMs - AUTOPICK_TRIGGER_MS)
+          : Math.min(500, Math.max(90, remainingMs));
+        timeoutId = window.setTimeout(() => {
+          timeoutId = null;
+          queueAutopickIfNeeded();
+        }, nextDelayMs);
         return;
       }
 
@@ -3090,10 +3172,14 @@ export const DraftRoom = ({
         pickNumber,
       );
       void submitPick(targetPlayerName, { source: "autopick" });
-    }, 220);
+    };
+
+    queueAutopickIfNeeded();
 
     return () => {
-      window.clearInterval(id);
+      if (timeoutId !== null) {
+        window.clearTimeout(timeoutId);
+      }
     };
   }, [
     canDraftActions,
@@ -4852,7 +4938,9 @@ export const DraftRoom = ({
                         key={player.playerName}
                         className={`flex items-center gap-2 px-3 py-2 ${index === 0 ? "bg-primary-500/10" : ""}`}
                         draggable={canQueueActions}
-                        onDragEnd={() => setDraggedQueueIndex(null)}
+                        onDragEnd={() => {
+                          draggedQueueIndexRef.current = null;
+                        }}
                         onDragOver={(event) => {
                           if (!canQueueActions) {
                             return;
@@ -4864,14 +4952,15 @@ export const DraftRoom = ({
                           if (!canQueueActions) {
                             return;
                           }
-                          setDraggedQueueIndex(index);
+                          draggedQueueIndexRef.current = index;
                         }}
                         onDrop={() => {
-                          if (!canQueueActions || draggedQueueIndex === null) {
+                          const fromIndex = draggedQueueIndexRef.current;
+                          if (!canQueueActions || fromIndex === null) {
                             return;
                           }
-                          moveQueueItem(draggedQueueIndex, index);
-                          setDraggedQueueIndex(null);
+                          moveQueueItem(fromIndex, index);
+                          draggedQueueIndexRef.current = null;
                         }}
                       >
                         <span className="text-xs font-semibold text-default-500">{index + 1}</span>
@@ -5426,7 +5515,9 @@ export const DraftRoom = ({
                               index === 0 ? "bg-primary-500/10" : ""
                             }`}
                             draggable={canQueueActions}
-                            onDragEnd={() => setDraggedQueueIndex(null)}
+                            onDragEnd={() => {
+                              draggedQueueIndexRef.current = null;
+                            }}
                             onDragOver={(event) => {
                               if (!canQueueActions) {
                                 return;
@@ -5438,14 +5529,15 @@ export const DraftRoom = ({
                               if (!canQueueActions) {
                                 return;
                               }
-                              setDraggedQueueIndex(index);
+                              draggedQueueIndexRef.current = index;
                             }}
                             onDrop={() => {
-                              if (!canQueueActions || draggedQueueIndex === null) {
+                              const fromIndex = draggedQueueIndexRef.current;
+                              if (!canQueueActions || fromIndex === null) {
                                 return;
                               }
-                              moveQueueItem(draggedQueueIndex, index);
-                              setDraggedQueueIndex(null);
+                              moveQueueItem(fromIndex, index);
+                              draggedQueueIndexRef.current = null;
                             }}
                           >
                             <span className="text-xs font-semibold text-default-500">{index + 1}</span>
@@ -6440,7 +6532,9 @@ export const DraftRoom = ({
                         key={player.playerName}
                         className={`flex items-center gap-2 px-3 py-2 ${index === 0 ? "bg-primary-500/10" : ""}`}
                         draggable={canQueueActions}
-                        onDragEnd={() => setDraggedQueueIndex(null)}
+                        onDragEnd={() => {
+                          draggedQueueIndexRef.current = null;
+                        }}
                         onDragOver={(event) => {
                           if (!canQueueActions) {
                             return;
@@ -6452,14 +6546,15 @@ export const DraftRoom = ({
                           if (!canQueueActions) {
                             return;
                           }
-                          setDraggedQueueIndex(index);
+                          draggedQueueIndexRef.current = index;
                         }}
                         onDrop={() => {
-                          if (!canQueueActions || draggedQueueIndex === null) {
+                          const fromIndex = draggedQueueIndexRef.current;
+                          if (!canQueueActions || fromIndex === null) {
                             return;
                           }
-                          moveQueueItem(draggedQueueIndex, index);
-                          setDraggedQueueIndex(null);
+                          moveQueueItem(fromIndex, index);
+                          draggedQueueIndexRef.current = null;
                         }}
                       >
                         <span className="text-xs font-semibold text-default-500">{index + 1}</span>
