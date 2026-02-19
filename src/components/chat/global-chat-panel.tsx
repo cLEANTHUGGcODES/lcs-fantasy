@@ -792,6 +792,15 @@ export const GlobalChatPanel = ({
   const metricsFlushInFlightRef = useRef(false);
   const isPanelOpen = isEmbedded ? true : isOpen;
   const sortedMessages = messages;
+  const latestPersistedMessageId = useMemo(() => {
+    for (let index = sortedMessages.length - 1; index >= 0; index -= 1) {
+      const messageId = toMessageId(sortedMessages[index]?.id ?? 0);
+      if (messageId > 0) {
+        return messageId;
+      }
+    }
+    return 0;
+  }, [sortedMessages]);
   const currentUserReactionLabel = useMemo(() => {
     const ownMessage = [...sortedMessages].reverse().find((entry) => entry.userId === currentUserId);
     if (!ownMessage) {
@@ -1999,9 +2008,11 @@ export const GlobalChatPanel = ({
                       const shouldShowTimestamp = isLastInGroup;
                       const showAvatar = isFirstInGroup;
                       const entryMessageId = toMessageId(entry.id);
+                      const isPersistedMessage = entryMessageId > 0;
                       const entryReactions = orderReactionsForDisplay(normalizeMessageReactions(entry.reactions));
                       const entryReactionByEmoji = new Map(entryReactions.map((reaction) => [reaction.emoji, reaction]));
                       const isActionBarVisible = (
+                        isPersistedMessage &&
                         hoveredActionBarMessageId === entryMessageId &&
                         hiddenActionBarMessageId !== entryMessageId
                       );
@@ -2056,15 +2067,23 @@ export const GlobalChatPanel = ({
                             entry.imageUrl ? "max-w-[70%]" : "max-w-[74%]"
                           } ${
                             group.isCurrentUser ? "items-end" : "items-start"
+                          } ${
+                            isPersistedMessage ? "" : "opacity-85"
                           }`}
                           style={entry.imageUrl ? { maxWidth: "min(260px, 70%)" } : undefined}
                           onMouseEnter={() => {
+                            if (!isPersistedMessage) {
+                              return;
+                            }
                             setHoveredActionBarMessageId(entryMessageId);
                             setHiddenActionBarMessageId((current) => (
                               current !== null && current !== entryMessageId ? null : current
                             ));
                           }}
                           onMouseLeave={() => {
+                            if (!isPersistedMessage) {
+                              return;
+                            }
                             setHoveredActionBarMessageId((current) => (
                               current === entryMessageId ? null : current
                             ));
@@ -2183,7 +2202,7 @@ export const GlobalChatPanel = ({
                               <p className={`text-[10px] text-[#9fb3d6]/46 transition-opacity duration-300 ease-in-out [@media(hover:none)]:opacity-45 ${
                                 isActionBarVisible ? "opacity-100" : "opacity-0"
                               }`}>
-                                {formatTime(entry.createdAt)}
+                                {isPersistedMessage ? formatTime(entry.createdAt) : "Sending..."}
                               </p>
                             ) : null}
                             <div
@@ -2308,14 +2327,17 @@ export const GlobalChatPanel = ({
   );
 
   const submitMessage = useCallback(async () => {
-    const trimmedInput = messageInput.trim();
-    const attachedImageUrl = attachedImage?.imageUrl ?? null;
+    const messageInputSnapshot = messageInput;
+    const trimmedInput = messageInputSnapshot.trim();
+    const attachedImageSnapshot = attachedImage;
+    const attachedImageUrl = attachedImageSnapshot?.imageUrl ?? null;
+    const replyContextSnapshot = replyContext;
     if ((!trimmedInput && !attachedImageUrl) || pendingImageUpload) {
       return;
     }
     const encodedMessage = encodeMessageWithReplyContext({
       message: trimmedInput,
-      replyContext,
+      replyContext: replyContextSnapshot,
     });
     if (encodedMessage.length > MAX_GLOBAL_CHAT_MESSAGE_LENGTH) {
       setError(`Message must be ${MAX_GLOBAL_CHAT_MESSAGE_LENGTH} characters or fewer.`);
@@ -2330,8 +2352,34 @@ export const GlobalChatPanel = ({
       composerIdempotencyMessageRef.current = composerSignature;
     }
 
+    const optimisticMessageId = -Math.max(1, Math.floor(Date.now() + Math.random() * 100000));
+    const previousOwnMessage = [...messagesRef.current]
+      .reverse()
+      .find((entry) => entry.userId === currentUserId && toMessageId(entry.id) > 0);
+    const optimisticMessage = withNormalizedMessageReactions({
+      id: optimisticMessageId,
+      userId: currentUserId,
+      senderLabel: previousOwnMessage?.senderLabel ?? "You",
+      senderAvatarUrl: previousOwnMessage?.senderAvatarUrl ?? null,
+      senderAvatarBorderColor: previousOwnMessage?.senderAvatarBorderColor ?? null,
+      message: encodedMessage,
+      imageUrl: attachedImageUrl,
+      reactions: [],
+      createdAt: new Date().toISOString(),
+    });
+
     setPendingSend(true);
     setError(null);
+    setMessageInput("");
+    setAttachedImage(null);
+    setReplyContext(null);
+    setMessages((currentMessages) => {
+      const mergeResult = mergeIncomingMessages(currentMessages, [optimisticMessage]);
+      if (mergeResult.droppedCount > 0) {
+        incrementClientMetric("duplicateDrops", mergeResult.droppedCount);
+      }
+      return mergeResult.messages;
+    });
     try {
       const response = await fetch("/api/chat", {
         method: "POST",
@@ -2349,14 +2397,12 @@ export const GlobalChatPanel = ({
         throw new Error(payload.error ?? "Unable to send chat message.");
       }
       const createdMessage = withNormalizedMessageReactions(payload.message);
-      setMessageInput((current) => (current.trim() === trimmedInput ? "" : current));
-      setAttachedImage((current) =>
-        current?.imageUrl && current.imageUrl === attachedImageUrl ? null : current,
-      );
-      setReplyContext(null);
       clearComposerIdempotency();
       setMessages((currentMessages) => {
-        const mergeResult = mergeIncomingMessages(currentMessages, [createdMessage]);
+        const withoutOptimistic = currentMessages.filter(
+          (entry) => toMessageId(entry.id) !== optimisticMessageId,
+        );
+        const mergeResult = mergeIncomingMessages(withoutOptimistic, [createdMessage]);
         latestMessageIdRef.current = toMessageId(mergeResult.messages[mergeResult.messages.length - 1]?.id ?? 0);
         if (mergeResult.droppedCount > 0) {
           incrementClientMetric("duplicateDrops", mergeResult.droppedCount);
@@ -2364,6 +2410,13 @@ export const GlobalChatPanel = ({
         return mergeResult.messages;
       });
     } catch (sendError) {
+      setMessages((currentMessages) =>
+        currentMessages.filter((entry) => toMessageId(entry.id) !== optimisticMessageId),
+      );
+      setMessageInput((current) => (current.trim().length > 0 ? current : messageInputSnapshot));
+      setAttachedImage((current) => current ?? attachedImageSnapshot);
+      setReplyContext((current) => current ?? replyContextSnapshot);
+      queueIncrementalSync();
       setError(sendError instanceof Error ? sendError.message : "Unable to send chat message.");
     } finally {
       setPendingSend(false);
@@ -2374,19 +2427,20 @@ export const GlobalChatPanel = ({
       }
     }
   }, [
-    attachedImage?.imageUrl,
+    attachedImage,
     clearComposerIdempotency,
+    currentUserId,
     focusChatInput,
     incrementClientMetric,
     isPanelOpen,
     messageInput,
+    queueIncrementalSync,
     pendingImageUpload,
     replyContext,
   ]);
 
   useEffect(() => {
-    const latestMessageId = sortedMessages[sortedMessages.length - 1]?.id ?? 0;
-    const latestMessageIdNumber = toMessageId(latestMessageId);
+    const latestMessageIdNumber = latestPersistedMessageId;
     if (!hasInitializedUnreadState) {
       if (loading) {
         return;
@@ -2420,6 +2474,7 @@ export const GlobalChatPanel = ({
     hasInitializedUnreadState,
     isPanelOpen,
     lastSeenMessageId,
+    latestPersistedMessageId,
     loading,
     sortedMessages,
     unreadCount,
@@ -2431,8 +2486,7 @@ export const GlobalChatPanel = ({
     }
     setIsOpen(true);
     setShowJumpToLatest(false);
-    const latestMessageId = toMessageId(sortedMessages[sortedMessages.length - 1]?.id ?? 0);
-    setLastSeenMessageId(latestMessageId);
+    setLastSeenMessageId(latestPersistedMessageId);
     setUnreadCount(0);
     window.requestAnimationFrame(() => {
       focusChatInput();
