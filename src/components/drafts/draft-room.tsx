@@ -456,7 +456,8 @@ const roleTileClassName = (role: string | null): string => {
 
 const DRAFT_SETTINGS_STORAGE_KEY = "draft-room-settings-v1";
 const DRAFT_ROOM_DESKTOP_CHAT_COLLAPSE_KEY = "draft-room-desktop-chat-collapsed-v1";
-const MAIN_TOP_BG_IMAGE_SRC = "/img/main_top.jpg?v=20260218-1";
+const MAIN_TOP_BG_YOUTUBE_VIDEO_ID = "xBCBOoHyeSU";
+const MAIN_TOP_BG_YOUTUBE_EMBED_SRC = `https://www.youtube.com/embed/${MAIN_TOP_BG_YOUTUBE_VIDEO_ID}?autoplay=1&mute=1&controls=0&loop=1&playlist=${MAIN_TOP_BG_YOUTUBE_VIDEO_ID}&modestbranding=1&rel=0&playsinline=1&iv_load_policy=3&disablekb=1`;
 const QUEUE_BG_IMAGE_SRC = "/img/queue_bg_1.jpg?v=20260218-1";
 const TOP_SECTION_BORDER_GRADIENT =
   "conic-gradient(from 0deg, rgba(56, 189, 248, 0.85), rgba(147, 197, 253, 0.95), rgba(199, 155, 59, 0.9), rgba(248, 113, 113, 0.85), rgba(56, 189, 248, 0.85))";
@@ -4240,16 +4241,19 @@ export const DraftRoom = ({
         <Card
           className="relative z-10 overflow-hidden rounded-[inherit] border border-transparent bg-gradient-to-br from-content1 via-content1 to-content2 shadow-md"
         >
-        <Image
-          alt=""
-          aria-hidden
-          className="pointer-events-none z-0 object-cover opacity-[0.03]"
-          fill
-          quality={100}
-          sizes="100vw"
-          src={MAIN_TOP_BG_IMAGE_SRC}
-          unoptimized
-        />
+          <div
+            aria-hidden
+            className="pointer-events-none absolute inset-0 z-0 overflow-hidden opacity-[0.05]"
+          >
+            <iframe
+              allow="autoplay; encrypted-media; picture-in-picture"
+              className="absolute left-1/2 top-1/2 h-[56.25vw] min-h-full w-[177.78vw] min-w-full -translate-x-1/2 -translate-y-1/2"
+              loading="lazy"
+              src={MAIN_TOP_BG_YOUTUBE_EMBED_SRC}
+              tabIndex={-1}
+              title="Draft room background video"
+            />
+          </div>
         {isMobileViewport ? (
           <div className="absolute right-2 top-2 z-20 flex items-center gap-2 rounded-large border border-default-200/40 bg-content1/92 p-1.5 shadow-sm backdrop-blur">
             <Tooltip content={showStatusDetails ? "Hide status details" : "Show status details"} showArrow>

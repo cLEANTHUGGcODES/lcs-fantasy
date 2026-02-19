@@ -224,56 +224,6 @@ Set `LEAGUEPEDIA_PAGE` to target a different source page without editing JSON:
 LEAGUEPEDIA_PAGE="LCS/2026_Season/Lock-In"
 ```
 
-## Mobile Smoke E2E (Playwright)
-
-The repo includes mobile smoke specs and a CI workflow to enforce baseline responsiveness.
-
-Scripts:
-
-- `npm run test:e2e:mobile`
-- `npm run test:e2e:mobile:headed`
-- `npm run test:e2e:mobile:ui`
-- `npm run test:e2e:mobile:install`
-- `npm run optimize:scoring` (searches scoring weights for tighter weekly H2H margins using latest completed draft + snapshot data)
-
-### Local Run (PowerShell)
-
-1. Start app in one terminal:
-
-```powershell
-npm run dev
-```
-
-2. Run tests in another terminal:
-
-```powershell
-npm run test:e2e:mobile
-```
-
-### Local Run With Managed Web Server
-
-If you want Playwright to start the app for you:
-
-```powershell
-$env:PLAYWRIGHT_WEB_SERVER_COMMAND="npm run start -- -p 3000"
-$env:PLAYWRIGHT_BASE_URL="http://127.0.0.1:3000"
-npm run build
-npm run test:e2e:mobile
-```
-
-### Optional Authenticated Mobile Smoke
-
-Anonymous smoke always runs.
-Authenticated smoke is disabled by default and only runs when explicitly enabled.
-
-Set all three env vars before running:
-
-- `E2E_AUTH_SMOKE=1`
-- `E2E_USER_EMAIL`
-- `E2E_USER_PASSWORD`
-
-Without `E2E_AUTH_SMOKE=1`, authenticated specs are not registered (no skip noise in output).
-
 ## API Endpoint
 
 `GET /api/snapshot`
