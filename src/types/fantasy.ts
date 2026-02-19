@@ -8,6 +8,10 @@ export interface PlayerGameStat {
   side: TeamSide;
   role: PlayerRole;
   champion: string;
+  championIconUrl?: string | null;
+  championSpriteUrl?: string | null;
+  championSpriteBackgroundPosition?: string | null;
+  championSpriteBackgroundSize?: string | null;
   kills: number;
   deaths: number;
   assists: number;

@@ -2,9 +2,11 @@
 
 import { Button } from "@heroui/button";
 import { Card, CardBody, CardHeader } from "@heroui/card";
+import { Modal, ModalBody, ModalContent } from "@heroui/modal";
 import { ScrollShadow } from "@heroui/scroll-shadow";
 import { Spinner } from "@heroui/spinner";
-import { ChevronDown, ChevronLeft, ImagePlus, MessageCircle, Send, X } from "lucide-react";
+import { Tooltip } from "@heroui/tooltip";
+import { ChevronDown, ChevronLeft, Copy, ImagePlus, MessageCircle, MoreHorizontal, Reply, Send, X } from "lucide-react";
 import Image from "next/image";
 import { ChangeEvent, ClipboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -13,7 +15,7 @@ import {
   normalizeChatImageUrl,
 } from "@/lib/chat-image";
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
-import type { GlobalChatMessage } from "@/types/chat";
+import type { GlobalChatMessage, GlobalChatReaction } from "@/types/chat";
 
 type GlobalChatResponse = {
   messages?: GlobalChatMessage[];
@@ -30,10 +32,34 @@ type GlobalChatUploadResponse = {
   error?: string;
 };
 
+type GlobalChatToggleReactionResponse = {
+  messageId?: number;
+  reactions?: GlobalChatReaction[];
+  error?: string;
+  code?: string;
+};
+
 type AttachedChatImage = {
   imageUrl: string;
   path: string;
   fileName: string;
+};
+
+type ChatReplyContext = {
+  messageId: number;
+  senderLabel: string;
+  snippet: string;
+};
+
+type ParsedChatMessage = {
+  body: string;
+  replyContext: ChatReplyContext | null;
+};
+
+type ChatLightboxImage = {
+  imageUrl: string;
+  senderLabel: string;
+  createdAt: string;
 };
 
 const MAX_GLOBAL_CHAT_MESSAGE_LENGTH = 320;
@@ -44,7 +70,7 @@ const CHAT_FALLBACK_POLL_INTERVAL_MS = 10000;
 const CHAT_WAKE_SYNC_DEBOUNCE_MS = 400;
 const CHAT_METRICS_FLUSH_INTERVAL_MS = 60000;
 const CHAT_AUTO_SCROLL_THRESHOLD_PX = 96;
-const CHAT_COMPOSER_MIN_HEIGHT_PX = 36;
+const CHAT_COMPOSER_MIN_HEIGHT_PX = 44;
 const CHAT_COMPOSER_MAX_HEIGHT_PX = 96;
 const CHAT_UPLOAD_IMAGE_MAX_DIMENSION_PX = 1600;
 const CHAT_UPLOAD_IMAGE_SCALE_STEPS = [1, 0.9, 0.8, 0.7, 0.6, 0.5] as const;
@@ -54,6 +80,11 @@ const CHAT_COMPOSER_FIELD_NAME = "x_91f3";
 const CHAT_IMAGE_ACCEPT_VALUE = "image/jpeg,image/png,image/webp";
 const CHAT_EXTERNAL_IMAGE_PATH = "__external__";
 const IMAGE_URL_EXTENSION_PATTERN = /\.(avif|bmp|gif|jpe?g|png|svg|webp)(?:[?#].*)?$/i;
+const CHAT_REPLY_TOKEN_PATTERN = /^\[rq:(\d+):([^:\]]*):([^:\]]*)\]\s*/;
+const CHAT_REPLY_SENDER_MAX_LENGTH = 36;
+const CHAT_REPLY_SNIPPET_MAX_LENGTH = 90;
+const CHAT_QUICK_REACTIONS = ["😀", "🔥", "👏", "🙌"] as const;
+const MAX_GLOBAL_CHAT_FETCH_LIMIT = 200;
 
 type UploadableImageMimeType = "image/jpeg" | "image/png" | "image/webp";
 
@@ -68,6 +99,95 @@ const toMessageId = (value: unknown): number => {
     : Number.parseInt(`${value ?? ""}`, 10);
   return Number.isFinite(normalized) ? normalized : 0;
 };
+
+const normalizeReactionUserLabel = (value: string): string =>
+  value.replace(/\s+/g, " ").trim();
+
+const normalizeMessageReactions = (
+  value: GlobalChatReaction[] | null | undefined,
+): GlobalChatReaction[] => {
+  if (!Array.isArray(value) || value.length === 0) {
+    return [];
+  }
+
+  const usersByEmoji = new Map<string, Map<string, string>>();
+  for (const reaction of value) {
+    const emoji = typeof reaction?.emoji === "string" ? reaction.emoji.trim() : "";
+    if (!emoji) {
+      continue;
+    }
+
+    const existingUsers = usersByEmoji.get(emoji) ?? new Map<string, string>();
+    const users = Array.isArray(reaction?.users) ? reaction.users : [];
+    for (const user of users) {
+      const userId = typeof user?.userId === "string" ? user.userId.trim() : "";
+      const label = typeof user?.label === "string" ? normalizeReactionUserLabel(user.label) : "";
+      if (!userId || !label || existingUsers.has(userId)) {
+        continue;
+      }
+      existingUsers.set(userId, label);
+    }
+
+    if (existingUsers.size > 0) {
+      usersByEmoji.set(emoji, existingUsers);
+    }
+  }
+
+  return [...usersByEmoji.entries()].map(([emoji, users]) => ({
+    emoji,
+    users: [...users.entries()].map(([userId, label]) => ({
+      userId,
+      label,
+    })),
+  }));
+};
+
+const withNormalizedMessageReactions = (entry: GlobalChatMessage): GlobalChatMessage => ({
+  ...entry,
+  reactions: normalizeMessageReactions(entry.reactions),
+});
+
+const reactionSignature = (reactions: GlobalChatReaction[] | null | undefined): string =>
+  normalizeMessageReactions(reactions)
+    .map((reaction) => {
+      const users = [...reaction.users]
+        .map((user) => `${user.userId}:${user.label}`)
+        .sort()
+        .join(",");
+      return `${reaction.emoji}:${users}`;
+    })
+    .sort()
+    .join("|");
+
+const quickReactionOrder = (emoji: string): number =>
+  CHAT_QUICK_REACTIONS.indexOf(emoji as (typeof CHAT_QUICK_REACTIONS)[number]);
+
+const orderReactionsForDisplay = (reactions: GlobalChatReaction[]): GlobalChatReaction[] => {
+  if (reactions.length === 0) {
+    return [];
+  }
+
+  const quick: GlobalChatReaction[] = [];
+  const other: GlobalChatReaction[] = [];
+  for (const reaction of reactions) {
+    if (quickReactionOrder(reaction.emoji) >= 0) {
+      quick.push(reaction);
+    } else {
+      other.push(reaction);
+    }
+  }
+
+  quick.sort((left, right) => quickReactionOrder(left.emoji) - quickReactionOrder(right.emoji));
+  other.sort((left, right) => left.emoji.localeCompare(right.emoji));
+  return [...quick, ...other];
+};
+
+const hasReactionFromUser = (
+  reaction: GlobalChatReaction | undefined,
+  userId: string,
+): boolean => Boolean(reaction?.users.some((entry) => entry.userId === userId));
+
+const reactionStateKey = (messageId: number, emoji: string): string => `${messageId}:${emoji}`;
 
 const mergeIncomingMessages = (
   existing: GlobalChatMessage[],
@@ -441,6 +561,119 @@ const initialsForSenderLabel = (value: string): string => {
   );
 };
 
+const compactSenderLabel = (value: string): string => {
+  const preferredSource = value.match(/\(([^)]+)\)/)?.[1] ?? value;
+  return preferredSource.trim() || value.trim();
+};
+
+const normalizeChatInlineText = (value: string): string => value.replace(/\s+/g, " ").trim();
+
+const clampChatInlineText = (value: string, maxLength: number): string => {
+  const normalized = normalizeChatInlineText(value);
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+  return `${normalized.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
+};
+
+const sanitizeReplySenderLabel = (value: string): string => {
+  const compact = compactSenderLabel(value) || "Unknown";
+  return clampChatInlineText(compact, CHAT_REPLY_SENDER_MAX_LENGTH) || "Unknown";
+};
+
+const sanitizeReplySnippet = (value: string): string => {
+  const compact = clampChatInlineText(value, CHAT_REPLY_SNIPPET_MAX_LENGTH);
+  return compact || "Message";
+};
+
+const safeDecodeUriComponent = (value: string): string => {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+};
+
+const buildReplyToken = (replyContext: ChatReplyContext): string => {
+  const normalizedMessageId = Math.max(1, Math.floor(replyContext.messageId));
+  const encodedSender = encodeURIComponent(sanitizeReplySenderLabel(replyContext.senderLabel));
+  const encodedSnippet = encodeURIComponent(sanitizeReplySnippet(replyContext.snippet));
+  return `[rq:${normalizedMessageId}:${encodedSender}:${encodedSnippet}]`;
+};
+
+const encodeMessageWithReplyContext = ({
+  message,
+  replyContext,
+}: {
+  message: string;
+  replyContext: ChatReplyContext | null;
+}): string => {
+  const normalizedMessage = normalizeChatInlineText(message);
+  if (!replyContext) {
+    return normalizedMessage;
+  }
+  const token = buildReplyToken(replyContext);
+  return normalizedMessage ? `${token} ${normalizedMessage}` : token;
+};
+
+const parseMessageWithReplyContext = (message: string): ParsedChatMessage => {
+  const rawMessage = typeof message === "string" ? message : "";
+  const match = rawMessage.match(CHAT_REPLY_TOKEN_PATTERN);
+  if (!match) {
+    return {
+      body: rawMessage,
+      replyContext: null,
+    };
+  }
+
+  const messageId = Number.parseInt(match[1] ?? "", 10);
+  if (!Number.isFinite(messageId) || messageId <= 0) {
+    return {
+      body: rawMessage,
+      replyContext: null,
+    };
+  }
+
+  const decodedSender = sanitizeReplySenderLabel(safeDecodeUriComponent(match[2] ?? ""));
+  const decodedSnippet = sanitizeReplySnippet(safeDecodeUriComponent(match[3] ?? ""));
+  const body = rawMessage.slice(match[0].length);
+
+  return {
+    body,
+    replyContext: {
+      messageId,
+      senderLabel: decodedSender,
+      snippet: decodedSnippet,
+    },
+  };
+};
+
+const replySnippetFromMessage = ({
+  message,
+  imageUrl,
+}: {
+  message: string;
+  imageUrl: string | null;
+}): string => {
+  const parsedMessage = parseMessageWithReplyContext(message);
+  const normalizedBody = normalizeChatInlineText(parsedMessage.body);
+  if (normalizedBody) {
+    return sanitizeReplySnippet(normalizedBody);
+  }
+  if (imageUrl) {
+    return "Image";
+  }
+  return "Message";
+};
+
+const maxComposerLengthForReply = (replyContext: ChatReplyContext | null): number => {
+  if (!replyContext) {
+    return MAX_GLOBAL_CHAT_MESSAGE_LENGTH;
+  }
+  const reservedLength = buildReplyToken(replyContext).length + 1;
+  return Math.max(0, MAX_GLOBAL_CHAT_MESSAGE_LENGTH - reservedLength);
+};
+
 export const GlobalChatPanel = ({
   currentUserId,
   className,
@@ -462,6 +695,11 @@ export const GlobalChatPanel = ({
   const [hasOlderMessages, setHasOlderMessages] = useState(false);
   const [oldestCursorId, setOldestCursorId] = useState<number | null>(null);
   const [messageInput, setMessageInput] = useState("");
+  const [replyContext, setReplyContext] = useState<ChatReplyContext | null>(null);
+  const [pendingReactionByKey, setPendingReactionByKey] = useState<Record<string, boolean>>({});
+  const [hoveredActionBarMessageId, setHoveredActionBarMessageId] = useState<number | null>(null);
+  const [hiddenActionBarMessageId, setHiddenActionBarMessageId] = useState<number | null>(null);
+  const [lightboxImage, setLightboxImage] = useState<ChatLightboxImage | null>(null);
   const [attachedImage, setAttachedImage] = useState<AttachedChatImage | null>(null);
   const [pendingImageUpload, setPendingImageUpload] = useState(false);
   const [pendingSend, setPendingSend] = useState(false);
@@ -480,6 +718,10 @@ export const GlobalChatPanel = ({
   const realtimeConnectedRef = useRef(false);
   const incrementalSyncInFlightRef = useRef(false);
   const incrementalSyncQueuedRef = useRef(false);
+  const reactionSyncInFlightRef = useRef(false);
+  const reactionSyncQueuedRef = useRef(false);
+  const messagesRef = useRef<GlobalChatMessage[]>([]);
+  const pendingReactionByKeyRef = useRef<Record<string, boolean>>({});
   const wakeSyncTimeoutRef = useRef<number | null>(null);
   const lastRealtimeStatusRef = useRef<string | null>(null);
   const composerIdempotencyKeyRef = useRef<string | null>(null);
@@ -492,6 +734,10 @@ export const GlobalChatPanel = ({
   const metricsFlushInFlightRef = useRef(false);
   const isPanelOpen = isEmbedded ? true : isOpen;
   const sortedMessages = messages;
+  const messageInputMaxLength = useMemo(
+    () => maxComposerLengthForReply(replyContext),
+    [replyContext],
+  );
   const groupedMessages = useMemo(() => {
     return sortedMessages.reduce<
       Array<{
@@ -527,7 +773,7 @@ export const GlobalChatPanel = ({
   }, [currentUserId, sortedMessages]);
 
   const syncComposerHeight = useCallback((target: HTMLTextAreaElement) => {
-    const minHeightPx = isEmbedded ? 30 : CHAT_COMPOSER_MIN_HEIGHT_PX;
+    const minHeightPx = isEmbedded ? 32 : CHAT_COMPOSER_MIN_HEIGHT_PX;
     const maxHeightPx = isEmbedded ? 72 : CHAT_COMPOSER_MAX_HEIGHT_PX;
     target.style.height = "auto";
     const nextHeight = Math.min(
@@ -664,9 +910,10 @@ export const GlobalChatPanel = ({
       if (!response.ok || !payload.messages) {
         throw new Error(payload.error ?? "Unable to load chat.");
       }
+      const fetchedMessages = payload.messages.map(withNormalizedMessageReactions);
 
       if (mode === "replace") {
-        const nextMessages = payload.messages;
+        const nextMessages = fetchedMessages;
         const nextOldestCursorId = payload.nextBeforeId
           ?? (() => {
             const firstMessageId = toMessageId(nextMessages[0]?.id ?? 0);
@@ -681,7 +928,7 @@ export const GlobalChatPanel = ({
 
       if (mode === "incremental") {
         setMessages((currentMessages) => {
-          const mergeResult = mergeIncomingMessages(currentMessages, payload.messages ?? []);
+          const mergeResult = mergeIncomingMessages(currentMessages, fetchedMessages);
           latestMessageIdRef.current = toMessageId(mergeResult.messages[mergeResult.messages.length - 1]?.id ?? 0);
           if (mergeResult.droppedCount > 0) {
             incrementClientMetric("duplicateDrops", mergeResult.droppedCount);
@@ -693,7 +940,7 @@ export const GlobalChatPanel = ({
 
       if (mode === "older") {
         setMessages((currentMessages) => {
-          const mergeResult = prependOlderMessages(currentMessages, payload.messages ?? []);
+          const mergeResult = prependOlderMessages(currentMessages, fetchedMessages);
           if (mergeResult.droppedCount > 0) {
             incrementClientMetric("duplicateDrops", mergeResult.droppedCount);
           }
@@ -733,10 +980,134 @@ export const GlobalChatPanel = ({
           }
         }
       } finally {
-        incrementalSyncInFlightRef.current = false;
+      incrementalSyncInFlightRef.current = false;
+    }
+  })();
+  }, [loadMessages]);
+
+  useEffect(() => {
+    messagesRef.current = sortedMessages;
+  }, [sortedMessages]);
+
+  useEffect(() => {
+    pendingReactionByKeyRef.current = pendingReactionByKey;
+  }, [pendingReactionByKey]);
+
+  const applyReactionsToMessage = useCallback(
+    (messageId: number, reactions: GlobalChatReaction[] | null | undefined) => {
+      const normalizedMessageId = Math.max(1, Math.floor(messageId));
+      if (!normalizedMessageId) {
+        return;
+      }
+
+      const normalizedReactions = normalizeMessageReactions(reactions);
+      const nextReactionSignature = reactionSignature(normalizedReactions);
+      setMessages((currentMessages) => {
+        let changed = false;
+        const nextMessages = currentMessages.map((entry) => {
+          if (toMessageId(entry.id) !== normalizedMessageId) {
+            return entry;
+          }
+          if (reactionSignature(entry.reactions) === nextReactionSignature) {
+            return entry;
+          }
+          changed = true;
+          return {
+            ...entry,
+            reactions: normalizedReactions,
+          };
+        });
+        return changed ? nextMessages : currentMessages;
+      });
+    },
+    [],
+  );
+
+  const refreshKnownMessageReactions = useCallback(async () => {
+    const knownMessages = messagesRef.current;
+    if (knownMessages.length === 0) {
+      return;
+    }
+
+    const limit = Math.min(
+      Math.max(knownMessages.length, CHAT_INCREMENTAL_FETCH_LIMIT),
+      MAX_GLOBAL_CHAT_FETCH_LIMIT,
+    );
+    const params = new URLSearchParams({
+      limit: `${limit}`,
+    });
+    const response = await fetch(`/api/chat?${params.toString()}`, {
+      cache: "no-store",
+    });
+    const payload = (await response.json()) as GlobalChatResponse;
+    if (!response.ok || !payload.messages) {
+      throw new Error(payload.error ?? "Unable to refresh chat reactions.");
+    }
+
+    const reactionsByMessageId = new Map<number, GlobalChatReaction[]>();
+    const signaturesByMessageId = new Map<number, string>();
+    for (const entry of payload.messages) {
+      const messageId = toMessageId(entry.id);
+      if (!messageId) {
+        continue;
+      }
+      const normalizedReactions = normalizeMessageReactions(entry.reactions);
+      reactionsByMessageId.set(messageId, normalizedReactions);
+      signaturesByMessageId.set(messageId, reactionSignature(normalizedReactions));
+    }
+    if (reactionsByMessageId.size === 0) {
+      return;
+    }
+
+    setMessages((currentMessages) => {
+      let changed = false;
+      const nextMessages = currentMessages.map((entry) => {
+        const messageId = toMessageId(entry.id);
+        const nextReactions = reactionsByMessageId.get(messageId);
+        if (!nextReactions) {
+          return entry;
+        }
+        if (reactionSignature(entry.reactions) === signaturesByMessageId.get(messageId)) {
+          return entry;
+        }
+        changed = true;
+        return {
+          ...entry,
+          reactions: nextReactions,
+        };
+      });
+      return changed ? nextMessages : currentMessages;
+    });
+  }, []);
+
+  const queueReactionSync = useCallback(() => {
+    reactionSyncQueuedRef.current = true;
+    if (!isBrowserOnline()) {
+      return;
+    }
+    if (reactionSyncInFlightRef.current) {
+      return;
+    }
+
+    reactionSyncInFlightRef.current = true;
+    void (async () => {
+      try {
+        while (reactionSyncQueuedRef.current) {
+          if (!isBrowserOnline()) {
+            break;
+          }
+          reactionSyncQueuedRef.current = false;
+          try {
+            await refreshKnownMessageReactions();
+          } catch {
+            // Background sync errors are non-fatal; the next sync attempt recovers.
+          }
+        }
+      } finally {
+        reactionSyncInFlightRef.current = false;
       }
     })();
-  }, [loadMessages]);
+  }, [refreshKnownMessageReactions]);
 
   const scheduleWakeSync = useCallback(() => {
     if (wakeSyncTimeoutRef.current !== null) {
@@ -745,8 +1116,9 @@ export const GlobalChatPanel = ({
     wakeSyncTimeoutRef.current = window.setTimeout(() => {
       wakeSyncTimeoutRef.current = null;
       queueIncrementalSync();
+      queueReactionSync();
     }, CHAT_WAKE_SYNC_DEBOUNCE_MS);
-  }, [queueIncrementalSync]);
+  }, [queueIncrementalSync, queueReactionSync]);
 
   useEffect(() => {
     let canceled = false;
@@ -790,6 +1162,17 @@ export const GlobalChatPanel = ({
           queueIncrementalSync();
         },
       )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "fantasy_global_chat_reactions",
+        },
+        () => {
+          queueReactionSync();
+        },
+      )
       .subscribe((status) => {
         const previousStatus = lastRealtimeStatusRef.current;
         lastRealtimeStatusRef.current = status;
@@ -809,7 +1192,7 @@ export const GlobalChatPanel = ({
       realtimeConnectedRef.current = false;
       void supabase.removeChannel(channel);
     };
-  }, [incrementClientMetric, queueIncrementalSync]);
+  }, [incrementClientMetric, queueIncrementalSync, queueReactionSync]);
 
   useEffect(() => {
     const id = window.setInterval(() => {
@@ -818,9 +1201,10 @@ export const GlobalChatPanel = ({
       }
       incrementClientMetric("fallbackSyncs");
       queueIncrementalSync();
+      queueReactionSync();
     }, CHAT_FALLBACK_POLL_INTERVAL_MS);
     return () => window.clearInterval(id);
-  }, [incrementClientMetric, queueIncrementalSync]);
+  }, [incrementClientMetric, queueIncrementalSync, queueReactionSync]);
 
   useEffect(() => {
     const onVisibilityChange = () => {
@@ -1111,6 +1495,24 @@ export const GlobalChatPanel = ({
     composerIdempotencyMessageRef.current = "";
   }, []);
 
+  useEffect(() => {
+    if (messageInput.length <= messageInputMaxLength) {
+      return;
+    }
+    setMessageInput((current) => current.slice(0, messageInputMaxLength));
+    const input = chatInputRef.current;
+    if (!input) {
+      return;
+    }
+    window.requestAnimationFrame(() => {
+      syncComposerHeight(input);
+    });
+  }, [messageInput, messageInputMaxLength, syncComposerHeight]);
+
+  useEffect(() => {
+    clearComposerIdempotency();
+  }, [clearComposerIdempotency, replyContext]);
+
   const openChatImagePicker = useCallback(() => {
     if (pendingImageUpload || pendingSend) {
       return;
@@ -1225,14 +1627,156 @@ export const GlobalChatPanel = ({
     [attachImageFile, attachImageUrl, pendingImageUpload, pendingSend],
   );
 
+  const toggleMessageReaction = useCallback(
+    async ({
+      messageId,
+      emoji,
+      closeActionBar = false,
+    }: {
+      messageId: number;
+      emoji: string;
+      closeActionBar?: boolean;
+    }) => {
+      const normalizedMessageId = Math.max(1, Math.floor(messageId));
+      const normalizedEmoji = emoji.trim();
+      if (!normalizedMessageId || !normalizedEmoji) {
+        return;
+      }
+
+      const key = reactionStateKey(normalizedMessageId, normalizedEmoji);
+      if (pendingReactionByKeyRef.current[key]) {
+        return;
+      }
+
+      if (closeActionBar) {
+        setHiddenActionBarMessageId(normalizedMessageId);
+        setHoveredActionBarMessageId(null);
+      }
+
+      setPendingReactionByKey((current) => ({
+        ...current,
+        [key]: true,
+      }));
+      setError(null);
+      try {
+        const response = await fetch("/api/chat/reactions", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            messageId: normalizedMessageId,
+            emoji: normalizedEmoji,
+          }),
+        });
+        const payload = (await response.json()) as GlobalChatToggleReactionResponse;
+        if (!response.ok || !payload.messageId || !Array.isArray(payload.reactions)) {
+          throw new Error(payload.error ?? "Unable to update reaction.");
+        }
+        applyReactionsToMessage(payload.messageId, payload.reactions);
+      } catch (reactionError) {
+        setError(reactionError instanceof Error ? reactionError.message : "Unable to update reaction.");
+      } finally {
+        setPendingReactionByKey((current) => {
+          if (!current[key]) {
+            return current;
+          }
+          const next = { ...current };
+          delete next[key];
+          return next;
+        });
+      }
+    },
+    [applyReactionsToMessage],
+  );
+
+  const handleReplyToMessage = useCallback(
+    (entry: GlobalChatMessage) => {
+      setReplyContext({
+        messageId: toMessageId(entry.id),
+        senderLabel: sanitizeReplySenderLabel(entry.senderLabel),
+        snippet: replySnippetFromMessage({
+          message: entry.message,
+          imageUrl: entry.imageUrl,
+        }),
+      });
+      setError(null);
+      window.requestAnimationFrame(() => {
+        focusChatInput();
+      });
+    },
+    [focusChatInput],
+  );
+
+  const handleCopyMessage = useCallback(
+    async (entry: GlobalChatMessage) => {
+      const parsedMessage = parseMessageWithReplyContext(entry.message);
+      const normalizedBody = normalizeChatInlineText(parsedMessage.body);
+      const lines: string[] = [];
+      if (parsedMessage.replyContext) {
+        lines.push(
+          `Reply to ${parsedMessage.replyContext.senderLabel}: ${parsedMessage.replyContext.snippet}`,
+        );
+      }
+      if (normalizedBody) {
+        lines.push(normalizedBody);
+      }
+      if (entry.imageUrl) {
+        lines.push(entry.imageUrl);
+      }
+      if (lines.length === 0) {
+        return;
+      }
+
+      if (!navigator.clipboard?.writeText) {
+        setError("Clipboard is unavailable in this browser.");
+        return;
+      }
+
+      try {
+        await navigator.clipboard.writeText(lines.join("\n"));
+        setError(null);
+      } catch {
+        setError("Unable to copy message.");
+      }
+    },
+    [],
+  );
+
+  const handleMoreMessageAction = useCallback(
+    async (entry: GlobalChatMessage) => {
+      if (entry.imageUrl) {
+        window.open(entry.imageUrl, "_blank", "noopener,noreferrer");
+        return;
+      }
+      await handleCopyMessage(entry);
+    },
+    [handleCopyMessage],
+  );
+
+  const openImageLightbox = useCallback((entry: GlobalChatMessage) => {
+    if (!entry.imageUrl) {
+      return;
+    }
+    setLightboxImage({
+      imageUrl: entry.imageUrl,
+      senderLabel: sanitizeReplySenderLabel(entry.senderLabel),
+      createdAt: entry.createdAt,
+    });
+  }, []);
+
+  const closeImageLightbox = useCallback(() => {
+    setLightboxImage(null);
+  }, []);
+
   const renderedMessageList = useMemo(
     () => (
       <ScrollShadow
         ref={messageListRef}
         className={`chat-scrollbar flex-1 min-h-0 overflow-x-hidden overscroll-contain touch-pan-y ${
           isEmbedded
-            ? "space-y-1 px-0 pb-0 rounded-large border border-[#334767]/45 bg-[#081326]/82 p-2"
-            : "space-y-1.5 px-1 pb-1 sm:space-y-2 sm:rounded-large sm:border sm:border-[#334767]/55 sm:bg-[#081326]/88 sm:p-3"
+            ? "space-y-3 rounded-large bg-[#0a1527]/55 px-0.5"
+            : "space-y-3 rounded-large bg-[#0a1527]/62 p-2 sm:p-2.5"
         }`}
         orientation="vertical"
         style={{ WebkitOverflowScrolling: "touch" }}
@@ -1246,12 +1790,12 @@ export const GlobalChatPanel = ({
       >
         <div
           ref={messageContentRef}
-          className={isEmbedded ? "space-y-1" : "space-y-1.5 sm:space-y-2"}
+          className="space-y-3.5"
         >
           {hasOlderMessages ? (
             <div className="mb-2 flex justify-center">
               <Button
-                className="h-11 min-h-11 rounded-full border border-[#3f5578]/80 bg-[#0f1d33]/90 px-3.5 text-xs font-semibold text-[#c5d5f1] data-[hover=true]:bg-[#14253f] sm:h-8 sm:min-h-8 sm:px-3 sm:text-[11px]"
+                className="h-11 min-h-11 rounded-full bg-[#11203a]/78 px-3.5 text-xs font-medium text-[#b7c7e3] data-[hover=true]:bg-[#162744] sm:h-8 sm:min-h-8 sm:px-3 sm:text-[11px]"
                 isDisabled={loadingOlder}
                 size="sm"
                 variant="flat"
@@ -1269,34 +1813,70 @@ export const GlobalChatPanel = ({
             groupedMessages.map((group, groupIndex) => {
               const previousGroup = groupedMessages[groupIndex - 1];
               const showDaySeparator = !previousGroup || previousGroup.dayKey !== group.dayKey;
+              const senderLabel = compactSenderLabel(group.senderLabel);
               return (
                 <div
                   key={`${group.userId}-${group.messages[0]?.id ?? 0}-${group.messages[group.messages.length - 1]?.id ?? 0}`}
-                  className={isEmbedded ? "space-y-0" : "space-y-0.5"}
+                  className="space-y-1"
                 >
                   {showDaySeparator ? (
-                    <div className={isEmbedded ? "my-1.5 flex items-center gap-1.5 px-0.5" : "my-2.5 flex items-center gap-2 px-1"}>
-                      <span className="h-px flex-1 bg-[#3a4f72]/55" />
-                      <span className={isEmbedded ? "text-[9px] font-medium tracking-wide text-[#9fb3d6]/85" : "text-[10px] font-medium tracking-wide text-[#9fb3d6]/90"}>
+                    <div className={isEmbedded ? "my-1 flex items-center gap-1.5 px-0.5" : "my-2 flex items-center gap-2 px-1"}>
+                      <span className="h-px flex-1 bg-white/10" />
+                      <span className={isEmbedded ? "text-[9px] font-medium tracking-wide text-[#9fb3d6]/65" : "text-[10px] font-medium tracking-wide text-[#9fb3d6]/70"}>
                         {group.dayLabel}
                       </span>
-                      <span className="h-px flex-1 bg-[#3a4f72]/55" />
+                      <span className="h-px flex-1 bg-white/10" />
                     </div>
                   ) : null}
                   {!group.isCurrentUser ? (
-                    <p className={isEmbedded ? "px-8 text-left text-[9px] font-medium tracking-wide text-[#C79B3B]" : "px-10 text-left text-[10px] font-medium tracking-wide text-[#C79B3B]"}>
-                      {group.senderLabel}
+                    <p
+                      className={isEmbedded
+                        ? "px-8 text-left text-[10px] font-medium tracking-wide text-white/40"
+                        : "px-10 text-left text-[11px] font-medium tracking-wide text-white/40"}
+                      title={group.senderLabel}
+                    >
+                      {senderLabel}
                     </p>
                   ) : null}
-                  <div className={isEmbedded ? "space-y-0" : "space-y-0.5"}>
+                  <div className="space-y-1.5">
                     {group.messages.map((entry, index) => {
-                      const showAvatar = index === group.messages.length - 1;
+                      const isFirstInGroup = index === 0;
+                      const isLastInGroup = index === group.messages.length - 1;
+                      const isMiddleInGroup = !isFirstInGroup && !isLastInGroup;
+                      const shouldShowTimestamp = isLastInGroup;
+                      const showAvatar = isFirstInGroup;
+                      const entryMessageId = toMessageId(entry.id);
+                      const entryReactions = orderReactionsForDisplay(normalizeMessageReactions(entry.reactions));
+                      const entryReactionByEmoji = new Map(entryReactions.map((reaction) => [reaction.emoji, reaction]));
+                      const isActionBarVisible = (
+                        hoveredActionBarMessageId === entryMessageId &&
+                        hiddenActionBarMessageId !== entryMessageId
+                      );
+                      const parsedEntryMessage = parseMessageWithReplyContext(entry.message);
+                      const trimmedMessage = normalizeChatInlineText(parsedEntryMessage.body);
+                      const entryReplyContext = parsedEntryMessage.replyContext;
+                      const isImageOnlyMessage = Boolean(entry.imageUrl) && trimmedMessage.length === 0 && !entryReplyContext;
+                      const groupedCornerClass = group.isCurrentUser
+                        ? isMiddleInGroup
+                          ? "rounded-[20px] rounded-tr-[8px] rounded-br-[8px]"
+                          : isFirstInGroup && !isLastInGroup
+                          ? "rounded-[20px] rounded-br-[8px]"
+                          : !isFirstInGroup && isLastInGroup
+                          ? "rounded-[20px] rounded-tr-[8px]"
+                          : "rounded-[20px]"
+                        : isMiddleInGroup
+                        ? "rounded-[20px] rounded-tl-[8px] rounded-bl-[8px]"
+                        : isFirstInGroup && !isLastInGroup
+                        ? "rounded-[20px] rounded-bl-[8px]"
+                        : !isFirstInGroup && isLastInGroup
+                        ? "rounded-[20px] rounded-tl-[8px]"
+                        : "rounded-[20px]";
                       const avatarBorderStyle = group.senderAvatarBorderColor
                         ? { outlineColor: group.senderAvatarBorderColor }
                         : undefined;
                       const avatar = showAvatar ? (
                         <span
-                          className="relative inline-flex h-7 w-7 shrink-0 overflow-hidden rounded-full bg-[#16233a] outline outline-2 outline-[#C79B3B]/40"
+                          className="relative inline-flex h-7 w-7 shrink-0 overflow-hidden rounded-full bg-[#16233a]"
                           style={avatarBorderStyle}
                         >
                           {group.senderAvatarUrl ? (
@@ -1308,7 +1888,7 @@ export const GlobalChatPanel = ({
                               className="object-cover object-center"
                             />
                           ) : (
-                            <span className="inline-flex h-full w-full items-center justify-center text-[10px] font-semibold text-[#C79B3B]">
+                            <span className="inline-flex h-full w-full items-center justify-center text-[10px] font-semibold text-[#d7e5ff]">
                               {initialsForSenderLabel(group.senderLabel)}
                             </span>
                           )}
@@ -1319,57 +1899,218 @@ export const GlobalChatPanel = ({
 
                       const bubble = (
                         <div
-                          className={`rounded-2xl border ${
-                            isEmbedded
-                              ? "max-w-[90%] px-1.5 py-0.5 sm:max-w-[92%] sm:px-2 sm:py-1"
-                              : "max-w-[82%] px-2 py-1 sm:max-w-[88%] sm:px-2.5 sm:py-1.5"
+                          className={`group/message relative flex flex-col ${
+                            entry.imageUrl ? "max-w-[70%]" : "max-w-[74%]"
                           } ${
-                            group.isCurrentUser
-                              ? "border-[#6c83a6]/70 bg-[#1b2a44]/92 text-[#f7faff] shadow-[0_8px_20px_rgba(11,18,33,0.32)]"
-                              : "border-[#3f5578]/75 bg-[#101c2f]/92 text-[#edf2ff] shadow-[0_8px_18px_rgba(8,12,24,0.4)]"
+                            group.isCurrentUser ? "items-end" : "items-start"
                           }`}
+                          style={entry.imageUrl ? { maxWidth: "min(260px, 70%)" } : undefined}
+                          onMouseEnter={() => {
+                            setHoveredActionBarMessageId(entryMessageId);
+                            setHiddenActionBarMessageId((current) => (
+                              current !== null && current !== entryMessageId ? null : current
+                            ));
+                          }}
+                          onMouseLeave={() => {
+                            setHoveredActionBarMessageId((current) => (
+                              current === entryMessageId ? null : current
+                            ));
+                          }}
                         >
-                          <p className={`${isEmbedded ? "text-[9px]" : "text-[10px]"} ${group.isCurrentUser ? "text-[#c9d7ef]" : "text-[#9fb3d6]"}`}>
-                            {formatTime(entry.createdAt)}
-                          </p>
-                          {entry.imageUrl ? (
-                            <a
-                              className="mt-1 block"
-                              href={entry.imageUrl}
-                              rel="noreferrer"
-                              target="_blank"
+                          <div className="relative">
+                            <div
+                              className={`overflow-hidden ${
+                                isImageOnlyMessage
+                                  ? "bg-transparent p-0"
+                                  : entry.imageUrl
+                                  ? "p-0"
+                                  : isEmbedded
+                                  ? "px-2 py-1.5"
+                                  : "px-2.5 py-1.5"
+                              } ${!isImageOnlyMessage ? groupedCornerClass : ""} ${
+                                !isImageOnlyMessage ? (
+                                group.isCurrentUser
+                                  ? "bg-white/8 text-[#f4f8ff] transition-colors group-hover/message:bg-white/10"
+                                  : "bg-white/6 text-[#e8efff] transition-colors group-hover/message:bg-white/8"
+                              ) : ""}`}
                             >
-                              {/* eslint-disable-next-line @next/next/no-img-element */}
-                              <img
-                                alt="Chat attachment"
-                                className={`max-h-56 w-auto max-w-full rounded-xl border border-[#4e678f]/65 object-cover ${
-                                  group.isCurrentUser ? "bg-[#172844]" : "bg-[#0f1c31]"
-                                }`}
-                                loading="lazy"
-                                src={entry.imageUrl}
-                              />
-                            </a>
-                          ) : null}
-                          {entry.message.trim() ? (
-                            <p
-                              className={`mt-0.5 whitespace-pre-wrap break-words ${
-                                isEmbedded
-                                  ? "text-[12px] leading-[1.15rem] sm:text-[12px]"
-                                  : "text-[13px] leading-[1.35rem] sm:mt-0.5 sm:text-sm"
-                              } ${
-                                group.isCurrentUser ? "text-[#f7faff]" : "text-[#edf2ff]"
+                              {entryReplyContext ? (
+                                <div className="mb-1.5 rounded-[12px] border border-white/10 bg-black/20 px-2 py-1.5">
+                                  <p className="truncate text-[10px] font-medium text-[#a6b8d8]/90">
+                                    {entryReplyContext.senderLabel}
+                                  </p>
+                                  <p className="truncate text-[11px] text-[#d6e3fa]/78">
+                                    {entryReplyContext.snippet}
+                                  </p>
+                                </div>
+                              ) : null}
+                              {entry.imageUrl ? (
+                                <button
+                                  aria-label="Open image viewer"
+                                  className="block w-full text-left"
+                                  type="button"
+                                  onClick={() => {
+                                    openImageLightbox(entry);
+                                  }}
+                                >
+                                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                                  <img
+                                    alt="Chat attachment"
+                                    className={`max-h-[260px] w-full object-cover ${
+                                      isImageOnlyMessage
+                                        ? "rounded-[18px] bg-transparent drop-shadow-[0_3px_10px_rgba(0,0,0,0.34)]"
+                                        : ""
+                                    }`}
+                                    loading="lazy"
+                                    src={entry.imageUrl}
+                                  />
+                                </button>
+                              ) : null}
+                              {trimmedMessage ? (
+                                <p
+                                  className={`whitespace-pre-wrap break-words ${
+                                    isEmbedded
+                                      ? "text-[12px] leading-[1.15rem]"
+                                      : "text-[13px] leading-[1.35rem] sm:text-sm"
+                                  } ${
+                                    entry.imageUrl ? "px-2.5 py-2" : ""
+                                  }`}
+                                >
+                                  {trimmedMessage}
+                                </p>
+                              ) : null}
+                            </div>
+                            {entryReactions.length > 0 ? (
+                              <div className="absolute bottom-0 left-1 z-10 inline-flex items-center gap-0.5 translate-y-[75%]">
+                                {entryReactions.map((reaction) => {
+                                  const reactionKey = reactionStateKey(entryMessageId, reaction.emoji);
+                                  const isReactionPending = pendingReactionByKey[reactionKey] === true;
+                                  const hasCurrentUserReaction = hasReactionFromUser(reaction, currentUserId);
+                                  const tooltipContent = reaction.users
+                                    .map((user) => user.label)
+                                    .filter(Boolean)
+                                    .join(", ");
+
+                                  return (
+                                    <Tooltip
+                                      key={`${entryMessageId}-reaction-${reaction.emoji}`}
+                                      content={tooltipContent || "Reaction"}
+                                      placement="top"
+                                    >
+                                      <button
+                                        aria-label={`${hasCurrentUserReaction ? "Remove" : "Add"} ${reaction.emoji} reaction`}
+                                        className={`inline-flex h-6 w-6 items-center justify-center text-[15px] leading-none transition-transform focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-300/70 ${
+                                          isReactionPending ? "cursor-not-allowed opacity-55" : "hover:scale-110"
+                                        }`}
+                                        disabled={isReactionPending}
+                                        type="button"
+                                        onClick={() => {
+                                          void toggleMessageReaction({
+                                            messageId: entryMessageId,
+                                            emoji: reaction.emoji,
+                                          });
+                                        }}
+                                      >
+                                        {reaction.emoji}
+                                      </button>
+                                    </Tooltip>
+                                  );
+                                })}
+                              </div>
+                            ) : null}
+                          </div>
+                          <div
+                            className={`${entryReactions.length > 0 ? "mt-[14px]" : "mt-px"} flex items-center gap-1 px-1 ${
+                              group.isCurrentUser ? "justify-end" : "justify-start"
+                            }`}
+                          >
+                            {shouldShowTimestamp ? (
+                              <p className={`text-[10px] text-[#9fb3d6]/46 transition-opacity duration-300 ease-in-out [@media(hover:none)]:opacity-45 ${
+                                isActionBarVisible ? "opacity-100" : "opacity-0"
+                              }`}>
+                                {formatTime(entry.createdAt)}
+                              </p>
+                            ) : null}
+                            <div
+                              className={`inline-flex items-center gap-0.5 overflow-hidden rounded-full border border-white/10 bg-[#0f1c32]/88 shadow-[0_8px_20px_rgba(0,0,0,0.28)] transition-all duration-300 ease-in-out ${
+                                isActionBarVisible
+                                  ? "pointer-events-auto max-w-[12rem] px-1 py-0.5 opacity-100"
+                                  : "pointer-events-none max-w-0 px-0 py-0 opacity-0"
                               }`}
                             >
-                              {entry.message}
-                            </p>
-                          ) : null}
+                              {CHAT_QUICK_REACTIONS.map((emoji) => {
+                                const reaction = entryReactionByEmoji.get(emoji);
+                                const hasCurrentUserReaction = hasReactionFromUser(reaction, currentUserId);
+                                const reactionKey = reactionStateKey(entryMessageId, emoji);
+                                const isReactionPending = pendingReactionByKey[reactionKey] === true;
+                                return (
+                                  <button
+                                    key={`${entryMessageId}-quick-${emoji}`}
+                                    aria-label={`${hasCurrentUserReaction ? "Remove" : "React with"} ${emoji}`}
+                                    className={`inline-flex h-6 w-6 items-center justify-center rounded-full text-[14px] leading-none transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-300/70 ${
+                                      hasCurrentUserReaction ? "bg-white/16" : "hover:bg-white/12"
+                                    } ${
+                                      isReactionPending ? "cursor-not-allowed opacity-55" : ""
+                                    }`}
+                                    disabled={isReactionPending}
+                                    type="button"
+                                    onClick={() => {
+                                      void toggleMessageReaction({
+                                        messageId: entryMessageId,
+                                        emoji,
+                                        closeActionBar: true,
+                                      });
+                                    }}
+                                  >
+                                    {emoji}
+                                  </button>
+                                );
+                              })}
+                              <Button
+                                isIconOnly
+                                aria-label="Reply"
+                                className="h-6 w-6 min-h-6 min-w-6 text-[#b9cae7] data-[hover=true]:bg-white/10 data-[hover=true]:text-white"
+                                size="sm"
+                                variant="light"
+                                onPress={() => {
+                                  handleReplyToMessage(entry);
+                                }}
+                              >
+                                <Reply className="h-3.5 w-3.5" />
+                              </Button>
+                              <Button
+                                isIconOnly
+                                aria-label="Copy message"
+                                className="h-6 w-6 min-h-6 min-w-6 text-[#b9cae7] data-[hover=true]:bg-white/10 data-[hover=true]:text-white"
+                                size="sm"
+                                variant="light"
+                                onPress={() => {
+                                  void handleCopyMessage(entry);
+                                }}
+                              >
+                                <Copy className="h-3.5 w-3.5" />
+                              </Button>
+                              <Button
+                                isIconOnly
+                                aria-label={entry.imageUrl ? "Open image" : "More actions"}
+                                className="h-6 w-6 min-h-6 min-w-6 text-[#b9cae7] data-[hover=true]:bg-white/10 data-[hover=true]:text-white"
+                                size="sm"
+                                variant="light"
+                                onPress={() => {
+                                  void handleMoreMessageAction(entry);
+                                }}
+                              >
+                                <MoreHorizontal className="h-3.5 w-3.5" />
+                              </Button>
+                            </div>
+                          </div>
                         </div>
                       );
 
                       return (
                         <div
                           key={entry.id}
-                          className={`flex items-end gap-2 px-0.5 ${
+                          className={`flex items-end gap-1.5 px-0.5 ${
                             group.isCurrentUser ? "justify-end" : "justify-start"
                           }`}
                         >
@@ -1392,16 +2133,40 @@ export const GlobalChatPanel = ({
         </div>
       </ScrollShadow>
     ),
-    [groupedMessages, hasOlderMessages, isEmbedded, loadOlderMessages, loadingOlder, sortedMessages.length],
+    [
+      currentUserId,
+      groupedMessages,
+      handleCopyMessage,
+      handleMoreMessageAction,
+      handleReplyToMessage,
+      hasOlderMessages,
+      hiddenActionBarMessageId,
+      hoveredActionBarMessageId,
+      isEmbedded,
+      loadOlderMessages,
+      loadingOlder,
+      openImageLightbox,
+      pendingReactionByKey,
+      sortedMessages.length,
+      toggleMessageReaction,
+    ],
   );
 
   const submitMessage = useCallback(async () => {
-    const trimmed = messageInput.trim();
+    const trimmedInput = messageInput.trim();
     const attachedImageUrl = attachedImage?.imageUrl ?? null;
-    if ((!trimmed && !attachedImageUrl) || pendingImageUpload) {
+    if ((!trimmedInput && !attachedImageUrl) || pendingImageUpload) {
       return;
     }
-    const composerSignature = `${trimmed}::${attachedImageUrl ?? ""}`;
+    const encodedMessage = encodeMessageWithReplyContext({
+      message: trimmedInput,
+      replyContext,
+    });
+    if (encodedMessage.length > MAX_GLOBAL_CHAT_MESSAGE_LENGTH) {
+      setError(`Message must be ${MAX_GLOBAL_CHAT_MESSAGE_LENGTH} characters or fewer.`);
+      return;
+    }
+    const composerSignature = `${encodedMessage}::${attachedImageUrl ?? ""}`;
 
     let idempotencyKey = composerIdempotencyKeyRef.current;
     if (!idempotencyKey || composerIdempotencyMessageRef.current !== composerSignature) {
@@ -1420,7 +2185,7 @@ export const GlobalChatPanel = ({
           "x-idempotency-key": idempotencyKey,
         },
         body: JSON.stringify({
-          message: trimmed,
+          message: encodedMessage,
           imageUrl: attachedImageUrl,
         }),
       });
@@ -1428,11 +2193,12 @@ export const GlobalChatPanel = ({
       if (!response.ok || !payload.message) {
         throw new Error(payload.error ?? "Unable to send chat message.");
       }
-      const createdMessage = payload.message;
-      setMessageInput((current) => (current.trim() === trimmed ? "" : current));
+      const createdMessage = withNormalizedMessageReactions(payload.message);
+      setMessageInput((current) => (current.trim() === trimmedInput ? "" : current));
       setAttachedImage((current) =>
         current?.imageUrl && current.imageUrl === attachedImageUrl ? null : current,
       );
+      setReplyContext(null);
       clearComposerIdempotency();
       setMessages((currentMessages) => {
         const mergeResult = mergeIncomingMessages(currentMessages, [createdMessage]);
@@ -1460,6 +2226,7 @@ export const GlobalChatPanel = ({
     isPanelOpen,
     messageInput,
     pendingImageUpload,
+    replyContext,
   ]);
 
   useEffect(() => {
@@ -1523,6 +2290,10 @@ export const GlobalChatPanel = ({
     }
     setIsOpen(false);
     setShowJumpToLatest(false);
+    setReplyContext(null);
+    setHoveredActionBarMessageId(null);
+    setHiddenActionBarMessageId(null);
+    setLightboxImage(null);
   };
 
   const toggleChat = () => {
@@ -1559,12 +2330,12 @@ export const GlobalChatPanel = ({
 
       {isPanelOpen ? (
         <Card
-          className={`pointer-events-auto relative z-10 flex min-h-0 flex-col overflow-hidden overscroll-none bg-gradient-to-b from-[#081325] via-[#0d1a30] to-[#13223a] text-slate-100 ${
+          className={`pointer-events-auto relative z-10 flex min-h-0 flex-col overflow-hidden overscroll-none text-slate-100 ${
             isEmbedded
-              ? "h-full w-full rounded-2xl border border-[#C79B3B]/35 shadow-xl"
+              ? "h-full w-full rounded-none border-0 bg-transparent shadow-none"
               : isMobileViewport
-              ? "h-full w-full flex-1 rounded-none"
-              : "w-[380px] max-h-[min(700px,86dvh)] rounded-2xl border border-[#C79B3B]/35 shadow-2xl backdrop-blur-md"
+              ? "h-full w-full flex-1 rounded-none border-0 bg-[#0d1728]/96"
+              : "w-[380px] max-h-[min(700px,86dvh)] rounded-2xl border border-white/10 bg-[#0d1728]/94 shadow-[0_18px_44px_rgba(4,9,20,0.5)] backdrop-blur-md"
           } ${className ?? ""}`}
           style={
             !isEmbedded && isMobileViewport
@@ -1572,30 +2343,22 @@ export const GlobalChatPanel = ({
               : undefined
           }
         >
-          <CardHeader
-            className={`flex items-center justify-between border-b border-[#344867]/60 ${
-              isEmbedded ? "px-2.5 pb-1 pt-1.5" : "px-3 pb-1.5 pt-2"
-            }`}
-            style={
-              isEmbedded
-                ? undefined
-                : {
-                    paddingTop: "calc(env(safe-area-inset-top) + 0.75rem)",
-                    paddingLeft: "calc(env(safe-area-inset-left) + 0.75rem)",
-                    paddingRight: "calc(env(safe-area-inset-right) + 0.75rem)",
-                  }
-            }
-          >
-            <div>
-              <h2 className={`${isEmbedded ? "text-xs sm:text-sm" : "text-sm sm:text-base"} font-semibold text-[#C79B3B]`}>
-                INSIGHT Fantasy Chat
+          {!isEmbedded ? (
+            <CardHeader
+              className="flex items-center justify-between border-b border-white/10 px-3 pb-1.5 pt-2"
+              style={{
+                paddingTop: "calc(env(safe-area-inset-top) + 0.75rem)",
+                paddingLeft: "calc(env(safe-area-inset-left) + 0.75rem)",
+                paddingRight: "calc(env(safe-area-inset-right) + 0.75rem)",
+              }}
+            >
+              <h2 className="text-sm font-semibold text-[#d6e3f8] sm:text-base">
+                Chat · INSIGHT Fantasy
               </h2>
-            </div>
-            {!isEmbedded ? (
               <Button
                 isIconOnly
                 aria-label="Minimize chat"
-                className="h-11 w-11 text-slate-300 data-[hover=true]:text-[#C79B3B] sm:h-8 sm:w-8"
+                className="h-11 w-11 text-slate-300 data-[hover=true]:bg-white/5 data-[hover=true]:text-white sm:h-8 sm:w-8"
                 size="sm"
                 variant="light"
                 onPress={closeChat}
@@ -1603,11 +2366,11 @@ export const GlobalChatPanel = ({
                 <ChevronLeft className="h-4 w-4 sm:hidden" />
                 <ChevronDown className="hidden h-4 w-4 sm:block" />
               </Button>
-            ) : null}
-          </CardHeader>
+            </CardHeader>
+          ) : null}
           <CardBody
             className={`relative flex min-h-0 flex-1 flex-col ${
-              isEmbedded ? "gap-1.5 p-2 sm:gap-2 sm:p-2.5" : "gap-2 p-2.5 sm:gap-3 sm:p-3"
+              isEmbedded ? "gap-2 p-0" : "gap-2 p-2.5 sm:p-3"
             }`}
             style={
               isEmbedded
@@ -1618,18 +2381,26 @@ export const GlobalChatPanel = ({
                   }
             }
           >
-            {loading ? (
-              <div className="flex min-h-0 flex-1 items-center justify-center">
-                <Spinner label="Loading chat..." />
-              </div>
-            ) : (
-              renderedMessageList
-            )}
+            <div className="relative flex min-h-0 flex-1 flex-col">
+              {loading ? (
+                <div className="flex min-h-0 flex-1 items-center justify-center">
+                  <Spinner label="Loading chat..." />
+                </div>
+              ) : (
+                renderedMessageList
+              )}
+              {!loading && !isEmbedded ? (
+                <>
+                  <div className="pointer-events-none absolute inset-x-0 top-0 h-5 bg-gradient-to-b from-[#0d1728]/82 to-transparent" />
+                  <div className="pointer-events-none absolute inset-x-0 bottom-0 h-5 bg-gradient-to-t from-[#0d1728]/82 to-transparent" />
+                </>
+              ) : null}
+            </div>
 
             {showJumpToLatest ? (
               <div className="mb-1 mt-1 flex justify-center">
                 <Button
-                  className="h-11 min-h-11 rounded-full border border-[#4f678f]/80 bg-[#112038]/95 px-3.5 text-xs font-semibold text-[#d8e6ff] data-[hover=true]:bg-[#162a47] sm:h-8 sm:min-h-8 sm:px-3 sm:text-[11px]"
+                  className="h-11 min-h-11 rounded-full bg-[#15263f]/78 px-3.5 text-xs font-medium text-[#c3d3ed] data-[hover=true]:bg-[#1a2e4d] sm:h-8 sm:min-h-8 sm:px-3 sm:text-[11px]"
                   size="sm"
                   variant="flat"
                   onPress={() => {
@@ -1644,8 +2415,8 @@ export const GlobalChatPanel = ({
             <div
               className={`mt-auto ${
                 isEmbedded
-                  ? "pt-1"
-                  : "border-t border-[#344a69]/55 bg-[#091325]/96 pt-1.5 sm:mt-0 sm:border-0 sm:bg-transparent sm:pt-0"
+                  ? "border-t border-white/5 pt-1"
+                  : "border-t border-white/10 pt-1.5"
               }`}
               style={
                 isEmbedded
@@ -1665,15 +2436,15 @@ export const GlobalChatPanel = ({
                 onChange={handleImageInputChange}
               />
               {attachedImage ? (
-                <div className="mb-2 rounded-large border border-[#4d658c]/55 bg-[#0d1b31]/85 p-2">
+                <div className="mb-2 rounded-xl bg-[#111f34]/70 p-2">
                   <div className="flex items-center justify-between gap-2">
-                    <p className="truncate text-[11px] text-[#c7d5ef]">
+                    <p className="truncate text-[11px] text-[#b7c7e3]">
                       Attached image: {attachedImage.fileName}
                     </p>
                     <Button
                       isIconOnly
                       aria-label="Remove attached image"
-                      className="h-6 w-6 min-h-6 min-w-6 text-[#c7d5ef] data-[hover=true]:text-[#e8f0ff]"
+                      className="h-6 w-6 min-h-6 min-w-6 text-[#b7c7e3] data-[hover=true]:bg-white/5 data-[hover=true]:text-[#e8f0ff]"
                       isDisabled={pendingSend || pendingImageUpload}
                       size="sm"
                       variant="light"
@@ -1691,10 +2462,35 @@ export const GlobalChatPanel = ({
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img
                       alt="Attached chat image preview"
-                      className="max-h-40 w-auto max-w-full rounded-medium border border-[#4f678f]/65 object-cover"
+                      className="max-h-40 w-auto max-w-full rounded-lg object-cover"
                       src={attachedImage.imageUrl}
                     />
                   </a>
+                </div>
+              ) : null}
+              {replyContext ? (
+                <div className="mb-2 flex items-start justify-between gap-2 rounded-xl border border-white/10 bg-[#111f34]/75 px-2.5 py-2">
+                  <div className="min-w-0">
+                    <p className="text-[10px] font-semibold uppercase tracking-wide text-[#9fb3d6]/80">
+                      Replying to {replyContext.senderLabel}
+                    </p>
+                    <p className="truncate text-xs text-[#dbe7fb]/85">
+                      {replyContext.snippet}
+                    </p>
+                  </div>
+                  <Button
+                    isIconOnly
+                    aria-label="Cancel reply"
+                    className="h-6 w-6 min-h-6 min-w-6 text-[#b7c7e3] data-[hover=true]:bg-white/5 data-[hover=true]:text-[#e8f0ff]"
+                    isDisabled={pendingSend}
+                    size="sm"
+                    variant="light"
+                    onPress={() => {
+                      setReplyContext(null);
+                    }}
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </Button>
                 </div>
               ) : null}
               {pendingImageUpload ? (
@@ -1702,7 +2498,7 @@ export const GlobalChatPanel = ({
               ) : null}
               <form
                 autoComplete="off"
-                className="flex items-center gap-2"
+                className="flex items-end gap-1.5"
                 onSubmit={(event) => {
                   event.preventDefault();
                   void submitMessage();
@@ -1711,7 +2507,7 @@ export const GlobalChatPanel = ({
                 <Button
                   isIconOnly
                   aria-label="Attach image"
-                  className="h-11 w-11 min-h-11 min-w-11 self-center text-[#c7d5ef] data-[hover=true]:text-[#C79B3B] data-[disabled=true]:opacity-45 sm:h-9 sm:w-9 sm:min-h-9 sm:min-w-9"
+                  className="h-9 w-9 min-h-9 min-w-9 self-center text-[#b9c9e4] data-[hover=true]:bg-white/6 data-[hover=true]:text-white data-[disabled=true]:opacity-45"
                   isDisabled={pendingSend || pendingImageUpload}
                   type="button"
                   variant="light"
@@ -1722,7 +2518,7 @@ export const GlobalChatPanel = ({
                 <label className="sr-only" htmlFor={CHAT_COMPOSER_FIELD_ID}>
                   Type text
                 </label>
-                <div className="relative flex-1">
+                <div className="relative flex-1 rounded-[14px] bg-white/[0.05] transition-colors focus-within:bg-white/[0.07]">
                   <textarea
                     ref={chatInputRef}
                     id={CHAT_COMPOSER_FIELD_ID}
@@ -1731,22 +2527,30 @@ export const GlobalChatPanel = ({
                     autoCapitalize="off"
                     autoComplete="off"
                     autoCorrect="off"
-                    className={`chat-scrollbar w-full resize-none rounded-md border border-transparent bg-[#081326] outline-none transition focus:border-transparent focus:ring-2 focus:ring-[#C79B3B]/25 ${
+                    className={`chat-scrollbar w-full resize-none rounded-[14px] border border-transparent bg-transparent outline-none transition focus:border-transparent focus:ring-1 focus:ring-white/20 ${
                       isEmbedded
-                        ? "min-h-[30px] max-h-[72px] px-2.5 py-1 text-[13px] leading-[1.1rem] text-[#edf2ff]"
-                        : "min-h-[36px] max-h-[96px] px-3 py-1.5 text-base leading-5 text-[#edf2ff]"
+                        ? "min-h-[32px] max-h-[72px] px-2.5 py-1.5 text-[13px] leading-[1.1rem] text-[#edf2ff]"
+                        : "min-h-[44px] max-h-[112px] px-3 py-2 text-sm leading-5 text-[#edf2ff]"
                     }`}
                     data-gramm="false"
                     enterKeyHint="send"
                     inputMode="text"
-                    maxLength={MAX_GLOBAL_CHAT_MESSAGE_LENGTH}
-                    placeholder="Type a message or add image"
+                    maxLength={messageInputMaxLength}
+                    placeholder={
+                      replyContext
+                        ? `Reply to ${replyContext.senderLabel}`
+                        : "Type a message or add image"
+                    }
                     rows={1}
                     spellCheck={false}
                     value={messageInput}
                     onChange={(event) => {
                       const nextValue = event.currentTarget.value.replace(/\u00a0/g, " ");
-                      const signature = `${nextValue.trim()}::${attachedImage?.imageUrl ?? ""}`;
+                      const encodedMessage = encodeMessageWithReplyContext({
+                        message: nextValue,
+                        replyContext,
+                      });
+                      const signature = `${encodedMessage}::${attachedImage?.imageUrl ?? ""}`;
                       if (signature !== composerIdempotencyMessageRef.current) {
                         clearComposerIdempotency();
                       }
@@ -1781,7 +2585,7 @@ export const GlobalChatPanel = ({
                   <Button
                     isIconOnly
                     aria-label="Close chat"
-                    className="h-11 w-11 min-h-11 min-w-11 self-center text-slate-300 data-[hover=true]:text-[#C79B3B] sm:hidden"
+                    className="h-9 w-9 min-h-9 min-w-9 self-center text-slate-300 data-[hover=true]:bg-white/6 data-[hover=true]:text-white sm:hidden"
                     type="button"
                     variant="light"
                     onPress={closeChat}
@@ -1791,7 +2595,7 @@ export const GlobalChatPanel = ({
                 ) : null}
                 <Button
                   aria-label="Send message"
-                  className="h-11 w-11 min-h-11 min-w-11 self-center bg-transparent text-[#C79B3B] shadow-none hover:bg-transparent active:bg-transparent data-[hover=true]:bg-transparent data-[hover=true]:text-[#C79B3B] data-[pressed=true]:bg-transparent data-[disabled=true]:opacity-45 sm:h-9 sm:w-9 sm:min-h-9 sm:min-w-9"
+                  className="h-9 w-9 min-h-9 min-w-9 self-center bg-transparent text-[#c4d5ef] shadow-none hover:bg-transparent active:bg-transparent data-[hover=true]:bg-white/6 data-[hover=true]:text-white data-[pressed=true]:bg-transparent data-[disabled=true]:opacity-45"
                   isIconOnly
                   isDisabled={
                     pendingSend ||
@@ -1816,6 +2620,64 @@ export const GlobalChatPanel = ({
           </CardBody>
         </Card>
       ) : null}
+
+      <Modal
+        classNames={{ wrapper: "z-[260]" }}
+        isOpen={lightboxImage !== null}
+        placement="center"
+        size="4xl"
+        onOpenChange={(open) => {
+          if (!open) {
+            closeImageLightbox();
+          }
+        }}
+      >
+        <ModalContent className="border border-white/10 bg-[#0b1629]/96 text-[#e6efff]">
+          {(onClose) => (
+            <ModalBody className="space-y-2 p-2.5 sm:p-3">
+              {lightboxImage ? (
+                <>
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="truncate text-[11px] text-[#aabddf]/85 sm:text-xs">
+                      {lightboxImage.senderLabel} · {formatTime(lightboxImage.createdAt)}
+                    </p>
+                    <div className="flex items-center gap-1">
+                      <Button
+                        className="h-8 min-h-8 bg-white/10 px-2.5 text-[11px] text-[#dbe7fb] data-[hover=true]:bg-white/15"
+                        size="sm"
+                        variant="flat"
+                        onPress={() => {
+                          window.open(lightboxImage.imageUrl, "_blank", "noopener,noreferrer");
+                        }}
+                      >
+                        Open
+                      </Button>
+                      <Button
+                        isIconOnly
+                        aria-label="Close image viewer"
+                        className="h-8 w-8 min-h-8 min-w-8 text-[#c5d5ef] data-[hover=true]:bg-white/10 data-[hover=true]:text-white"
+                        size="sm"
+                        variant="light"
+                        onPress={onClose}
+                      >
+                        <X className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </div>
+                  <div className="flex max-h-[78vh] min-h-[220px] items-center justify-center overflow-hidden rounded-large bg-black/35">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      alt="Chat attachment full size"
+                      className="max-h-[78vh] w-auto max-w-full object-contain"
+                      src={lightboxImage.imageUrl}
+                    />
+                  </div>
+                </>
+              ) : null}
+            </ModalBody>
+          )}
+        </ModalContent>
+      </Modal>
 
       {!isEmbedded ? (
         <Button

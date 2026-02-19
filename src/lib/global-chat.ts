@@ -3,9 +3,10 @@ import { MAX_CHAT_IMAGE_URL_LENGTH, normalizeChatImageUrl } from "@/lib/chat-ima
 import { getSupabaseAuthEnv } from "@/lib/supabase-auth-env";
 import { getSupabaseServerClient } from "@/lib/supabase-server";
 import { getUserAvatarBorderColor, getUserAvatarUrl } from "@/lib/user-profile";
-import type { GlobalChatMessage } from "@/types/chat";
+import type { GlobalChatMessage, GlobalChatReaction } from "@/types/chat";
 
 const GLOBAL_CHAT_TABLE = "fantasy_global_chat_messages";
+const GLOBAL_CHAT_REACTIONS_TABLE = "fantasy_global_chat_reactions";
 const CHAT_OBSERVABILITY_TABLE = "fantasy_chat_observability_events";
 const CHAT_POST_RPC_NAME = "fantasy_chat_post_message";
 const CHAT_CLEANUP_RPC_NAME = "fantasy_cleanup_chat_data";
@@ -14,6 +15,7 @@ const DEFAULT_GLOBAL_CHAT_LIMIT = 120;
 const MAX_GLOBAL_CHAT_LIMIT = 200;
 export const MAX_GLOBAL_CHAT_MESSAGE_LENGTH = 320;
 export const MAX_GLOBAL_CHAT_IMAGE_URL_LENGTH = MAX_CHAT_IMAGE_URL_LENGTH;
+export const MAX_GLOBAL_CHAT_REACTION_EMOJI_LENGTH = 16;
 const AVATAR_CACHE_TTL_MS = 5 * 60 * 1000;
 
 const GLOBAL_CHAT_SELECT_COLUMNS = [
@@ -35,6 +37,15 @@ type GlobalChatRow = {
   sender_avatar_border_color: string | null;
   message: string;
   image_url: string | null;
+  created_at: string;
+};
+
+type GlobalChatReactionRow = {
+  id: number;
+  message_id: number;
+  user_id: string;
+  reactor_label: string;
+  emoji: string;
   created_at: string;
 };
 
@@ -71,6 +82,59 @@ const normalizePositiveId = (value: number | undefined): number => {
   return Math.max(0, Math.floor(value as number));
 };
 
+const normalizeReactionEmoji = (value: string): string => value.trim();
+
+const aggregateReactions = (rows: GlobalChatReactionRow[]): GlobalChatReaction[] => {
+  const byEmoji = new Map<string, GlobalChatReaction["users"]>();
+  for (const row of rows) {
+    const emoji = normalizeReactionEmoji(row.emoji);
+    if (!emoji) {
+      continue;
+    }
+    const label = row.reactor_label.trim();
+    if (!label) {
+      continue;
+    }
+    const users = byEmoji.get(emoji) ?? [];
+    const alreadyIncluded = users.some((entry) => entry.userId === row.user_id);
+    if (!alreadyIncluded) {
+      users.push({
+        userId: row.user_id,
+        label,
+      });
+    }
+    byEmoji.set(emoji, users);
+  }
+
+  return [...byEmoji.entries()].map(([emoji, users]) => ({
+    emoji,
+    users,
+  }));
+};
+
+const toReactionMapByMessageId = (rows: GlobalChatReactionRow[]): Map<number, GlobalChatReaction[]> => {
+  const rowsByMessageId = new Map<number, GlobalChatReactionRow[]>();
+  for (const row of rows) {
+    const bucket = rowsByMessageId.get(row.message_id) ?? [];
+    bucket.push(row);
+    rowsByMessageId.set(row.message_id, bucket);
+  }
+  const reactionsByMessageId = new Map<number, GlobalChatReaction[]>();
+  for (const [messageId, messageRows] of rowsByMessageId.entries()) {
+    reactionsByMessageId.set(messageId, aggregateReactions(messageRows));
+  }
+  return reactionsByMessageId;
+};
+
+const attachReactionsToMessages = (
+  messages: GlobalChatMessage[],
+  reactionsByMessageId: Map<number, GlobalChatReaction[]>,
+): GlobalChatMessage[] =>
+  messages.map((entry) => ({
+    ...entry,
+    reactions: reactionsByMessageId.get(entry.id) ?? [],
+  }));
+
 const toGlobalChatMessage = (row: GlobalChatRow): GlobalChatMessage => ({
   id: row.id,
   userId: row.user_id,
@@ -79,6 +143,7 @@ const toGlobalChatMessage = (row: GlobalChatRow): GlobalChatMessage => ({
   senderAvatarBorderColor: row.sender_avatar_border_color,
   message: row.message,
   imageUrl: row.image_url,
+  reactions: [],
   createdAt: row.created_at,
 });
 
@@ -170,6 +235,31 @@ const hydrateMissingAvatarFields = async (
   });
 };
 
+const listReactionsForMessageIds = async ({
+  supabase,
+  messageIds,
+}: {
+  supabase: SupabaseClient;
+  messageIds: number[];
+}): Promise<Map<number, GlobalChatReaction[]>> => {
+  if (messageIds.length === 0) {
+    return new Map();
+  }
+
+  const { data, error } = await supabase
+    .from(GLOBAL_CHAT_REACTIONS_TABLE)
+    .select("id,message_id,user_id,reactor_label,emoji,created_at")
+    .in("message_id", messageIds)
+    .order("created_at", { ascending: true })
+    .order("id", { ascending: true });
+
+  if (error) {
+    throw new Error(`Unable to load global chat reactions: ${error.message}`);
+  }
+
+  return toReactionMapByMessageId((data ?? []) as unknown as GlobalChatReactionRow[]);
+};
+
 const toRpcGlobalChatMessage = (value: unknown): GlobalChatMessage | null => {
   const payload = asObject(value);
   if (!payload) {
@@ -201,6 +291,7 @@ const toRpcGlobalChatMessage = (value: unknown): GlobalChatMessage | null => {
     senderAvatarBorderColor: asStringOrNull(payload.sender_avatar_border_color),
     message,
     imageUrl,
+    reactions: [],
     createdAt,
   };
 };
@@ -236,6 +327,111 @@ export type ChatObservabilityEventInput = {
 
 export const normalizeGlobalChatMessage = (value: string): string =>
   value.replace(/\s+/g, " ").trim();
+
+export const formatChatReactionUserLabel = (value: string): string => {
+  const compact = value.replace(/\s+/g, " ").trim();
+  if (!compact) {
+    return "Unknown";
+  }
+  const parts = compact.split(" ").filter(Boolean);
+  if (parts.length === 1) {
+    return parts[0];
+  }
+  const firstName = parts[0];
+  const lastInitial = parts[parts.length - 1]?.[0]?.toUpperCase();
+  return lastInitial ? `${firstName} ${lastInitial}.` : firstName;
+};
+
+export const toggleGlobalChatReaction = async ({
+  supabase,
+  messageId,
+  userId,
+  reactorLabel,
+  emoji,
+}: {
+  supabase: SupabaseClient;
+  messageId: number;
+  userId: string;
+  reactorLabel: string;
+  emoji: string;
+}): Promise<{ messageId: number; reactions: GlobalChatReaction[] }> => {
+  const normalizedMessageId = normalizePositiveId(messageId);
+  const normalizedUserId = userId.trim();
+  const normalizedReactorLabel = reactorLabel.trim();
+  const normalizedEmoji = normalizeReactionEmoji(emoji);
+
+  if (!normalizedMessageId) {
+    throw new GlobalChatError("Invalid message id.", "INVALID_MESSAGE_ID");
+  }
+  if (!normalizedUserId) {
+    throw new GlobalChatError("Authentication required.", "UNAUTHORIZED");
+  }
+  if (!normalizedReactorLabel) {
+    throw new GlobalChatError("Reaction label is required.", "INVALID_REACTOR_LABEL");
+  }
+  if (!normalizedEmoji || normalizedEmoji.length > MAX_GLOBAL_CHAT_REACTION_EMOJI_LENGTH || /\s/.test(normalizedEmoji)) {
+    throw new GlobalChatError("Reaction emoji is invalid.", "INVALID_EMOJI");
+  }
+
+  const { data: messageRows, error: messageError } = await supabase
+    .from(GLOBAL_CHAT_TABLE)
+    .select("id")
+    .eq("id", normalizedMessageId)
+    .limit(1);
+
+  if (messageError) {
+    throw new Error(`Unable to verify chat message: ${messageError.message}`);
+  }
+  if (!messageRows || messageRows.length === 0) {
+    throw new GlobalChatError("Chat message not found.", "MESSAGE_NOT_FOUND");
+  }
+
+  const { data: existingRows, error: existingError } = await supabase
+    .from(GLOBAL_CHAT_REACTIONS_TABLE)
+    .select("id")
+    .eq("message_id", normalizedMessageId)
+    .eq("user_id", normalizedUserId)
+    .eq("emoji", normalizedEmoji)
+    .limit(1);
+
+  if (existingError) {
+    throw new Error(`Unable to load reaction: ${existingError.message}`);
+  }
+
+  const existingReactionId = asNumber((existingRows?.[0] as { id?: unknown } | undefined)?.id);
+  if (existingReactionId > 0) {
+    const { error: deleteError } = await supabase
+      .from(GLOBAL_CHAT_REACTIONS_TABLE)
+      .delete()
+      .eq("id", existingReactionId)
+      .eq("user_id", normalizedUserId);
+    if (deleteError) {
+      throw new Error(`Unable to remove reaction: ${deleteError.message}`);
+    }
+  } else {
+    const { error: insertError } = await supabase
+      .from(GLOBAL_CHAT_REACTIONS_TABLE)
+      .insert({
+        message_id: normalizedMessageId,
+        user_id: normalizedUserId,
+        reactor_label: normalizedReactorLabel,
+        emoji: normalizedEmoji,
+      });
+    const insertConflictCode = (insertError as { code?: unknown } | null)?.code;
+    if (insertError && insertConflictCode !== "23505") {
+      throw new Error(`Unable to add reaction: ${insertError.message}`);
+    }
+  }
+
+  const reactionsByMessageId = await listReactionsForMessageIds({
+    supabase,
+    messageIds: [normalizedMessageId],
+  });
+  return {
+    messageId: normalizedMessageId,
+    reactions: reactionsByMessageId.get(normalizedMessageId) ?? [],
+  };
+};
 
 export const listGlobalChatMessages = async ({
   supabase,
@@ -284,8 +480,12 @@ export const listGlobalChatMessages = async ({
   if (normalizedAfterId > 0) {
     const messages = limitedRows.map(toGlobalChatMessage);
     const hydratedMessages = await hydrateMissingAvatarFields(messages);
+    const reactionsByMessageId = await listReactionsForMessageIds({
+      supabase,
+      messageIds: hydratedMessages.map((entry) => entry.id),
+    });
     return {
-      messages: hydratedMessages,
+      messages: attachReactionsToMessages(hydratedMessages, reactionsByMessageId),
       hasMore,
       nextBeforeId: null,
     };
@@ -294,10 +494,15 @@ export const listGlobalChatMessages = async ({
   const chronologicalRows = [...limitedRows].reverse();
   const messages = chronologicalRows.map(toGlobalChatMessage);
   const hydratedMessages = await hydrateMissingAvatarFields(messages);
+  const reactionsByMessageId = await listReactionsForMessageIds({
+    supabase,
+    messageIds: hydratedMessages.map((entry) => entry.id),
+  });
+  const messagesWithReactions = attachReactionsToMessages(hydratedMessages, reactionsByMessageId);
   return {
-    messages: hydratedMessages,
+    messages: messagesWithReactions,
     hasMore,
-    nextBeforeId: hydratedMessages[0]?.id ?? null,
+    nextBeforeId: messagesWithReactions[0]?.id ?? null,
   };
 };
 

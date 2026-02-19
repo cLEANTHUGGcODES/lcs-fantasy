@@ -3,6 +3,9 @@ import type { AnyNode } from "domhandler";
 import type { ParsedGame, PlayerGameStat, PlayerRole, TeamSide } from "@/types/fantasy";
 
 const LEAGUEPEDIA_API = "https://lol.fandom.com/api.php";
+const LEAGUEPEDIA_COMMON_CSS_TITLE = "MediaWiki:Common.css";
+const DDRAGON_VERSIONS_API = "https://ddragon.leagueoflegends.com/api/versions.json";
+const DDRAGON_DEFAULT_VERSION = "15.1.1";
 
 export const DEFAULT_PAGE =
   "LCS/2026_Season/Lock-In";
@@ -25,6 +28,30 @@ type ParseResponse =
         info: string;
       };
     };
+
+type QueryRevisionsResponse = {
+  query?: {
+    pages?: Array<{
+      revisions?: Array<{
+        slots?: {
+          main?: {
+            content?: string;
+          };
+        };
+      }>;
+    }>;
+  };
+};
+
+type DataDragonChampionResponse = {
+  data?: Record<
+    string,
+    {
+      id: string;
+      name: string;
+    }
+  >;
+};
 
 const normalizeText = (value: string): string =>
   value.replace(/\s+/g, " ").replace(/\u00a0/g, " ").trim();
@@ -119,6 +146,31 @@ const firstUrlInSet = (value: string | undefined): string | null => {
   return normalizeImageUrl(first);
 };
 
+const readStyleDeclaration = (
+  style: string | undefined,
+  property: string,
+): string | null => {
+  if (!style) {
+    return null;
+  }
+
+  const matcher = new RegExp(`(?:^|;)\\s*${property}\\s*:\\s*([^;]+)`, "i");
+  const match = style.match(matcher);
+  const value = match?.[1]?.trim();
+  return value ? value : null;
+};
+
+const urlFromStyleBackgroundImage = (value: string | undefined): string | null => {
+  if (!value) {
+    return null;
+  }
+  const match = value.match(/url\((['"]?)([^'")]+)\1\)/i);
+  if (!match) {
+    return null;
+  }
+  return normalizeImageUrl(match[2]);
+};
+
 const normalizeWikiPageTitle = (value: string | undefined): string | null => {
   if (!value) {
     return null;
@@ -160,6 +212,154 @@ const normalizeWikiPageTitle = (value: string | undefined): string | null => {
 
 const toPageKey = (value: string): string =>
   value.trim().replace(/\s+/g, "_");
+
+let cachedChampionSpriteSheetUrl: string | null | undefined;
+let cachedChampionIconByLookupKey: Map<string, string> | null | undefined;
+
+const normalizeChampionLookupKey = (value: string): string =>
+  value
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[’'`]/g, "")
+    .replace(/[^a-z0-9]+/g, "");
+
+const championAliasToDataDragonId: Record<string, string> = {
+  aurelionsol: "AurelionSol",
+  belveth: "Belveth",
+  chogath: "Chogath",
+  drmundo: "DrMundo",
+  jarvaniv: "JarvanIV",
+  kaisa: "Kaisa",
+  khazix: "Khazix",
+  kogmaw: "KogMaw",
+  ksante: "KSante",
+  leblanc: "Leblanc",
+  masteryi: "MasterYi",
+  missfortune: "MissFortune",
+  monkeyking: "MonkeyKing",
+  nunuandwillump: "Nunu",
+  nunuwillump: "Nunu",
+  reksai: "RekSai",
+  renataglasc: "Renata",
+  tahmkench: "TahmKench",
+  twistedfate: "TwistedFate",
+  velkoz: "Velkoz",
+  wukong: "MonkeyKing",
+  xinzhao: "XinZhao",
+};
+
+const fetchChampionSpriteSheetUrl = async (): Promise<string | null> => {
+  if (cachedChampionSpriteSheetUrl !== undefined) {
+    return cachedChampionSpriteSheetUrl;
+  }
+
+  try {
+    const query = new URLSearchParams({
+      action: "query",
+      format: "json",
+      titles: LEAGUEPEDIA_COMMON_CSS_TITLE,
+      prop: "revisions",
+      rvprop: "content",
+      rvslots: "*",
+      formatversion: "2",
+    });
+
+    const response = await fetch(`${LEAGUEPEDIA_API}?${query.toString()}`, {
+      next: { revalidate: 900 },
+      headers: {
+        "user-agent": "lcs-fantasy-friends-app/0.1 (+self-hosted)",
+      },
+    });
+
+    if (!response.ok) {
+      cachedChampionSpriteSheetUrl = null;
+      return null;
+    }
+
+    const payload = (await response.json()) as QueryRevisionsResponse;
+    const css =
+      payload.query?.pages?.[0]?.revisions?.[0]?.slots?.main?.content ?? "";
+    const match = css.match(
+      /\.sprite\.champion-sprite\s*\{[\s\S]*?background-image\s*:\s*url\((['"]?)([^'")]+)\1\)/i,
+    );
+    cachedChampionSpriteSheetUrl = normalizeImageUrl(match?.[2]);
+    return cachedChampionSpriteSheetUrl;
+  } catch {
+    cachedChampionSpriteSheetUrl = null;
+    return null;
+  }
+};
+
+const buildChampionIconUrl = (version: string, championId: string): string =>
+  `https://ddragon.leagueoflegends.com/cdn/${version}/img/champion/${championId}.png`;
+
+const fetchChampionIconLookup = async (): Promise<Map<string, string> | null> => {
+  if (cachedChampionIconByLookupKey !== undefined) {
+    return cachedChampionIconByLookupKey;
+  }
+
+  try {
+    const versionsResponse = await fetch(DDRAGON_VERSIONS_API, {
+      next: { revalidate: 86400 },
+      headers: {
+        "user-agent": "lcs-fantasy-friends-app/0.1 (+self-hosted)",
+      },
+    });
+
+    let version = DDRAGON_DEFAULT_VERSION;
+    if (versionsResponse.ok) {
+      const versions = (await versionsResponse.json()) as string[];
+      if (Array.isArray(versions) && typeof versions[0] === "string" && versions[0].trim()) {
+        version = versions[0].trim();
+      }
+    }
+
+    const championsResponse = await fetch(
+      `https://ddragon.leagueoflegends.com/cdn/${version}/data/en_US/champion.json`,
+      {
+        next: { revalidate: 86400 },
+        headers: {
+          "user-agent": "lcs-fantasy-friends-app/0.1 (+self-hosted)",
+        },
+      },
+    );
+
+    if (!championsResponse.ok) {
+      cachedChampionIconByLookupKey = null;
+      return null;
+    }
+
+    const payload = (await championsResponse.json()) as DataDragonChampionResponse;
+    const iconByLookupKey = new Map<string, string>();
+    const championData = payload.data ?? {};
+    const championIds = new Set<string>();
+
+    for (const champion of Object.values(championData)) {
+      if (!champion?.id || !champion?.name) {
+        continue;
+      }
+
+      championIds.add(champion.id);
+      const iconUrl = buildChampionIconUrl(version, champion.id);
+      iconByLookupKey.set(normalizeChampionLookupKey(champion.id), iconUrl);
+      iconByLookupKey.set(normalizeChampionLookupKey(champion.name), iconUrl);
+    }
+
+    for (const [alias, championId] of Object.entries(championAliasToDataDragonId)) {
+      if (!championIds.has(championId)) {
+        continue;
+      }
+      iconByLookupKey.set(alias, buildChampionIconUrl(version, championId));
+    }
+
+    cachedChampionIconByLookupKey = iconByLookupKey;
+    return iconByLookupKey;
+  } catch {
+    cachedChampionIconByLookupKey = null;
+    return null;
+  }
+};
 
 const normalizePageInput = (value: string): string => {
   const fromWikiLink = normalizeWikiPageTitle(value);
@@ -323,6 +523,8 @@ const extractPlayersForSide = (
   side: TeamSide,
   team: string,
   winner: string | null,
+  championSpriteSheetUrl: string | null,
+  championIconByLookupKey: Map<string, string> | null,
 ): PlayerGameStat[] => {
   const roleOrder: PlayerRole[] = ["TOP", "JNG", "MID", "ADC", "SUP"];
   const players: PlayerGameStat[] = [];
@@ -333,9 +535,39 @@ const extractPlayersForSide = (
     const nameAnchor = nameCell.find("a[href]").first();
     const name = normalizeText(nameCell.text());
     const pageTitle = normalizeWikiPageTitle(nameAnchor.attr("href"));
+    const championCell = card.find(".sb-p-champion").first();
+    const championSpriteContainer = championCell.find(".champion-sprite").first();
+    const championSprite = championCell
+      .find("img.champion-sprite, .champion-sprite img, img")
+      .first();
+    const championSpriteStyle =
+      championSpriteContainer.attr("style") ?? championCell.attr("style");
     const champion = normalizeText(
-      card.find(".sb-p-champion [title]").first().attr("title") ?? "",
+      championCell.find("[title]").first().attr("title") ??
+        championSprite.attr("alt") ??
+        "",
     );
+    const championIconUrl =
+      normalizeImageUrl(championSprite.attr("data-src")) ??
+      normalizeImageUrl(championSprite.attr("src")) ??
+      firstUrlInSet(championSprite.attr("data-srcset")) ??
+      firstUrlInSet(championSprite.attr("srcset")) ??
+      urlFromStyleBackgroundImage(championSpriteContainer.attr("style")) ??
+      urlFromStyleBackgroundImage(championCell.attr("style")) ??
+      championIconByLookupKey?.get(normalizeChampionLookupKey(champion || "Unknown")) ??
+      null;
+    const championSpriteBackgroundPosition = readStyleDeclaration(
+      championSpriteStyle,
+      "background-position",
+    );
+    const championSpriteBackgroundSize = readStyleDeclaration(
+      championSpriteStyle,
+      "background-size",
+    );
+    const championSpriteUrl =
+      championSpriteBackgroundPosition && championSpriteBackgroundSize
+        ? championSpriteSheetUrl
+        : null;
     const kda = parseKda(card.find(".sb-p-stat-kda").first().text());
 
     if (!name || !kda) {
@@ -349,6 +581,10 @@ const extractPlayersForSide = (
       side,
       role: roleOrder[index] ?? "FLEX",
       champion: champion || "Unknown",
+      championIconUrl,
+      championSpriteUrl,
+      championSpriteBackgroundPosition,
+      championSpriteBackgroundSize,
       kills: kda.kills,
       deaths: kda.deaths,
       assists: kda.assists,
@@ -379,7 +615,11 @@ const parseGameId = (
   return split[1].replace(/\s+/g, "_");
 };
 
-const parseScoreboardHtml = (html: string): ParsedGame[] => {
+const parseScoreboardHtml = (
+  html: string,
+  championSpriteSheetUrl: string | null,
+  championIconByLookupKey: Map<string, string> | null,
+): ParsedGame[] => {
   const $ = cheerio.load(html);
   const games: ParsedGame[] = [];
 
@@ -435,8 +675,24 @@ const parseScoreboardHtml = (html: string): ParsedGame[] => {
 
     const gameId = parseGameId(parseTextId, blueTeam, redTeam, matchNumber);
 
-    const bluePlayers = extractPlayersForSide($, table, "blue", blueTeam, winner);
-    const redPlayers = extractPlayersForSide($, table, "red", redTeam, winner);
+    const bluePlayers = extractPlayersForSide(
+      $,
+      table,
+      "blue",
+      blueTeam,
+      winner,
+      championSpriteSheetUrl,
+      championIconByLookupKey,
+    );
+    const redPlayers = extractPlayersForSide(
+      $,
+      table,
+      "red",
+      redTeam,
+      winner,
+      championSpriteSheetUrl,
+      championIconByLookupKey,
+    );
 
     if (bluePlayers.length === 0 && redPlayers.length === 0) {
       return;
@@ -479,11 +735,19 @@ export const fetchLeaguepediaSnapshot = async (
   const isSegmentedScoreboardRequest = normalizedPage.includes(
     `${SCOREBOARDS_SEGMENT}/`,
   );
+  const [championSpriteSheetUrl, championIconByLookupKey] = await Promise.all([
+    fetchChampionSpriteSheetUrl(),
+    fetchChampionIconLookup(),
+  ]);
 
   const rootPayload = await fetchParsedPagePayload(normalizedPage);
 
   const parsedPages: ParsedPagePayload[] = [rootPayload];
-  const parsedGames = parseScoreboardHtml(rootPayload.html);
+  const parsedGames = parseScoreboardHtml(
+    rootPayload.html,
+    championSpriteSheetUrl,
+    championIconByLookupKey,
+  );
 
   if (!isSegmentedScoreboardRequest) {
     const queue = readScoreboardLinksFromHtml(rootPayload.html, normalizedPage);
@@ -498,7 +762,13 @@ export const fetchLeaguepediaSnapshot = async (
       seenPages.add(nextPage);
       const pagePayload = await fetchParsedPagePayload(nextPage);
       parsedPages.push(pagePayload);
-      parsedGames.push(...parseScoreboardHtml(pagePayload.html));
+      parsedGames.push(
+        ...parseScoreboardHtml(
+          pagePayload.html,
+          championSpriteSheetUrl,
+          championIconByLookupKey,
+        ),
+      );
 
       const nestedLinks = readScoreboardLinksFromHtml(
         pagePayload.html,

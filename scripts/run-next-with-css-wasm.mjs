@@ -28,6 +28,15 @@ const useNoAddonsFallback =
   env.NEXT_FORCE_WINDOWS_NO_ADDONS === "1";
 const nodeArgs = useNoAddonsFallback ? ["--no-addons"] : [];
 
+const parsedNodeMajor = Number.parseInt(process.versions.node.split(".")[0] ?? "", 10);
+const shouldUseWindowsUndiciShim =
+  process.platform === "win32" &&
+  Number.isFinite(parsedNodeMajor) &&
+  parsedNodeMajor === 20;
+if (shouldUseWindowsUndiciShim) {
+  nodeArgs.push("--require", path.join(process.cwd(), "scripts", "shims", "undici-globals.cjs"));
+}
+
 if (process.platform === "win32") {
   // Default to native Lightning CSS on Windows. Opt in to wasm only when requested.
   delete env.CSS_TRANSFORMER_WASM;

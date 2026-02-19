@@ -50,6 +50,10 @@ type PlayerChampionAccumulator = {
   games: number;
   wins: number;
   totalFantasyPoints: number;
+  championIconUrl: string | null;
+  championSpriteUrl: string | null;
+  championSpriteBackgroundPosition: string | null;
+  championSpriteBackgroundSize: string | null;
 };
 
 type PlayerAnalyticsAccumulator = {
@@ -216,6 +220,25 @@ const buildPlayerAnalyticsByPool = async ({
               snapshotScoring,
             );
       const champion = player.champion?.trim() || "Unknown";
+      const championIconUrl =
+        typeof player.championIconUrl === "string" && player.championIconUrl.trim().length > 0
+          ? player.championIconUrl.trim()
+          : null;
+      const championSpriteUrl =
+        typeof player.championSpriteUrl === "string" &&
+        player.championSpriteUrl.trim().length > 0
+          ? player.championSpriteUrl.trim()
+          : null;
+      const championSpriteBackgroundPosition =
+        typeof player.championSpriteBackgroundPosition === "string" &&
+        player.championSpriteBackgroundPosition.trim().length > 0
+          ? player.championSpriteBackgroundPosition.trim()
+          : null;
+      const championSpriteBackgroundSize =
+        typeof player.championSpriteBackgroundSize === "string" &&
+        player.championSpriteBackgroundSize.trim().length > 0
+          ? player.championSpriteBackgroundSize.trim()
+          : null;
 
       const existing = byPlayerKey.get(key) ?? {
         games: 0,
@@ -231,7 +254,30 @@ const buildPlayerAnalyticsByPool = async ({
         games: 0,
         wins: 0,
         totalFantasyPoints: 0,
+        championIconUrl,
+        championSpriteUrl,
+        championSpriteBackgroundPosition,
+        championSpriteBackgroundSize,
       };
+      if (!championEntry.championIconUrl && championIconUrl) {
+        championEntry.championIconUrl = championIconUrl;
+      }
+      if (!championEntry.championSpriteUrl && championSpriteUrl) {
+        championEntry.championSpriteUrl = championSpriteUrl;
+      }
+      if (
+        !championEntry.championSpriteBackgroundPosition &&
+        championSpriteBackgroundPosition
+      ) {
+        championEntry.championSpriteBackgroundPosition =
+          championSpriteBackgroundPosition;
+      }
+      if (
+        !championEntry.championSpriteBackgroundSize &&
+        championSpriteBackgroundSize
+      ) {
+        championEntry.championSpriteBackgroundSize = championSpriteBackgroundSize;
+      }
       championEntry.games += 1;
       championEntry.wins += player.won ? 1 : 0;
       championEntry.totalFantasyPoints += fantasyPoints;
@@ -257,6 +303,11 @@ const buildPlayerAnalyticsByPool = async ({
     const topChampions = [...stats.champions.entries()]
       .map(([champion, championStats]) => ({
         champion,
+        championIconUrl: championStats.championIconUrl,
+        championSpriteUrl: championStats.championSpriteUrl,
+        championSpriteBackgroundPosition:
+          championStats.championSpriteBackgroundPosition,
+        championSpriteBackgroundSize: championStats.championSpriteBackgroundSize,
         games: championStats.games,
         winRate: round2((championStats.wins / championStats.games) * 100),
         averageFantasyPoints: round2(championStats.totalFantasyPoints / championStats.games),

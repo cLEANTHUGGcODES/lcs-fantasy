@@ -58,6 +58,10 @@ export interface DraftPlayerPoolEntry {
 
 export interface DraftPlayerChampionSummary {
   champion: string;
+  championIconUrl?: string | null;
+  championSpriteUrl?: string | null;
+  championSpriteBackgroundPosition?: string | null;
+  championSpriteBackgroundSize?: string | null;
   games: number;
   winRate: number;
   averageFantasyPoints: number;

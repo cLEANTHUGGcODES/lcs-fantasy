@@ -44,6 +44,44 @@ const snapshotHasTeamIconFields = (payload: unknown): boolean => {
   );
 };
 
+const hasNonEmptyString = (value: unknown): value is string =>
+  typeof value === "string" && value.trim().length > 0;
+
+const playerHasChampionVisuals = (player: unknown): boolean => {
+  if (!isObject(player)) {
+    return false;
+  }
+
+  if (hasNonEmptyString(player.championIconUrl)) {
+    return true;
+  }
+
+  return (
+    hasNonEmptyString(player.championSpriteUrl) &&
+    hasNonEmptyString(player.championSpriteBackgroundPosition) &&
+    hasNonEmptyString(player.championSpriteBackgroundSize)
+  );
+};
+
+const snapshotHasChampionVisualFields = (payload: unknown): boolean => {
+  if (!isObject(payload)) {
+    return false;
+  }
+
+  const games = payload.games;
+  if (!Array.isArray(games) || games.length === 0) {
+    return false;
+  }
+
+  return games.every((game) => {
+    if (!isObject(game) || !Array.isArray(game.players)) {
+      return false;
+    }
+
+    return game.players.every((player) => playerHasChampionVisuals(player));
+  });
+};
+
 export type SnapshotSyncResult = {
   ok: true;
   updated: boolean;
@@ -77,6 +115,9 @@ export const syncLeaguepediaSnapshot = async ({
   const previousHasTeamIcons = previous
     ? snapshotHasTeamIconFields(previous.payload)
     : false;
+  const previousHasChampionVisuals = previous
+    ? snapshotHasChampionVisualFields(previous.payload)
+    : false;
   const sourceRevision = sourceSnapshot.sourceRevisionId;
 
   if (
@@ -84,7 +125,8 @@ export const syncLeaguepediaSnapshot = async ({
     sourceRevision !== null &&
     previousRevision !== null &&
     previousRevision === sourceRevision &&
-    previousHasTeamIcons
+    previousHasTeamIcons &&
+    previousHasChampionVisuals
   ) {
     return {
       ok: true,

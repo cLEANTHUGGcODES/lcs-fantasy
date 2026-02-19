@@ -22,6 +22,7 @@ import { Tab, Tabs } from "@heroui/tabs";
 import { Tooltip } from "@heroui/tooltip";
 import {
   CircleCheckBig,
+  ChevronDown,
   Cog,
   MoreHorizontal,
   ArrowDown,
@@ -51,6 +52,7 @@ import {
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import Image from "next/image";
 import {
+  type CSSProperties,
   useCallback,
   useEffect,
   useMemo,
@@ -149,6 +151,175 @@ const initialsForLabel = (value: string | null | undefined): string => {
   const first = parts[0]?.[0] ?? "";
   const last = parts[parts.length - 1]?.[0] ?? "";
   return `${first}${last}`.toUpperCase();
+};
+
+type ChampionTendencyEntry = NonNullable<
+  DraftDetail["playerPool"][number]["analytics"]
+>["topChampions"][number];
+
+const championInitials = (champion: string): string => {
+  const trimmed = champion.trim();
+  if (!trimmed) {
+    return "?";
+  }
+  return initialsForLabel(trimmed).slice(0, 2);
+};
+
+const formatChampionTendencyStats = (entry: ChampionTendencyEntry): string =>
+  `${entry.games}g • ${entry.winRate.toFixed(1)}% WR • ${entry.averageFantasyPoints.toFixed(2)} avg`;
+
+const DDRAGON_ICON_VERSION = "15.1.1";
+const DDRAGON_ICON_BASE_URL = `https://ddragon.leagueoflegends.com/cdn/${DDRAGON_ICON_VERSION}/img/champion`;
+
+const CHAMPION_TO_DDRAGON_ID: Record<string, string> = {
+  aurelionsol: "AurelionSol",
+  belveth: "Belveth",
+  chogath: "Chogath",
+  drmundo: "DrMundo",
+  jarvaniv: "JarvanIV",
+  kaisa: "Kaisa",
+  khazix: "Khazix",
+  kogmaw: "KogMaw",
+  ksante: "KSante",
+  leblanc: "Leblanc",
+  masteryi: "MasterYi",
+  missfortune: "MissFortune",
+  monkeyking: "MonkeyKing",
+  nunuandwillump: "Nunu",
+  nunuwillump: "Nunu",
+  reksai: "RekSai",
+  renataglasc: "Renata",
+  tahmkench: "TahmKench",
+  twistedfate: "TwistedFate",
+  velkoz: "Velkoz",
+  wukong: "MonkeyKing",
+  xinzhao: "XinZhao",
+};
+
+const normalizeChampionKey = (value: string): string =>
+  value
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[’'`]/g, "")
+    .replace(/[^a-z0-9]+/g, "");
+
+const championDataDragonIconUrl = (championName: string): string | null => {
+  const normalizedKey = normalizeChampionKey(championName);
+  if (!normalizedKey) {
+    return null;
+  }
+  const championId =
+    CHAMPION_TO_DDRAGON_ID[normalizedKey] ??
+    championName
+      .normalize("NFKD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[’'`]/g, " ")
+      .split(/[^A-Za-z0-9]+/)
+      .filter((part) => part.length > 0)
+      .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1).toLowerCase()}`)
+      .join("");
+  if (!championId) {
+    return null;
+  }
+  return `${DDRAGON_ICON_BASE_URL}/${championId}.png`;
+};
+
+const isDataDragonChampionIconUrl = (value: string): boolean =>
+  value.includes("ddragon.leagueoflegends.com/");
+
+const DEFAULT_CHAMPION_SPRITE_BASE_SIZE = 60;
+
+const parseBackgroundPxValues = (value: string): number[] => {
+  const matches = value.match(/-?\d+(?:\.\d+)?(?=px)/g);
+  if (!matches) {
+    return [];
+  }
+
+  return matches
+    .map((entry) => Number.parseFloat(entry))
+    .filter((entry) => Number.isFinite(entry));
+};
+
+const isMultipleOf = (value: number, divisor: number): boolean => {
+  if (!Number.isFinite(value) || !Number.isFinite(divisor) || divisor === 0) {
+    return false;
+  }
+  const quotient = value / divisor;
+  return Math.abs(quotient - Math.round(quotient)) < 0.01;
+};
+
+const inferChampionSpriteBaseSize = (
+  positionParts: number[],
+  sizeParts: number[],
+): number => {
+  const absolutePositionParts = positionParts
+    .map((value) => Math.abs(value))
+    .filter((value) => value > 0);
+
+  if (absolutePositionParts.length > 0) {
+    for (const candidate of [62, 60, 31, 30]) {
+      if (absolutePositionParts.every((value) => isMultipleOf(value, candidate))) {
+        return candidate;
+      }
+    }
+  }
+
+  const sizeWidth = Math.abs(sizeParts[0] ?? 0);
+  if (sizeWidth >= 900) {
+    return 62;
+  }
+  if (sizeWidth >= 450) {
+    return 31;
+  }
+
+  return DEFAULT_CHAMPION_SPRITE_BASE_SIZE;
+};
+
+const scaleCssPxValue = (value: string, scale: number): string =>
+  value.replace(/-?\d+(?:\.\d+)?px/g, (match) => {
+    const numeric = Number.parseFloat(match.slice(0, -2));
+    if (!Number.isFinite(numeric)) {
+      return match;
+    }
+    const scaled = (numeric * scale).toFixed(3).replace(/\.?0+$/, "");
+    return `${scaled}px`;
+  });
+
+const championSpriteStyle = (
+  entry: ChampionTendencyEntry,
+  targetSizePx: number,
+): CSSProperties | null => {
+  if (
+    !entry.championSpriteUrl ||
+    !entry.championSpriteBackgroundPosition ||
+    !entry.championSpriteBackgroundSize
+  ) {
+    return null;
+  }
+
+  const positionParts = parseBackgroundPxValues(
+    entry.championSpriteBackgroundPosition,
+  );
+  const sizeParts = parseBackgroundPxValues(entry.championSpriteBackgroundSize);
+  const sourceBaseSize = inferChampionSpriteBaseSize(positionParts, sizeParts);
+  const scale = targetSizePx / sourceBaseSize;
+
+  const scaledBackgroundPosition = scaleCssPxValue(
+    entry.championSpriteBackgroundPosition,
+    scale,
+  );
+  const scaledBackgroundSize = scaleCssPxValue(
+    entry.championSpriteBackgroundSize,
+    scale,
+  );
+
+  return {
+    backgroundImage: `url(${entry.championSpriteUrl})`,
+    backgroundPosition: scaledBackgroundPosition,
+    backgroundRepeat: "no-repeat",
+    backgroundSize: scaledBackgroundSize,
+  };
 };
 
 const parseServerTimingTotalMs = (headerValue: string | null): number | null => {
@@ -678,6 +849,10 @@ export const DraftRoom = ({
   const [topStripHighlightPick, setTopStripHighlightPick] = useState<number | null>(null);
   const [showStatusDetails, setShowStatusDetails] = useState(false);
   const [isFormatPopoverOpen, setIsFormatPopoverOpen] = useState(false);
+  const [openChampionPopoverKey, setOpenChampionPopoverKey] = useState<string | null>(null);
+  const [brokenChampionIconUrls, setBrokenChampionIconUrls] = useState<Set<string>>(
+    () => new Set(),
+  );
   const [realtimeChannelVersion, setRealtimeChannelVersion] = useState(0);
   const [selectionNotice, setSelectionNotice] = useState<string | null>(null);
   const [timeoutOutcomeMessage, setTimeoutOutcomeMessage] = useState<string | null>(null);
@@ -718,6 +893,17 @@ export const DraftRoom = ({
 
   const dismissToast = useCallback((toastId: number) => {
     setToastNotices((prev) => prev.filter((entry) => entry.id !== toastId));
+  }, []);
+
+  const markChampionIconUrlBroken = useCallback((url: string) => {
+    setBrokenChampionIconUrls((current) => {
+      if (current.has(url)) {
+        return current;
+      }
+      const next = new Set(current);
+      next.add(url);
+      return next;
+    });
   }, []);
 
   const pushToast = useCallback((message: string) => {
@@ -1762,6 +1948,10 @@ export const DraftRoom = ({
   const isSelectedPlayerQueued = selectedPlayer
     ? queuedPlayerNameSet.has(selectedPlayer.playerName)
     : false;
+
+  useEffect(() => {
+    setOpenChampionPopoverKey(null);
+  }, [isPlayerDetailDrawerOpen, selectedPlayerName]);
 
   useEffect(() => {
     const previous = previousAutopickLockedRef.current;
@@ -4432,15 +4622,102 @@ export const DraftRoom = ({
                       Champion tendencies
                     </p>
                     {selectedPlayerInsights.analytics?.topChampions.length ? (
-                      <ul className="mt-1 space-y-1 text-sm">
-                        {selectedPlayerInsights.analytics.topChampions.map((entry) => (
-                          <li key={`${selectedPlayer.playerName}-champ-${entry.champion}`}>
-                            <span className="font-medium">{entry.champion}</span>{" "}
-                            <span className="text-default-500">
-                              ({entry.games}g • {entry.winRate.toFixed(1)}% WR • {entry.averageFantasyPoints.toFixed(2)} avg)
-                            </span>
-                          </li>
-                        ))}
+                      <ul className="mt-1 space-y-1.5">
+                        {selectedPlayerInsights.analytics.topChampions.map((entry, index) => {
+                          const championKey = `${selectedPlayer.playerName}-champ-${entry.champion}-${index}`;
+                          const championIconCandidateUrl =
+                            entry.championIconUrl ?? championDataDragonIconUrl(entry.champion);
+                          const championIconUrl =
+                            championIconCandidateUrl &&
+                            !brokenChampionIconUrls.has(championIconCandidateUrl)
+                              ? championIconCandidateUrl
+                              : null;
+                          const spriteStyle = championSpriteStyle(entry, 28);
+                          return (
+                            <li key={championKey} className="flex items-center justify-between gap-2">
+                              <Popover
+                                isOpen={openChampionPopoverKey === championKey}
+                                placement="right"
+                                showArrow
+                                onOpenChange={(open) => {
+                                  setOpenChampionPopoverKey((current) => {
+                                    if (open) {
+                                      return championKey;
+                                    }
+                                    return current === championKey ? null : current;
+                                  });
+                                }}
+                              >
+                                <PopoverTrigger>
+                                  <button
+                                    className="inline-flex items-center gap-2 rounded-medium px-1 py-0.5 text-left text-sm font-medium text-default-700 hover:bg-content3/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-300/70 dark:text-default-200"
+                                    type="button"
+                                    onBlur={() => {
+                                      setOpenChampionPopoverKey((current) =>
+                                        current === championKey ? null : current,
+                                      );
+                                    }}
+                                    onFocus={() => setOpenChampionPopoverKey(championKey)}
+                                    onMouseEnter={() => setOpenChampionPopoverKey(championKey)}
+                                    onMouseLeave={() => {
+                                      setOpenChampionPopoverKey((current) =>
+                                        current === championKey ? null : current,
+                                      );
+                                    }}
+                                  >
+                                    <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded-medium border border-default-200/60 bg-content3">
+                                      {championIconUrl ? (
+                                        <Image
+                                          alt={`${entry.champion} icon`}
+                                          className="h-full w-full object-cover"
+                                          height={28}
+                                          onError={() => markChampionIconUrlBroken(championIconUrl)}
+                                          src={championIconUrl}
+                                          unoptimized={isDataDragonChampionIconUrl(championIconUrl)}
+                                          width={28}
+                                        />
+                                      ) : spriteStyle ? (
+                                        <span
+                                          aria-hidden
+                                          className="block h-full w-full"
+                                          style={spriteStyle}
+                                        />
+                                      ) : (
+                                        <span className="text-[10px] font-semibold uppercase text-default-600">
+                                          {championInitials(entry.champion)}
+                                        </span>
+                                      )}
+                                    </span>
+                                    <span>{entry.champion}</span>
+                                  </button>
+                                </PopoverTrigger>
+                                <PopoverContent
+                                  className="max-w-[17rem]"
+                                  onMouseEnter={() => setOpenChampionPopoverKey(championKey)}
+                                  onMouseLeave={() => {
+                                    setOpenChampionPopoverKey((current) =>
+                                      current === championKey ? null : current,
+                                    );
+                                  }}
+                                >
+                                  <div className="space-y-0.5 px-1 py-1 text-xs">
+                                    <p className="font-semibold">{entry.champion}</p>
+                                    <p className="text-default-500">Games: {entry.games}</p>
+                                    <p className="text-default-500">
+                                      Win rate: {entry.winRate.toFixed(1)}%
+                                    </p>
+                                    <p className="text-default-500">
+                                      Avg fantasy points: {entry.averageFantasyPoints.toFixed(2)}
+                                    </p>
+                                  </div>
+                                </PopoverContent>
+                              </Popover>
+                              <span className="text-xs text-default-500">
+                                {formatChampionTendencyStats(entry)}
+                              </span>
+                            </li>
+                          );
+                        })}
                       </ul>
                     ) : (
                       <p className="mt-1 text-sm text-default-500">
@@ -5676,14 +5953,21 @@ export const DraftRoom = ({
               <CardHeader className="flex items-center justify-between gap-2 py-2">
                 <p className="flex items-center gap-2 text-sm font-semibold">
                   <MessageCircle className="h-4 w-4" />
-                  Chat
+                  Chat · INSIGHT Fantasy
                 </p>
                 <Button
+                  isIconOnly
+                  aria-label={isDesktopChatCollapsed ? "Show chat panel" : "Hide chat panel"}
+                  className="h-8 w-8 min-h-8 min-w-8 text-default-500 data-[hover=true]:bg-default-100/80 data-[hover=true]:text-default-700"
                   size="sm"
-                  variant="flat"
+                  variant="light"
                   onPress={() => setIsDesktopChatCollapsed((prev) => !prev)}
                 >
-                  {isDesktopChatCollapsed ? "Show" : "Hide"}
+                  <ChevronDown
+                    className={`h-4 w-4 transition-transform ${
+                      isDesktopChatCollapsed ? "-rotate-90" : "rotate-0"
+                    }`}
+                  />
                 </Button>
               </CardHeader>
               {isDesktopChatCollapsed ? (
@@ -6012,11 +6296,54 @@ export const DraftRoom = ({
                 <p className="text-[11px] font-semibold uppercase tracking-wide text-default-500">
                   Top champs
                 </p>
-                <p className="mt-1 text-xs text-default-500">
-                  {selectedPlayer.analytics.topChampions
-                    .map((entry) => `${entry.champion} (${entry.games}g)`)
-                    .join(" • ")}
-                </p>
+                <ul className="mt-1 space-y-1">
+                  {selectedPlayer.analytics.topChampions.map((entry, index) => {
+                    const championIconCandidateUrl =
+                      entry.championIconUrl ?? championDataDragonIconUrl(entry.champion);
+                    const championIconUrl =
+                      championIconCandidateUrl &&
+                      !brokenChampionIconUrls.has(championIconCandidateUrl)
+                        ? championIconCandidateUrl
+                        : null;
+                    const spriteStyle = championSpriteStyle(entry, 24);
+                    return (
+                      <li
+                        key={`${selectedPlayer.playerName}-mobile-champ-${entry.champion}-${index}`}
+                        className="flex items-center gap-2 text-xs"
+                      >
+                        <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center overflow-hidden rounded-medium border border-default-200/60 bg-content3">
+                          {championIconUrl ? (
+                            <Image
+                              alt={`${entry.champion} icon`}
+                              className="h-full w-full object-cover"
+                              height={24}
+                              onError={() => markChampionIconUrlBroken(championIconUrl)}
+                              src={championIconUrl}
+                              unoptimized={isDataDragonChampionIconUrl(championIconUrl)}
+                              width={24}
+                            />
+                          ) : spriteStyle ? (
+                            <span
+                              aria-hidden
+                              className="block h-full w-full"
+                              style={spriteStyle}
+                            />
+                          ) : (
+                            <span className="text-[9px] font-semibold uppercase text-default-600">
+                              {championInitials(entry.champion)}
+                            </span>
+                          )}
+                        </span>
+                        <span className="min-w-0 text-default-500">
+                          <span className="font-medium text-default-700 dark:text-default-200">
+                            {entry.champion}
+                          </span>{" "}
+                          {formatChampionTendencyStats(entry)}
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ul>
               </div>
             ) : null}
             <p className="text-[11px] text-default-500">Swipe down to close</p>
