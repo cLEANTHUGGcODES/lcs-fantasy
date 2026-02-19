@@ -24,7 +24,6 @@ import {
   Pause,
   Play,
   Info,
-  MessageCircle,
   Eye,
   Plus,
   Search,
@@ -6437,10 +6436,13 @@ export const DraftRoom = ({
 
             <Card className="h-full min-h-0 overflow-hidden border border-default-200/40 bg-content1/90 shadow-sm">
               <CardHeader className="flex items-center justify-between gap-2 py-2">
-                <p className="flex items-center gap-2 text-sm font-semibold">
-                  <MessageCircle className="h-4 w-4" />
-                  Chat · INSIGHT Fantasy
-                </p>
+                <Image
+                  alt="Insight LoL Fantasy"
+                  className="h-5 w-auto object-contain opacity-95"
+                  height={28}
+                  src="/img/insight-lol-fantasy-logo.png"
+                  width={132}
+                />
                 <Button
                   isIconOnly
                   aria-label={isDesktopChatCollapsed ? "Show chat panel" : "Hide chat panel"}
