@@ -433,6 +433,29 @@ export const toggleGlobalChatReaction = async ({
   };
 };
 
+export const listGlobalChatReactionsForMessage = async ({
+  supabase,
+  messageId,
+}: {
+  supabase: SupabaseClient;
+  messageId: number;
+}): Promise<{ messageId: number; reactions: GlobalChatReaction[] }> => {
+  const normalizedMessageId = normalizePositiveId(messageId);
+  if (!normalizedMessageId) {
+    throw new GlobalChatError("Invalid message id.", "INVALID_MESSAGE_ID");
+  }
+
+  const reactionsByMessageId = await listReactionsForMessageIds({
+    supabase,
+    messageIds: [normalizedMessageId],
+  });
+
+  return {
+    messageId: normalizedMessageId,
+    reactions: reactionsByMessageId.get(normalizedMessageId) ?? [],
+  };
+};
+
 export const listGlobalChatMessages = async ({
   supabase,
   limit = DEFAULT_GLOBAL_CHAT_LIMIT,

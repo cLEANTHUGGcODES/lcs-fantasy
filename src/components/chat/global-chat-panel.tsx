@@ -6,9 +6,9 @@ import { Modal, ModalBody, ModalContent } from "@heroui/modal";
 import { ScrollShadow } from "@heroui/scroll-shadow";
 import { Spinner } from "@heroui/spinner";
 import { Tooltip } from "@heroui/tooltip";
-import { ChevronDown, ChevronLeft, Copy, ImagePlus, MessageCircle, MoreHorizontal, Reply, Send, X } from "lucide-react";
+import { ChevronDown, ChevronLeft, Copy, ExternalLink, ImagePlus, MessageCircle, MoreHorizontal, Reply, Send, X } from "lucide-react";
 import Image from "next/image";
-import { ChangeEvent, ClipboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, ClipboardEvent, ReactNode, memo, useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import {
   MAX_CHAT_IMAGE_BYTES,
   isSupportedChatImageMimeType,
@@ -62,6 +62,67 @@ type ChatLightboxImage = {
   createdAt: string;
 };
 
+type ChatMessageGroup = {
+  groupKey: string;
+  renderSignature: string;
+  userId: string;
+  senderLabel: string;
+  senderAvatarUrl: string | null;
+  senderAvatarBorderColor: string | null;
+  dayKey: string;
+  dayLabel: string;
+  isCurrentUser: boolean;
+  messages: GlobalChatMessage[];
+  messageIds: number[];
+  estimatedHeight: number;
+};
+
+type ChatRenderBlock =
+  | {
+      type: "older";
+      key: "older-messages";
+    }
+  | {
+      type: "empty";
+      key: "empty-chat";
+    }
+  | {
+      type: "group";
+      key: string;
+      group: ChatMessageGroup;
+      previousGroupDayKey: string | null;
+      estimatedHeight: number;
+    };
+
+type ChatRenderBlockLayout = ChatRenderBlock & {
+  top: number;
+  height: number;
+  bottom: number;
+};
+
+type ChatStoreState = {
+  messages: GlobalChatMessage[];
+  hasOlderMessages: boolean;
+  oldestCursorId: number | null;
+};
+
+type ChatStoreAction =
+  | {
+      type: "replace";
+      messages: GlobalChatMessage[];
+      hasOlderMessages: boolean;
+      oldestCursorId: number | null;
+    }
+  | {
+      type: "updateMessages";
+      updater: (currentMessages: GlobalChatMessage[]) => GlobalChatMessage[];
+    }
+  | {
+      type: "setPaging";
+      hasOlderMessages: boolean;
+      oldestCursorId: number | null;
+    };
+
 const MAX_GLOBAL_CHAT_MESSAGE_LENGTH = 320;
 const CHAT_INITIAL_FETCH_LIMIT = 120;
 const CHAT_INCREMENTAL_FETCH_LIMIT = 60;
@@ -70,7 +131,7 @@ const CHAT_FALLBACK_POLL_INTERVAL_MS = 10000;
 const CHAT_WAKE_SYNC_DEBOUNCE_MS = 400;
 const CHAT_METRICS_FLUSH_INTERVAL_MS = 60000;
 const CHAT_AUTO_SCROLL_THRESHOLD_PX = 96;
-const CHAT_COMPOSER_MIN_HEIGHT_PX = 44;
+const CHAT_COMPOSER_MIN_HEIGHT_PX = 36;
 const CHAT_COMPOSER_MAX_HEIGHT_PX = 96;
 const CHAT_UPLOAD_IMAGE_MAX_DIMENSION_PX = 1600;
 const CHAT_UPLOAD_IMAGE_SCALE_STEPS = [1, 0.9, 0.8, 0.7, 0.6, 0.5] as const;
@@ -85,6 +146,11 @@ const CHAT_REPLY_SENDER_MAX_LENGTH = 36;
 const CHAT_REPLY_SNIPPET_MAX_LENGTH = 90;
 const CHAT_QUICK_REACTIONS = ["😀", "🔥", "👏", "🙌"] as const;
 const MAX_GLOBAL_CHAT_FETCH_LIMIT = 200;
+const CHAT_ACTION_BAR_HIDE_DELAY_MS = 140;
+const CHAT_INCREMENTAL_TRUE_UP_DEBOUNCE_MS = 1200;
+const CHAT_VIRTUALIZATION_OVERSCAN_PX = 520;
+const CHAT_VIRTUALIZATION_MIN_BLOCK_COUNT = 18;
+const CHAT_ENABLE_VIRTUALIZATION = false;
 
 type UploadableImageMimeType = "image/jpeg" | "image/png" | "image/webp";
 
@@ -189,6 +255,12 @@ const hasReactionFromUser = (
 
 const reactionStateKey = (messageId: number, emoji: string): string => `${messageId}:${emoji}`;
 
+const asRecord = (value: unknown): Record<string, unknown> | null =>
+  typeof value === "object" && value !== null ? (value as Record<string, unknown>) : null;
+
+const asTrimmedString = (value: unknown): string =>
+  typeof value === "string" ? value.trim() : "";
+
 const formatOptimisticReactionLabel = (value: string): string => {
   const compact = compactSenderLabel(value).replace(/\s+/g, " ").trim();
   if (!compact) {
@@ -244,6 +316,49 @@ const upsertReactionUsersForEmoji = ({
       })),
     },
   ]);
+};
+
+const toRealtimeMessagePayload = (value: unknown): GlobalChatMessage | null => {
+  const row = asRecord(value);
+  if (!row) {
+    return null;
+  }
+
+  const id = toMessageId(row.id);
+  const userId = asTrimmedString(row.user_id);
+  const senderLabel = asTrimmedString(row.sender_label);
+  const message = typeof row.message === "string" ? row.message : "";
+  const imageUrlRaw = typeof row.image_url === "string" ? row.image_url : null;
+  const imageUrl = normalizeChatImageUrl(imageUrlRaw);
+  const createdAt = asTrimmedString(row.created_at);
+
+  if (!id || !userId || !senderLabel || (!normalizeChatInlineText(message) && !imageUrl) || !createdAt) {
+    return null;
+  }
+
+  return withNormalizedMessageReactions({
+    id,
+    userId,
+    senderLabel,
+    senderAvatarUrl: typeof row.sender_avatar_url === "string" ? row.sender_avatar_url : null,
+    senderAvatarBorderColor: typeof row.sender_avatar_border_color === "string"
+      ? row.sender_avatar_border_color
+      : null,
+    message,
+    imageUrl,
+    reactions: [],
+    createdAt,
+  });
+};
+
+const messageIdFromReactionRealtimePayload = (value: unknown): number => {
+  const payload = asRecord(value);
+  if (!payload) {
+    return 0;
+  }
+  const next = asRecord(payload.new);
+  const previous = asRecord(payload.old);
+  return toMessageId(next?.message_id ?? previous?.message_id ?? 0);
 };
 
 const mergeIncomingMessages = (
@@ -731,6 +846,577 @@ const maxComposerLengthForReply = (replyContext: ChatReplyContext | null): numbe
   return Math.max(0, MAX_GLOBAL_CHAT_MESSAGE_LENGTH - reservedLength);
 };
 
+const INITIAL_CHAT_STORE_STATE: ChatStoreState = {
+  messages: [],
+  hasOlderMessages: false,
+  oldestCursorId: null,
+};
+
+const chatStoreReducer = (state: ChatStoreState, action: ChatStoreAction): ChatStoreState => {
+  if (action.type === "replace") {
+    return {
+      messages: action.messages,
+      hasOlderMessages: action.hasOlderMessages,
+      oldestCursorId: action.oldestCursorId,
+    };
+  }
+
+  if (action.type === "updateMessages") {
+    const nextMessages = action.updater(state.messages);
+    if (nextMessages === state.messages) {
+      return state;
+    }
+    return {
+      ...state,
+      messages: nextMessages,
+    };
+  }
+
+  if (
+    state.hasOlderMessages === action.hasOlderMessages &&
+    state.oldestCursorId === action.oldestCursorId
+  ) {
+    return state;
+  }
+  return {
+    ...state,
+    hasOlderMessages: action.hasOlderMessages,
+    oldestCursorId: action.oldestCursorId,
+  };
+};
+
+const estimateMessageHeightForVirtualization = ({
+  entry,
+  isEmbedded,
+}: {
+  entry: GlobalChatMessage;
+  isEmbedded: boolean;
+}): number => {
+  const parsedEntryMessage = parseMessageWithReplyContext(entry.message);
+  const trimmedMessage = normalizeChatInlineText(parsedEntryMessage.body);
+  const lineCharCount = isEmbedded ? 24 : 30;
+  const lineHeight = isEmbedded ? 15 : 18;
+  const textLineCount = trimmedMessage.length > 0
+    ? Math.max(1, Math.ceil(trimmedMessage.length / lineCharCount))
+    : 0;
+  const textHeight = textLineCount * lineHeight;
+  const replyHeight = parsedEntryMessage.replyContext ? 48 : 0;
+  const imageHeight = entry.imageUrl ? 180 : 0;
+  const reactionHeight = normalizeMessageReactions(entry.reactions).length > 0 ? 24 : 0;
+  const bubblePaddingHeight = entry.imageUrl ? 12 : isEmbedded ? 18 : 24;
+  const metaHeight = 14;
+  return bubblePaddingHeight + textHeight + replyHeight + imageHeight + reactionHeight + metaHeight;
+};
+
+const estimateGroupHeightForVirtualization = ({
+  group,
+  showDaySeparator,
+  isEmbedded,
+}: {
+  group: {
+    isCurrentUser: boolean;
+    senderLabel: string;
+    messages: GlobalChatMessage[];
+  };
+  showDaySeparator: boolean;
+  isEmbedded: boolean;
+}): number => {
+  let totalHeight = 0;
+  if (showDaySeparator) {
+    totalHeight += isEmbedded ? 18 : 24;
+  }
+  if (!group.isCurrentUser && group.senderLabel.trim().length > 0) {
+    totalHeight += isEmbedded ? 15 : 18;
+  }
+  for (const entry of group.messages) {
+    totalHeight += estimateMessageHeightForVirtualization({
+      entry,
+      isEmbedded,
+    }) + 12;
+  }
+  return totalHeight + 8;
+};
+
+const estimateBlockHeight = ({
+  block,
+  loadingOlder,
+}: {
+  block: ChatRenderBlock;
+  loadingOlder: boolean;
+}): number => {
+  if (block.type === "older") {
+    return loadingOlder ? 56 : 52;
+  }
+  if (block.type === "empty") {
+    return 40;
+  }
+  return block.estimatedHeight;
+};
+
+const ChatMeasuredBlock = ({
+  blockKey,
+  absoluteTop,
+  onMeasuredHeight,
+  children,
+}: {
+  blockKey: string;
+  absoluteTop: number | null;
+  onMeasuredHeight: (blockKey: string, nextHeight: number) => void;
+  children: ReactNode;
+}) => {
+  const blockRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const node = blockRef.current;
+    if (!node) {
+      return;
+    }
+
+    const measure = () => {
+      const nextHeight = Math.max(1, Math.round(node.getBoundingClientRect().height));
+      onMeasuredHeight(blockKey, nextHeight);
+    };
+
+    measure();
+    if (typeof ResizeObserver === "undefined") {
+      return;
+    }
+
+    const observer = new ResizeObserver(() => {
+      measure();
+    });
+    observer.observe(node);
+    return () => {
+      observer.disconnect();
+    };
+  }, [blockKey, onMeasuredHeight]);
+
+  return (
+    <div
+      ref={blockRef}
+      className="w-full"
+      style={absoluteTop === null ? undefined : {
+        left: 0,
+        position: "absolute",
+        right: 0,
+        top: absoluteTop,
+      }}
+    >
+      {children}
+    </div>
+  );
+};
+
+type ChatMessageGroupBlockProps = {
+  group: ChatMessageGroup;
+  previousGroupDayKey: string | null;
+  isEmbedded: boolean;
+  currentUserId: string;
+  hoveredActionBarMessageId: number | null;
+  hiddenActionBarMessageId: number | null;
+  pendingReactionByMessageId: Map<number, Set<string>>;
+  pendingReactionSignature: string;
+  showActionBarForMessage: (messageId: number) => void;
+  queueHideActionBarForMessage: (messageId: number) => void;
+  toggleMessageReaction: ({
+    messageId,
+    emoji,
+    closeActionBar,
+  }: {
+    messageId: number;
+    emoji: string;
+    closeActionBar?: boolean;
+  }) => Promise<void>;
+  handleReplyToMessage: (entry: GlobalChatMessage) => void;
+  handleCopyMessage: (entry: GlobalChatMessage) => Promise<void>;
+  handleMoreMessageAction: (entry: GlobalChatMessage) => Promise<void>;
+  openImageLightbox: (entry: GlobalChatMessage) => void;
+};
+
+const ChatMessageGroupBlock = memo(({
+  group,
+  previousGroupDayKey,
+  isEmbedded,
+  currentUserId,
+  hoveredActionBarMessageId,
+  hiddenActionBarMessageId,
+  pendingReactionByMessageId,
+  showActionBarForMessage,
+  queueHideActionBarForMessage,
+  toggleMessageReaction,
+  handleReplyToMessage,
+  handleCopyMessage,
+  handleMoreMessageAction,
+  openImageLightbox,
+}: ChatMessageGroupBlockProps) => {
+  const showDaySeparator = previousGroupDayKey !== group.dayKey;
+  const senderLabel = compactSenderLabel(group.senderLabel);
+  const activeActionBarMessageId = hoveredActionBarMessageId;
+  const hasVisibleActionBar = (
+    activeActionBarMessageId !== null &&
+    hiddenActionBarMessageId !== activeActionBarMessageId
+  );
+
+  return (
+    <div className="space-y-1 pb-3.5 last:pb-0">
+      {showDaySeparator ? (
+        <div className={isEmbedded ? "my-1 flex items-center gap-1.5 px-0.5" : "my-2 flex items-center gap-2 px-1"}>
+          <span className="h-px flex-1 bg-white/10" />
+          <span className={isEmbedded ? "text-[9px] font-medium tracking-wide text-[#9fb3d6]/65" : "text-[10px] font-medium tracking-wide text-[#9fb3d6]/70"}>
+            {group.dayLabel}
+          </span>
+          <span className="h-px flex-1 bg-white/10" />
+        </div>
+      ) : null}
+      {!group.isCurrentUser ? (
+        <p
+          className={isEmbedded
+            ? "px-8 text-left text-[10px] font-medium tracking-wide text-white/40"
+            : "px-10 text-left text-[11px] font-medium tracking-wide text-white/40"}
+          title={group.senderLabel}
+        >
+          {senderLabel}
+        </p>
+      ) : null}
+      <div className="space-y-1">
+        {group.messages.map((entry, index) => {
+          const isFirstInGroup = index === 0;
+          const isLastInGroup = index === group.messages.length - 1;
+          const isMiddleInGroup = !isFirstInGroup && !isLastInGroup;
+          const shouldShowTimestamp = isLastInGroup;
+          const showAvatar = isFirstInGroup;
+          const entryMessageId = toMessageId(entry.id);
+          const isPersistedMessage = entryMessageId > 0;
+          const entryReactions = orderReactionsForDisplay(normalizeMessageReactions(entry.reactions));
+          const entryReactionByEmoji = new Map(entryReactions.map((reaction) => [reaction.emoji, reaction]));
+          const isActionBarHoverTarget = hoveredActionBarMessageId === entryMessageId;
+          const isActionBarVisible = (
+            isPersistedMessage &&
+            isActionBarHoverTarget &&
+            hiddenActionBarMessageId !== entryMessageId
+          );
+          const suppressEntryPointerEvents = (
+            hasVisibleActionBar &&
+            activeActionBarMessageId !== entryMessageId
+          );
+          const hasVisibleMetaContent = shouldShowTimestamp;
+          const messageMetaSpacingClass = entryReactions.length > 0
+            ? "mt-[14px]"
+            : hasVisibleMetaContent
+            ? "mt-px"
+            : "mt-0";
+          const parsedEntryMessage = parseMessageWithReplyContext(entry.message);
+          const trimmedMessage = normalizeChatInlineText(parsedEntryMessage.body);
+          const entryReplyContext = parsedEntryMessage.replyContext;
+          const isImageOnlyMessage = Boolean(entry.imageUrl) && trimmedMessage.length === 0 && !entryReplyContext;
+          const groupedCornerClass = group.isCurrentUser
+            ? isMiddleInGroup
+              ? "rounded-[20px] rounded-tr-[8px] rounded-br-[8px]"
+              : isFirstInGroup && !isLastInGroup
+              ? "rounded-[20px] rounded-br-[8px]"
+              : !isFirstInGroup && isLastInGroup
+              ? "rounded-[20px] rounded-tr-[8px]"
+              : "rounded-[20px]"
+            : isMiddleInGroup
+            ? "rounded-[20px] rounded-tl-[8px] rounded-bl-[8px]"
+            : isFirstInGroup && !isLastInGroup
+            ? "rounded-[20px] rounded-bl-[8px]"
+            : !isFirstInGroup && isLastInGroup
+            ? "rounded-[20px] rounded-tl-[8px]"
+            : "rounded-[20px]";
+          const avatarBorderStyle = group.senderAvatarBorderColor
+            ? { outlineColor: group.senderAvatarBorderColor }
+            : undefined;
+          const avatar = showAvatar ? (
+            <span
+              className="relative inline-flex h-7 w-7 shrink-0 overflow-hidden rounded-full bg-[#16233a]"
+              style={avatarBorderStyle}
+            >
+              {group.senderAvatarUrl ? (
+                <Image
+                  src={group.senderAvatarUrl}
+                  alt={`${group.senderLabel} avatar`}
+                  fill
+                  sizes="28px"
+                  className="object-cover object-center"
+                />
+              ) : (
+                <span className="inline-flex h-full w-full items-center justify-center text-[10px] font-semibold text-[#d7e5ff]">
+                  {initialsForSenderLabel(group.senderLabel)}
+                </span>
+              )}
+            </span>
+          ) : (
+            <span className="h-7 w-7 shrink-0" />
+          );
+
+          const pendingReactionsForMessage = pendingReactionByMessageId.get(entryMessageId);
+
+          const bubble = (
+            <div
+              className={`group/message relative flex flex-col ${
+                entry.imageUrl ? "max-w-[70%]" : "max-w-[74%]"
+              } ${
+                group.isCurrentUser ? "items-end" : "items-start"
+              } ${
+                isPersistedMessage ? "" : "opacity-85"
+              } ${
+                isActionBarHoverTarget ? "z-40" : "z-0"
+              } ${
+                suppressEntryPointerEvents ? "pointer-events-none" : ""
+              }`}
+              style={entry.imageUrl ? { maxWidth: "min(260px, 70%)" } : undefined}
+              onMouseEnter={() => {
+                if (!isPersistedMessage) {
+                  return;
+                }
+                showActionBarForMessage(entryMessageId);
+              }}
+              onMouseLeave={() => {
+                if (!isPersistedMessage) {
+                  return;
+                }
+                queueHideActionBarForMessage(entryMessageId);
+              }}
+            >
+              <div
+                className={`absolute top-0 z-50 -mt-1.5 -translate-y-full inline-flex items-center gap-0.5 overflow-hidden rounded-full shadow-[0_8px_20px_rgba(0,0,0,0.28)] transition-all duration-300 ease-in-out ${
+                  group.isCurrentUser ? "right-1" : "left-1"
+                } ${
+                  isActionBarVisible
+                    ? "pointer-events-auto max-h-8 max-w-[12rem] border border-white/10 bg-[#0f1c32]/88 px-1 py-0.5 opacity-100"
+                    : "pointer-events-none max-h-0 max-w-0 border-transparent bg-transparent px-0 py-0 opacity-0"
+                }`}
+                onMouseEnter={() => {
+                  if (!isPersistedMessage) {
+                    return;
+                  }
+                  showActionBarForMessage(entryMessageId);
+                }}
+                onMouseLeave={() => {
+                  if (!isPersistedMessage) {
+                    return;
+                  }
+                  queueHideActionBarForMessage(entryMessageId);
+                }}
+              >
+                {CHAT_QUICK_REACTIONS.map((emoji) => {
+                  const reaction = entryReactionByEmoji.get(emoji);
+                  const hasCurrentUserReaction = hasReactionFromUser(reaction, currentUserId);
+                  const isReactionPending = pendingReactionsForMessage?.has(emoji) === true;
+                  return (
+                    <button
+                      key={`${entryMessageId}-quick-${emoji}`}
+                      aria-label={`${hasCurrentUserReaction ? "Remove" : "React with"} ${emoji}`}
+                      className={`inline-flex h-6 w-6 items-center justify-center rounded-full text-[14px] leading-none transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-300/70 ${
+                        hasCurrentUserReaction ? "bg-white/16" : "hover:bg-white/12"
+                      } ${
+                        isReactionPending ? "cursor-not-allowed opacity-55" : ""
+                      }`}
+                      disabled={isReactionPending}
+                      type="button"
+                      onClick={() => {
+                        void toggleMessageReaction({
+                          messageId: entryMessageId,
+                          emoji,
+                          closeActionBar: true,
+                        });
+                      }}
+                    >
+                      {emoji}
+                    </button>
+                  );
+                })}
+                <Button
+                  isIconOnly
+                  aria-label="Reply"
+                  className="h-6 w-6 min-h-6 min-w-6 text-[#b9cae7] data-[hover=true]:bg-white/10 data-[hover=true]:text-white"
+                  size="sm"
+                  variant="light"
+                  onPress={() => {
+                    handleReplyToMessage(entry);
+                  }}
+                >
+                  <Reply className="h-3.5 w-3.5" />
+                </Button>
+                <Button
+                  isIconOnly
+                  aria-label="Copy message"
+                  className="h-6 w-6 min-h-6 min-w-6 text-[#b9cae7] data-[hover=true]:bg-white/10 data-[hover=true]:text-white"
+                  size="sm"
+                  variant="light"
+                  onPress={() => {
+                    void handleCopyMessage(entry);
+                  }}
+                >
+                  <Copy className="h-3.5 w-3.5" />
+                </Button>
+                <Button
+                  isIconOnly
+                  aria-label={entry.imageUrl ? "Open image" : "More actions"}
+                  className="h-6 w-6 min-h-6 min-w-6 text-[#b9cae7] data-[hover=true]:bg-white/10 data-[hover=true]:text-white"
+                  size="sm"
+                  variant="light"
+                  onPress={() => {
+                    void handleMoreMessageAction(entry);
+                  }}
+                >
+                  <MoreHorizontal className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+              <div className="relative">
+                <div
+                  className={`overflow-hidden ${
+                    isImageOnlyMessage
+                      ? "bg-transparent p-0"
+                      : entry.imageUrl
+                      ? "p-0"
+                      : isEmbedded
+                      ? "px-2 py-1.5"
+                      : "px-2.5 py-1.5"
+                  } ${!isImageOnlyMessage ? groupedCornerClass : ""} ${
+                    !isImageOnlyMessage ? (
+                    group.isCurrentUser
+                      ? "bg-white/8 text-[#f4f8ff] transition-colors group-hover/message:bg-white/10"
+                      : "bg-white/6 text-[#e8efff] transition-colors group-hover/message:bg-white/8"
+                  ) : ""}`}
+                >
+                  {entryReplyContext ? (
+                    <div className="mb-1.5 rounded-[12px] border border-white/10 bg-black/20 px-2 py-1.5">
+                      <p className="truncate text-[10px] font-medium text-[#a6b8d8]/90">
+                        {entryReplyContext.senderLabel}
+                      </p>
+                      <p className="truncate text-[11px] text-[#d6e3fa]/78">
+                        {entryReplyContext.snippet}
+                      </p>
+                    </div>
+                  ) : null}
+                  {entry.imageUrl ? (
+                    <button
+                      aria-label="Open image viewer"
+                      className="block w-full text-left"
+                      type="button"
+                      onClick={() => {
+                        openImageLightbox(entry);
+                      }}
+                    >
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        alt="Chat attachment"
+                        className={`max-h-[260px] w-full object-cover ${
+                          isImageOnlyMessage
+                            ? "rounded-[18px] bg-transparent drop-shadow-[0_3px_10px_rgba(0,0,0,0.34)]"
+                            : ""
+                        }`}
+                        loading="lazy"
+                        src={entry.imageUrl}
+                      />
+                    </button>
+                  ) : null}
+                  {trimmedMessage ? (
+                    <p
+                      className={`whitespace-pre-wrap break-words ${
+                        isEmbedded
+                          ? "text-[12px] leading-[1.15rem]"
+                          : "text-[13px] leading-[1.35rem] sm:text-sm"
+                      } ${
+                        entry.imageUrl ? "px-2.5 py-2" : ""
+                      }`}
+                    >
+                      {trimmedMessage}
+                    </p>
+                  ) : null}
+                </div>
+                {entryReactions.length > 0 ? (
+                  <div className={`absolute bottom-0 z-10 inline-flex items-center gap-0.5 translate-y-[75%] ${
+                    group.isCurrentUser ? "right-1" : "left-1"
+                  }`}>
+                    {entryReactions.map((reaction) => {
+                      const isReactionPending = pendingReactionsForMessage?.has(reaction.emoji) === true;
+                      const hasCurrentUserReaction = hasReactionFromUser(reaction, currentUserId);
+                      const tooltipContent = reaction.users
+                        .map((user) => user.label)
+                        .filter(Boolean)
+                        .join(", ");
+
+                      return (
+                        <Tooltip
+                          key={`${entryMessageId}-reaction-${reaction.emoji}`}
+                          content={tooltipContent || "Reaction"}
+                          placement="top"
+                        >
+                          <button
+                            aria-label={`${hasCurrentUserReaction ? "Remove" : "Add"} ${reaction.emoji} reaction`}
+                            className={`inline-flex h-6 w-6 items-center justify-center text-[15px] leading-none transition-transform focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-300/70 ${
+                              isReactionPending ? "cursor-not-allowed opacity-55" : "hover:scale-110"
+                            }`}
+                            disabled={isReactionPending}
+                            type="button"
+                            onClick={() => {
+                              void toggleMessageReaction({
+                                messageId: entryMessageId,
+                                emoji: reaction.emoji,
+                              });
+                            }}
+                          >
+                            {reaction.emoji}
+                          </button>
+                        </Tooltip>
+                      );
+                    })}
+                  </div>
+                ) : null}
+              </div>
+              <div
+                className={`${messageMetaSpacingClass} flex items-center gap-1 px-1 ${
+                  group.isCurrentUser ? "justify-end" : "justify-start"
+                }`}
+              >
+                {shouldShowTimestamp ? (
+                  <p className={`text-[10px] text-[#9fb3d6]/46 transition-opacity duration-300 ease-in-out [@media(hover:none)]:opacity-45 ${
+                    isActionBarVisible ? "opacity-100" : "opacity-0"
+                  }`}>
+                    {isPersistedMessage ? formatTime(entry.createdAt) : "Sending..."}
+                  </p>
+                ) : null}
+              </div>
+            </div>
+          );
+
+          return (
+            <div
+              key={entry.id}
+              className={`relative flex items-end gap-1.5 px-0.5 ${
+                group.isCurrentUser ? "justify-end" : "justify-start"
+              } ${
+                isActionBarHoverTarget ? "z-50" : "z-0"
+              }`}
+            >
+              {group.isCurrentUser ? (
+                bubble
+              ) : (
+                <>
+                  {avatar}
+                  {bubble}
+                </>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}, (previousProps, nextProps) => (
+  previousProps.group.renderSignature === nextProps.group.renderSignature &&
+  previousProps.previousGroupDayKey === nextProps.previousGroupDayKey &&
+  previousProps.isEmbedded === nextProps.isEmbedded &&
+  previousProps.currentUserId === nextProps.currentUserId &&
+  previousProps.hoveredActionBarMessageId === nextProps.hoveredActionBarMessageId &&
+  previousProps.hiddenActionBarMessageId === nextProps.hiddenActionBarMessageId &&
+  previousProps.pendingReactionSignature === nextProps.pendingReactionSignature
+));
+ChatMessageGroupBlock.displayName = "ChatMessageGroupBlock";
+
 export const GlobalChatPanel = ({
   currentUserId,
   className,
@@ -745,12 +1431,10 @@ export const GlobalChatPanel = ({
   const isEmbedded = mode === "embedded";
   const [isOpen, setIsOpen] = useState(false);
   const [isMobileViewport, setIsMobileViewport] = useState(false);
-  const [messages, setMessages] = useState<GlobalChatMessage[]>([]);
+  const [chatStore, dispatchChatStore] = useReducer(chatStoreReducer, INITIAL_CHAT_STORE_STATE);
   const [loading, setLoading] = useState(true);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [hasOlderMessages, setHasOlderMessages] = useState(false);
-  const [oldestCursorId, setOldestCursorId] = useState<number | null>(null);
   const [messageInput, setMessageInput] = useState("");
   const [replyContext, setReplyContext] = useState<ChatReplyContext | null>(null);
   const [pendingReactionByKey, setPendingReactionByKey] = useState<Record<string, boolean>>({});
@@ -764,6 +1448,9 @@ export const GlobalChatPanel = ({
   const [hasInitializedUnreadState, setHasInitializedUnreadState] = useState(false);
   const [lastSeenMessageId, setLastSeenMessageId] = useState(0);
   const [unreadCount, setUnreadCount] = useState(0);
+  const [virtualScrollTop, setVirtualScrollTop] = useState(0);
+  const [virtualViewportHeight, setVirtualViewportHeight] = useState(0);
+  const [virtualMeasureVersion, setVirtualMeasureVersion] = useState(0);
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const messageContentRef = useRef<HTMLDivElement | null>(null);
   const chatInputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -777,9 +1464,12 @@ export const GlobalChatPanel = ({
   const incrementalSyncQueuedRef = useRef(false);
   const reactionSyncInFlightRef = useRef(false);
   const reactionSyncQueuedRef = useRef(false);
+  const reactionMessageSyncInFlightRef = useRef(false);
+  const reactionMessageSyncQueueRef = useRef<Set<number>>(new Set());
   const messagesRef = useRef<GlobalChatMessage[]>([]);
   const pendingReactionByKeyRef = useRef<Record<string, boolean>>({});
   const optimisticReactionRollbackByKeyRef = useRef<Record<string, GlobalChatReaction["users"] | null>>({});
+  const actionBarHideTimeoutRef = useRef<number | null>(null);
   const wakeSyncTimeoutRef = useRef<number | null>(null);
   const lastRealtimeStatusRef = useRef<string | null>(null);
   const composerIdempotencyKeyRef = useRef<string | null>(null);
@@ -790,8 +1480,13 @@ export const GlobalChatPanel = ({
     duplicateDrops: 0,
   });
   const metricsFlushInFlightRef = useRef(false);
+  const incrementalTrueUpTimeoutRef = useRef<number | null>(null);
+  const scrollSyncFrameRef = useRef<number | null>(null);
+  const blockMeasuredHeightsRef = useRef<Record<string, number>>({});
   const isPanelOpen = isEmbedded ? true : isOpen;
-  const sortedMessages = messages;
+  const sortedMessages = chatStore.messages;
+  const hasOlderMessages = chatStore.hasOlderMessages;
+  const oldestCursorId = chatStore.oldestCursorId;
   const latestPersistedMessageId = useMemo(() => {
     for (let index = sortedMessages.length - 1; index >= 0; index -= 1) {
       const messageId = toMessageId(sortedMessages[index]?.id ?? 0);
@@ -812,8 +1507,46 @@ export const GlobalChatPanel = ({
     () => maxComposerLengthForReply(replyContext),
     [replyContext],
   );
-  const groupedMessages = useMemo(() => {
-    return sortedMessages.reduce<
+  const updateChatMessages = useCallback(
+    (updater: (currentMessages: GlobalChatMessage[]) => GlobalChatMessage[]) => {
+      dispatchChatStore({
+        type: "updateMessages",
+        updater,
+      });
+    },
+    [],
+  );
+  const replaceChatSnapshot = useCallback(({
+    messages,
+    hasOlderMessages: nextHasOlderMessages,
+    oldestCursorId: nextOldestCursorId,
+  }: {
+    messages: GlobalChatMessage[];
+    hasOlderMessages: boolean;
+    oldestCursorId: number | null;
+  }) => {
+    dispatchChatStore({
+      type: "replace",
+      messages,
+      hasOlderMessages: nextHasOlderMessages,
+      oldestCursorId: nextOldestCursorId,
+    });
+  }, []);
+  const setChatPaging = useCallback(({
+    hasOlderMessages: nextHasOlderMessages,
+    oldestCursorId: nextOldestCursorId,
+  }: {
+    hasOlderMessages: boolean;
+    oldestCursorId: number | null;
+  }) => {
+    dispatchChatStore({
+      type: "setPaging",
+      hasOlderMessages: nextHasOlderMessages,
+      oldestCursorId: nextOldestCursorId,
+    });
+  }, []);
+  const groupedMessages = useMemo<ChatMessageGroup[]>(() => {
+    const groups = sortedMessages.reduce<
       Array<{
         userId: string;
         senderLabel: string;
@@ -824,15 +1557,15 @@ export const GlobalChatPanel = ({
         isCurrentUser: boolean;
         messages: GlobalChatMessage[];
       }>
-    >((groups, entry) => {
+    >((nextGroups, entry) => {
       const dayKey = formatDayKey(entry.createdAt);
-      const previous = groups[groups.length - 1];
+      const previous = nextGroups[nextGroups.length - 1];
       if (previous && previous.userId === entry.userId && previous.dayKey === dayKey) {
         previous.messages.push(entry);
-        return groups;
+        return nextGroups;
       }
 
-      groups.push({
+      nextGroups.push({
         userId: entry.userId,
         senderLabel: entry.senderLabel,
         senderAvatarUrl: entry.senderAvatarUrl,
@@ -842,12 +1575,36 @@ export const GlobalChatPanel = ({
         isCurrentUser: entry.userId === currentUserId,
         messages: [entry],
       });
-      return groups;
+      return nextGroups;
     }, []);
-  }, [currentUserId, sortedMessages]);
+
+    return groups.map((group, index) => {
+      const messageIds = group.messages.map((entry) => toMessageId(entry.id));
+      const firstMessageId = messageIds[0] ?? 0;
+      const lastMessageId = messageIds[messageIds.length - 1] ?? 0;
+      const renderSignature = group.messages
+        .map((entry) => (
+          `${toMessageId(entry.id)}:${entry.createdAt}:${entry.message}:${entry.imageUrl ?? ""}:${reactionSignature(entry.reactions)}`
+        ))
+        .join("|");
+      const previousGroupDayKey = groups[index - 1]?.dayKey ?? null;
+
+      return {
+        ...group,
+        groupKey: `${group.userId}-${group.dayKey}-${firstMessageId}-${lastMessageId}`,
+        renderSignature,
+        messageIds,
+        estimatedHeight: estimateGroupHeightForVirtualization({
+          group,
+          isEmbedded,
+          showDaySeparator: previousGroupDayKey !== group.dayKey,
+        }),
+      };
+    });
+  }, [currentUserId, isEmbedded, sortedMessages]);
 
   const syncComposerHeight = useCallback((target: HTMLTextAreaElement) => {
-    const minHeightPx = isEmbedded ? 32 : CHAT_COMPOSER_MIN_HEIGHT_PX;
+    const minHeightPx = isEmbedded ? 30 : CHAT_COMPOSER_MIN_HEIGHT_PX;
     const maxHeightPx = isEmbedded ? 72 : CHAT_COMPOSER_MAX_HEIGHT_PX;
     target.style.height = "auto";
     const nextHeight = Math.min(
@@ -898,6 +1655,31 @@ export const GlobalChatPanel = ({
     },
     [syncComposerHeight],
   );
+
+  const cancelActionBarHide = useCallback(() => {
+    if (actionBarHideTimeoutRef.current !== null) {
+      window.clearTimeout(actionBarHideTimeoutRef.current);
+      actionBarHideTimeoutRef.current = null;
+    }
+  }, []);
+
+  const showActionBarForMessage = useCallback((messageId: number) => {
+    cancelActionBarHide();
+    setHoveredActionBarMessageId(messageId);
+    setHiddenActionBarMessageId((current) => (
+      current !== null && current !== messageId ? null : current
+    ));
+  }, [cancelActionBarHide]);
+
+  const queueHideActionBarForMessage = useCallback((messageId: number) => {
+    cancelActionBarHide();
+    actionBarHideTimeoutRef.current = window.setTimeout(() => {
+      actionBarHideTimeoutRef.current = null;
+      setHoveredActionBarMessageId((current) => (
+        current === messageId ? null : current
+      ));
+    }, CHAT_ACTION_BAR_HIDE_DELAY_MS);
+  }, [cancelActionBarHide]);
 
   const incrementClientMetric = useCallback(
     (name: "realtimeDisconnects" | "fallbackSyncs" | "duplicateDrops", amount = 1) => {
@@ -993,15 +1775,17 @@ export const GlobalChatPanel = ({
             const firstMessageId = toMessageId(nextMessages[0]?.id ?? 0);
             return firstMessageId > 0 ? firstMessageId : null;
           })();
-        setMessages(nextMessages);
+        replaceChatSnapshot({
+          messages: nextMessages,
+          hasOlderMessages: payload.hasMore === true,
+          oldestCursorId: nextOldestCursorId,
+        });
         latestMessageIdRef.current = toMessageId(nextMessages[nextMessages.length - 1]?.id ?? 0);
-        setHasOlderMessages(payload.hasMore === true);
-        setOldestCursorId(nextOldestCursorId);
         return;
       }
 
       if (mode === "incremental") {
-        setMessages((currentMessages) => {
+        updateChatMessages((currentMessages) => {
           const mergeResult = mergeIncomingMessages(currentMessages, fetchedMessages);
           latestMessageIdRef.current = toMessageId(mergeResult.messages[mergeResult.messages.length - 1]?.id ?? 0);
           if (mergeResult.droppedCount > 0) {
@@ -1013,21 +1797,27 @@ export const GlobalChatPanel = ({
       }
 
       if (mode === "older") {
-        setMessages((currentMessages) => {
+        updateChatMessages((currentMessages) => {
           const mergeResult = prependOlderMessages(currentMessages, fetchedMessages);
           if (mergeResult.droppedCount > 0) {
             incrementClientMetric("duplicateDrops", mergeResult.droppedCount);
           }
           return mergeResult.messages;
         });
-        setHasOlderMessages(payload.hasMore === true);
-        setOldestCursorId(payload.nextBeforeId ?? null);
+        setChatPaging({
+          hasOlderMessages: payload.hasMore === true,
+          oldestCursorId: payload.nextBeforeId ?? null,
+        });
       }
     },
-    [incrementClientMetric],
+    [incrementClientMetric, replaceChatSnapshot, setChatPaging, updateChatMessages],
   );
 
   const queueIncrementalSync = useCallback(() => {
+    if (incrementalTrueUpTimeoutRef.current !== null) {
+      window.clearTimeout(incrementalTrueUpTimeoutRef.current);
+      incrementalTrueUpTimeoutRef.current = null;
+    }
     incrementalSyncQueuedRef.current = true;
     if (!isBrowserOnline()) {
       return;
@@ -1059,6 +1849,16 @@ export const GlobalChatPanel = ({
     })();
   }, [loadMessages]);
 
+  const scheduleIncrementalTrueUp = useCallback(() => {
+    if (incrementalTrueUpTimeoutRef.current !== null) {
+      window.clearTimeout(incrementalTrueUpTimeoutRef.current);
+    }
+    incrementalTrueUpTimeoutRef.current = window.setTimeout(() => {
+      incrementalTrueUpTimeoutRef.current = null;
+      queueIncrementalSync();
+    }, CHAT_INCREMENTAL_TRUE_UP_DEBOUNCE_MS);
+  }, [queueIncrementalSync]);
+
   useEffect(() => {
     messagesRef.current = sortedMessages;
   }, [sortedMessages]);
@@ -1076,7 +1876,7 @@ export const GlobalChatPanel = ({
 
       const normalizedReactions = normalizeMessageReactions(reactions);
       const nextReactionSignature = reactionSignature(normalizedReactions);
-      setMessages((currentMessages) => {
+      updateChatMessages((currentMessages) => {
         let changed = false;
         const nextMessages = currentMessages.map((entry) => {
           if (toMessageId(entry.id) !== normalizedMessageId) {
@@ -1094,7 +1894,7 @@ export const GlobalChatPanel = ({
         return changed ? nextMessages : currentMessages;
       });
     },
-    [],
+    [updateChatMessages],
   );
 
   const applyReactionUsersToMessageEmoji = useCallback(
@@ -1113,7 +1913,7 @@ export const GlobalChatPanel = ({
         return;
       }
 
-      setMessages((currentMessages) => {
+      updateChatMessages((currentMessages) => {
         let changed = false;
         const nextMessages = currentMessages.map((entry) => {
           if (toMessageId(entry.id) !== normalizedMessageId) {
@@ -1136,7 +1936,7 @@ export const GlobalChatPanel = ({
         return changed ? nextMessages : currentMessages;
       });
     },
-    [],
+    [updateChatMessages],
   );
 
   const refreshKnownMessageReactions = useCallback(async () => {
@@ -1175,7 +1975,7 @@ export const GlobalChatPanel = ({
       return;
     }
 
-    setMessages((currentMessages) => {
+    updateChatMessages((currentMessages) => {
       let changed = false;
       const nextMessages = currentMessages.map((entry) => {
         const messageId = toMessageId(entry.id);
@@ -1194,7 +1994,7 @@ export const GlobalChatPanel = ({
       });
       return changed ? nextMessages : currentMessages;
     });
-  }, []);
+  }, [updateChatMessages]);
 
   const queueReactionSync = useCallback(() => {
     reactionSyncQueuedRef.current = true;
@@ -1224,6 +2024,60 @@ export const GlobalChatPanel = ({
       }
     })();
   }, [refreshKnownMessageReactions]);
+
+  const syncReactionForMessage = useCallback(async (messageId: number) => {
+    const normalizedMessageId = Math.max(1, Math.floor(messageId));
+    if (!normalizedMessageId) {
+      return;
+    }
+
+    const params = new URLSearchParams({
+      messageId: `${normalizedMessageId}`,
+    });
+    const response = await fetch(`/api/chat/reactions?${params.toString()}`, {
+      cache: "no-store",
+    });
+    const payload = (await response.json()) as GlobalChatToggleReactionResponse;
+    if (!response.ok || !payload.messageId || !Array.isArray(payload.reactions)) {
+      throw new Error(payload.error ?? "Unable to refresh reactions.");
+    }
+    applyReactionsToMessage(payload.messageId, payload.reactions);
+  }, [applyReactionsToMessage]);
+
+  const queueReactionSyncForMessage = useCallback((messageId: number) => {
+    const normalizedMessageId = Math.max(1, Math.floor(messageId));
+    if (!normalizedMessageId) {
+      return;
+    }
+
+    reactionMessageSyncQueueRef.current.add(normalizedMessageId);
+    if (!isBrowserOnline()) {
+      return;
+    }
+    if (reactionMessageSyncInFlightRef.current) {
+      return;
+    }
+
+    reactionMessageSyncInFlightRef.current = true;
+    void (async () => {
+      try {
+        while (reactionMessageSyncQueueRef.current.size > 0) {
+          if (!isBrowserOnline()) {
+            break;
+          }
+          const messageIds = [...reactionMessageSyncQueueRef.current];
+          reactionMessageSyncQueueRef.current.clear();
+          try {
+            await Promise.all(messageIds.map((entry) => syncReactionForMessage(entry)));
+          } catch {
+            queueReactionSync();
+          }
+        }
+      } finally {
+        reactionMessageSyncInFlightRef.current = false;
+      }
+    })();
+  }, [queueReactionSync, syncReactionForMessage]);
 
   const scheduleWakeSync = useCallback(() => {
     if (wakeSyncTimeoutRef.current !== null) {
@@ -1274,7 +2128,20 @@ export const GlobalChatPanel = ({
           schema: "public",
           table: "fantasy_global_chat_messages",
         },
-        () => {
+        (payload) => {
+          const realtimeMessage = toRealtimeMessagePayload(asRecord(payload)?.new);
+          if (realtimeMessage) {
+            updateChatMessages((currentMessages) => {
+              const mergeResult = mergeIncomingMessages(currentMessages, [realtimeMessage]);
+              latestMessageIdRef.current = toMessageId(mergeResult.messages[mergeResult.messages.length - 1]?.id ?? 0);
+              if (mergeResult.droppedCount > 0) {
+                incrementClientMetric("duplicateDrops", mergeResult.droppedCount);
+              }
+              return mergeResult.messages;
+            });
+            scheduleIncrementalTrueUp();
+            return;
+          }
           queueIncrementalSync();
         },
       )
@@ -1285,7 +2152,12 @@ export const GlobalChatPanel = ({
           schema: "public",
           table: "fantasy_global_chat_reactions",
         },
-        () => {
+        (payload) => {
+          const messageId = messageIdFromReactionRealtimePayload(payload);
+          if (messageId > 0) {
+            queueReactionSyncForMessage(messageId);
+            return;
+          }
           queueReactionSync();
         },
       )
@@ -1308,7 +2180,14 @@ export const GlobalChatPanel = ({
       realtimeConnectedRef.current = false;
       void supabase.removeChannel(channel);
     };
-  }, [incrementClientMetric, queueIncrementalSync, queueReactionSync]);
+  }, [
+    incrementClientMetric,
+    queueIncrementalSync,
+    queueReactionSync,
+    queueReactionSyncForMessage,
+    scheduleIncrementalTrueUp,
+    updateChatMessages,
+  ]);
 
   useEffect(() => {
     const id = window.setInterval(() => {
@@ -1318,6 +2197,7 @@ export const GlobalChatPanel = ({
       incrementClientMetric("fallbackSyncs");
       queueIncrementalSync();
       queueReactionSync();
+      reactionMessageSyncQueueRef.current.clear();
     }, CHAT_FALLBACK_POLL_INTERVAL_MS);
     return () => window.clearInterval(id);
   }, [incrementClientMetric, queueIncrementalSync, queueReactionSync]);
@@ -1443,6 +2323,18 @@ export const GlobalChatPanel = ({
 
   useEffect(() => {
     return () => {
+      if (scrollSyncFrameRef.current !== null) {
+        window.cancelAnimationFrame(scrollSyncFrameRef.current);
+        scrollSyncFrameRef.current = null;
+      }
+      if (incrementalTrueUpTimeoutRef.current !== null) {
+        window.clearTimeout(incrementalTrueUpTimeoutRef.current);
+        incrementalTrueUpTimeoutRef.current = null;
+      }
+      if (actionBarHideTimeoutRef.current !== null) {
+        window.clearTimeout(actionBarHideTimeoutRef.current);
+        actionBarHideTimeoutRef.current = null;
+      }
       if (composerResizeFrameRef.current !== null) {
         window.cancelAnimationFrame(composerResizeFrameRef.current);
         composerResizeFrameRef.current = null;
@@ -1790,6 +2682,7 @@ export const GlobalChatPanel = ({
       })();
 
       if (closeActionBar) {
+        cancelActionBarHide();
         setHiddenActionBarMessageId(normalizedMessageId);
         setHoveredActionBarMessageId(null);
       }
@@ -1846,6 +2739,7 @@ export const GlobalChatPanel = ({
     [
       applyReactionUsersToMessageEmoji,
       applyReactionsToMessage,
+      cancelActionBarHide,
       currentUserId,
       currentUserReactionLabel,
       queueReactionSync,
@@ -1931,6 +2825,278 @@ export const GlobalChatPanel = ({
     setLightboxImage(null);
   }, []);
 
+  const pendingReactionByMessageId = useMemo(() => {
+    const next = new Map<number, Set<string>>();
+    for (const [key, pending] of Object.entries(pendingReactionByKey)) {
+      if (!pending) {
+        continue;
+      }
+      const separatorIndex = key.indexOf(":");
+      if (separatorIndex <= 0) {
+        continue;
+      }
+      const messageId = toMessageId(key.slice(0, separatorIndex));
+      const emoji = key.slice(separatorIndex + 1).trim();
+      if (!messageId || !emoji) {
+        continue;
+      }
+      const existing = next.get(messageId) ?? new Set<string>();
+      existing.add(emoji);
+      next.set(messageId, existing);
+    }
+    return next;
+  }, [pendingReactionByKey]);
+
+  const renderBlocks = useMemo<ChatRenderBlock[]>(() => {
+    const nextBlocks: ChatRenderBlock[] = [];
+    if (hasOlderMessages) {
+      nextBlocks.push({
+        key: "older-messages",
+        type: "older",
+      });
+    }
+
+    if (sortedMessages.length === 0) {
+      nextBlocks.push({
+        key: "empty-chat",
+        type: "empty",
+      });
+      return nextBlocks;
+    }
+
+    for (let index = 0; index < groupedMessages.length; index += 1) {
+      const group = groupedMessages[index];
+      const previousGroupDayKey = groupedMessages[index - 1]?.dayKey ?? null;
+      nextBlocks.push({
+        key: `group-${group.groupKey}`,
+        type: "group",
+        group,
+        previousGroupDayKey,
+        estimatedHeight: group.estimatedHeight,
+      });
+    }
+    return nextBlocks;
+  }, [groupedMessages, hasOlderMessages, sortedMessages.length]);
+
+  const shouldVirtualizeBlocks = CHAT_ENABLE_VIRTUALIZATION && renderBlocks.length >= CHAT_VIRTUALIZATION_MIN_BLOCK_COUNT;
+
+  const syncVirtualViewportState = useCallback((scroller: HTMLDivElement) => {
+    const nextTop = scroller.scrollTop;
+    const nextHeight = scroller.clientHeight;
+    setVirtualScrollTop((current) => (
+      Math.abs(current - nextTop) < 1 ? current : nextTop
+    ));
+    setVirtualViewportHeight((current) => (
+      current === nextHeight ? current : nextHeight
+    ));
+  }, []);
+
+  const scheduleVirtualViewportStateSync = useCallback((scroller: HTMLDivElement) => {
+    if (!shouldVirtualizeBlocks) {
+      return;
+    }
+    if (scrollSyncFrameRef.current !== null) {
+      return;
+    }
+    scrollSyncFrameRef.current = window.requestAnimationFrame(() => {
+      scrollSyncFrameRef.current = null;
+      syncVirtualViewportState(scroller);
+    });
+  }, [shouldVirtualizeBlocks, syncVirtualViewportState]);
+
+  const onMeasuredBlockHeight = useCallback((blockKey: string, nextHeight: number) => {
+    const currentHeight = blockMeasuredHeightsRef.current[blockKey];
+    if (currentHeight && Math.abs(currentHeight - nextHeight) <= 1) {
+      return;
+    }
+    blockMeasuredHeightsRef.current[blockKey] = nextHeight;
+    setVirtualMeasureVersion((current) => current + 1);
+  }, []);
+
+  useEffect(() => {
+    if (!isPanelOpen) {
+      return;
+    }
+    if (!shouldVirtualizeBlocks) {
+      return;
+    }
+    const scroller = messageListRef.current;
+    if (!scroller) {
+      return;
+    }
+
+    syncVirtualViewportState(scroller);
+    if (typeof ResizeObserver === "undefined") {
+      return;
+    }
+
+    const observer = new ResizeObserver(() => {
+      syncVirtualViewportState(scroller);
+    });
+    observer.observe(scroller);
+    return () => {
+      observer.disconnect();
+    };
+  }, [isPanelOpen, shouldVirtualizeBlocks, sortedMessages.length, syncVirtualViewportState]);
+
+  useEffect(() => {
+    blockMeasuredHeightsRef.current = {};
+    setVirtualMeasureVersion((current) => current + 1);
+  }, [isEmbedded]);
+
+  const blockLayouts = useMemo<ChatRenderBlockLayout[]>(() => {
+    if (!shouldVirtualizeBlocks) {
+      return [];
+    }
+    const measuredVersion = virtualMeasureVersion;
+    void measuredVersion;
+    let nextTop = 0;
+    return renderBlocks.map((block) => {
+      const measuredHeight = blockMeasuredHeightsRef.current[block.key];
+      const height = measuredHeight ?? estimateBlockHeight({
+        block,
+        loadingOlder,
+      });
+      const layout: ChatRenderBlockLayout = {
+        ...block,
+        bottom: nextTop + height,
+        height,
+        top: nextTop,
+      };
+      nextTop += height;
+      return layout;
+    });
+  }, [loadingOlder, renderBlocks, shouldVirtualizeBlocks, virtualMeasureVersion]);
+
+  const totalBlockHeight = shouldVirtualizeBlocks
+    ? (blockLayouts[blockLayouts.length - 1]?.bottom ?? 0)
+    : 0;
+
+  const visibleBlockLayouts = useMemo(() => {
+    if (!shouldVirtualizeBlocks) {
+      return [];
+    }
+
+    const overscanTop = Math.max(0, virtualScrollTop - CHAT_VIRTUALIZATION_OVERSCAN_PX);
+    const overscanBottom = virtualScrollTop + Math.max(virtualViewportHeight, 1) + CHAT_VIRTUALIZATION_OVERSCAN_PX;
+    let startIndex = 0;
+    while (startIndex < blockLayouts.length && blockLayouts[startIndex].bottom < overscanTop) {
+      startIndex += 1;
+    }
+
+    let endIndex = startIndex;
+    while (endIndex < blockLayouts.length && blockLayouts[endIndex].top <= overscanBottom) {
+      endIndex += 1;
+    }
+    return blockLayouts.slice(
+      Math.max(0, startIndex - 1),
+      Math.min(blockLayouts.length, endIndex + 1),
+    );
+  }, [blockLayouts, shouldVirtualizeBlocks, virtualScrollTop, virtualViewportHeight]);
+
+  const groupRenderStateByKey = useMemo(() => {
+    const byKey = new Map<string, {
+      hiddenActionBarMessageId: number | null;
+      hoveredActionBarMessageId: number | null;
+      pendingReactionSignature: string;
+    }>();
+
+    for (const group of groupedMessages) {
+      const hoveredForGroup = (
+        hoveredActionBarMessageId !== null && group.messageIds.includes(hoveredActionBarMessageId)
+          ? hoveredActionBarMessageId
+          : null
+      );
+      const hiddenForGroup = (
+        hiddenActionBarMessageId !== null && group.messageIds.includes(hiddenActionBarMessageId)
+          ? hiddenActionBarMessageId
+          : null
+      );
+      const pendingReactionSignature = group.messageIds
+        .map((messageId) => {
+          const pendingSet = pendingReactionByMessageId.get(messageId);
+          if (!pendingSet || pendingSet.size === 0) {
+            return "";
+          }
+          return `${messageId}:${[...pendingSet].sort().join(",")}`;
+        })
+        .filter(Boolean)
+        .join("|");
+
+      byKey.set(group.groupKey, {
+        hiddenActionBarMessageId: hiddenForGroup,
+        hoveredActionBarMessageId: hoveredForGroup,
+        pendingReactionSignature,
+      });
+    }
+    return byKey;
+  }, [
+    groupedMessages,
+    hiddenActionBarMessageId,
+    hoveredActionBarMessageId,
+    pendingReactionByMessageId,
+  ]);
+
+  const renderBlockContent = useCallback((block: ChatRenderBlock) => {
+    if (block.type === "older") {
+      return (
+        <div className="mb-2 flex justify-center">
+          <Button
+            className="h-11 min-h-11 rounded-full bg-[#11203a]/78 px-3.5 text-xs font-medium text-[#b7c7e3] data-[hover=true]:bg-[#162744] sm:h-8 sm:min-h-8 sm:px-3 sm:text-[11px]"
+            isDisabled={loadingOlder}
+            size="sm"
+            variant="flat"
+            onPress={() => {
+              void loadOlderMessages();
+            }}
+          >
+            {loadingOlder ? "Loading older..." : "Load older messages"}
+          </Button>
+        </div>
+      );
+    }
+
+    if (block.type === "empty") {
+      return <p className="text-sm text-slate-300">No messages yet. Start the banter.</p>;
+    }
+
+    const uiState = groupRenderStateByKey.get(block.group.groupKey);
+    return (
+      <ChatMessageGroupBlock
+        key={block.group.groupKey}
+        currentUserId={currentUserId}
+        group={block.group}
+        handleCopyMessage={handleCopyMessage}
+        handleMoreMessageAction={handleMoreMessageAction}
+        handleReplyToMessage={handleReplyToMessage}
+        hiddenActionBarMessageId={uiState?.hiddenActionBarMessageId ?? null}
+        hoveredActionBarMessageId={uiState?.hoveredActionBarMessageId ?? null}
+        isEmbedded={isEmbedded}
+        openImageLightbox={openImageLightbox}
+        pendingReactionByMessageId={pendingReactionByMessageId}
+        pendingReactionSignature={uiState?.pendingReactionSignature ?? ""}
+        previousGroupDayKey={block.previousGroupDayKey}
+        queueHideActionBarForMessage={queueHideActionBarForMessage}
+        showActionBarForMessage={showActionBarForMessage}
+        toggleMessageReaction={toggleMessageReaction}
+      />
+    );
+  }, [
+    currentUserId,
+    groupRenderStateByKey,
+    handleCopyMessage,
+    handleMoreMessageAction,
+    handleReplyToMessage,
+    isEmbedded,
+    loadOlderMessages,
+    loadingOlder,
+    openImageLightbox,
+    pendingReactionByMessageId,
+    queueHideActionBarForMessage,
+    showActionBarForMessage,
+    toggleMessageReaction,
+  ]);
+
   const renderedMessageList = useMemo(
     () => (
       <ScrollShadow
@@ -1943,386 +3109,58 @@ export const GlobalChatPanel = ({
         orientation="vertical"
         style={{ WebkitOverflowScrolling: "touch" }}
         onScroll={(event) => {
-          const nearBottom = isNearBottom(event.currentTarget);
+          const scroller = event.currentTarget;
+          const nearBottom = isNearBottom(scroller);
           shouldStickToBottomRef.current = nearBottom;
           if (nearBottom) {
             setShowJumpToLatest(false);
+          }
+          if (shouldVirtualizeBlocks) {
+            scheduleVirtualViewportStateSync(scroller);
           }
         }}
       >
         <div
           ref={messageContentRef}
-          className="space-y-3.5"
+          className="w-full"
         >
-          {hasOlderMessages ? (
-            <div className="mb-2 flex justify-center">
-              <Button
-                className="h-11 min-h-11 rounded-full bg-[#11203a]/78 px-3.5 text-xs font-medium text-[#b7c7e3] data-[hover=true]:bg-[#162744] sm:h-8 sm:min-h-8 sm:px-3 sm:text-[11px]"
-                isDisabled={loadingOlder}
-                size="sm"
-                variant="flat"
-                onPress={() => {
-                  void loadOlderMessages();
-                }}
-              >
-                {loadingOlder ? "Loading older..." : "Load older messages"}
-              </Button>
-            </div>
-          ) : null}
-          {sortedMessages.length === 0 ? (
-            <p className="text-sm text-slate-300">No messages yet. Start the banter.</p>
-          ) : (
-            groupedMessages.map((group, groupIndex) => {
-              const previousGroup = groupedMessages[groupIndex - 1];
-              const showDaySeparator = !previousGroup || previousGroup.dayKey !== group.dayKey;
-              const senderLabel = compactSenderLabel(group.senderLabel);
-              return (
-                <div
-                  key={`${group.userId}-${group.messages[0]?.id ?? 0}-${group.messages[group.messages.length - 1]?.id ?? 0}`}
-                  className="space-y-1"
+          {shouldVirtualizeBlocks ? (
+            <div
+              className="relative w-full"
+              style={{ height: `${Math.max(totalBlockHeight, 1)}px` }}
+            >
+              {visibleBlockLayouts.map((block) => (
+                <ChatMeasuredBlock
+                  key={block.key}
+                  absoluteTop={block.top}
+                  blockKey={block.key}
+                  onMeasuredHeight={onMeasuredBlockHeight}
                 >
-                  {showDaySeparator ? (
-                    <div className={isEmbedded ? "my-1 flex items-center gap-1.5 px-0.5" : "my-2 flex items-center gap-2 px-1"}>
-                      <span className="h-px flex-1 bg-white/10" />
-                      <span className={isEmbedded ? "text-[9px] font-medium tracking-wide text-[#9fb3d6]/65" : "text-[10px] font-medium tracking-wide text-[#9fb3d6]/70"}>
-                        {group.dayLabel}
-                      </span>
-                      <span className="h-px flex-1 bg-white/10" />
-                    </div>
-                  ) : null}
-                  {!group.isCurrentUser ? (
-                    <p
-                      className={isEmbedded
-                        ? "px-8 text-left text-[10px] font-medium tracking-wide text-white/40"
-                        : "px-10 text-left text-[11px] font-medium tracking-wide text-white/40"}
-                      title={group.senderLabel}
-                    >
-                      {senderLabel}
-                    </p>
-                  ) : null}
-                  <div className="space-y-1.5">
-                    {group.messages.map((entry, index) => {
-                      const isFirstInGroup = index === 0;
-                      const isLastInGroup = index === group.messages.length - 1;
-                      const isMiddleInGroup = !isFirstInGroup && !isLastInGroup;
-                      const shouldShowTimestamp = isLastInGroup;
-                      const showAvatar = isFirstInGroup;
-                      const entryMessageId = toMessageId(entry.id);
-                      const isPersistedMessage = entryMessageId > 0;
-                      const entryReactions = orderReactionsForDisplay(normalizeMessageReactions(entry.reactions));
-                      const entryReactionByEmoji = new Map(entryReactions.map((reaction) => [reaction.emoji, reaction]));
-                      const isActionBarVisible = (
-                        isPersistedMessage &&
-                        hoveredActionBarMessageId === entryMessageId &&
-                        hiddenActionBarMessageId !== entryMessageId
-                      );
-                      const parsedEntryMessage = parseMessageWithReplyContext(entry.message);
-                      const trimmedMessage = normalizeChatInlineText(parsedEntryMessage.body);
-                      const entryReplyContext = parsedEntryMessage.replyContext;
-                      const isImageOnlyMessage = Boolean(entry.imageUrl) && trimmedMessage.length === 0 && !entryReplyContext;
-                      const groupedCornerClass = group.isCurrentUser
-                        ? isMiddleInGroup
-                          ? "rounded-[20px] rounded-tr-[8px] rounded-br-[8px]"
-                          : isFirstInGroup && !isLastInGroup
-                          ? "rounded-[20px] rounded-br-[8px]"
-                          : !isFirstInGroup && isLastInGroup
-                          ? "rounded-[20px] rounded-tr-[8px]"
-                          : "rounded-[20px]"
-                        : isMiddleInGroup
-                        ? "rounded-[20px] rounded-tl-[8px] rounded-bl-[8px]"
-                        : isFirstInGroup && !isLastInGroup
-                        ? "rounded-[20px] rounded-bl-[8px]"
-                        : !isFirstInGroup && isLastInGroup
-                        ? "rounded-[20px] rounded-tl-[8px]"
-                        : "rounded-[20px]";
-                      const avatarBorderStyle = group.senderAvatarBorderColor
-                        ? { outlineColor: group.senderAvatarBorderColor }
-                        : undefined;
-                      const avatar = showAvatar ? (
-                        <span
-                          className="relative inline-flex h-7 w-7 shrink-0 overflow-hidden rounded-full bg-[#16233a]"
-                          style={avatarBorderStyle}
-                        >
-                          {group.senderAvatarUrl ? (
-                            <Image
-                              src={group.senderAvatarUrl}
-                              alt={`${group.senderLabel} avatar`}
-                              fill
-                              sizes="28px"
-                              className="object-cover object-center"
-                            />
-                          ) : (
-                            <span className="inline-flex h-full w-full items-center justify-center text-[10px] font-semibold text-[#d7e5ff]">
-                              {initialsForSenderLabel(group.senderLabel)}
-                            </span>
-                          )}
-                        </span>
-                      ) : (
-                        <span className="h-7 w-7 shrink-0" />
-                      );
-
-                      const bubble = (
-                        <div
-                          className={`group/message relative flex flex-col ${
-                            entry.imageUrl ? "max-w-[70%]" : "max-w-[74%]"
-                          } ${
-                            group.isCurrentUser ? "items-end" : "items-start"
-                          } ${
-                            isPersistedMessage ? "" : "opacity-85"
-                          }`}
-                          style={entry.imageUrl ? { maxWidth: "min(260px, 70%)" } : undefined}
-                          onMouseEnter={() => {
-                            if (!isPersistedMessage) {
-                              return;
-                            }
-                            setHoveredActionBarMessageId(entryMessageId);
-                            setHiddenActionBarMessageId((current) => (
-                              current !== null && current !== entryMessageId ? null : current
-                            ));
-                          }}
-                          onMouseLeave={() => {
-                            if (!isPersistedMessage) {
-                              return;
-                            }
-                            setHoveredActionBarMessageId((current) => (
-                              current === entryMessageId ? null : current
-                            ));
-                          }}
-                        >
-                          <div className="relative">
-                            <div
-                              className={`overflow-hidden ${
-                                isImageOnlyMessage
-                                  ? "bg-transparent p-0"
-                                  : entry.imageUrl
-                                  ? "p-0"
-                                  : isEmbedded
-                                  ? "px-2 py-1.5"
-                                  : "px-2.5 py-1.5"
-                              } ${!isImageOnlyMessage ? groupedCornerClass : ""} ${
-                                !isImageOnlyMessage ? (
-                                group.isCurrentUser
-                                  ? "bg-white/8 text-[#f4f8ff] transition-colors group-hover/message:bg-white/10"
-                                  : "bg-white/6 text-[#e8efff] transition-colors group-hover/message:bg-white/8"
-                              ) : ""}`}
-                            >
-                              {entryReplyContext ? (
-                                <div className="mb-1.5 rounded-[12px] border border-white/10 bg-black/20 px-2 py-1.5">
-                                  <p className="truncate text-[10px] font-medium text-[#a6b8d8]/90">
-                                    {entryReplyContext.senderLabel}
-                                  </p>
-                                  <p className="truncate text-[11px] text-[#d6e3fa]/78">
-                                    {entryReplyContext.snippet}
-                                  </p>
-                                </div>
-                              ) : null}
-                              {entry.imageUrl ? (
-                                <button
-                                  aria-label="Open image viewer"
-                                  className="block w-full text-left"
-                                  type="button"
-                                  onClick={() => {
-                                    openImageLightbox(entry);
-                                  }}
-                                >
-                                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                                  <img
-                                    alt="Chat attachment"
-                                    className={`max-h-[260px] w-full object-cover ${
-                                      isImageOnlyMessage
-                                        ? "rounded-[18px] bg-transparent drop-shadow-[0_3px_10px_rgba(0,0,0,0.34)]"
-                                        : ""
-                                    }`}
-                                    loading="lazy"
-                                    src={entry.imageUrl}
-                                  />
-                                </button>
-                              ) : null}
-                              {trimmedMessage ? (
-                                <p
-                                  className={`whitespace-pre-wrap break-words ${
-                                    isEmbedded
-                                      ? "text-[12px] leading-[1.15rem]"
-                                      : "text-[13px] leading-[1.35rem] sm:text-sm"
-                                  } ${
-                                    entry.imageUrl ? "px-2.5 py-2" : ""
-                                  }`}
-                                >
-                                  {trimmedMessage}
-                                </p>
-                              ) : null}
-                            </div>
-                            {entryReactions.length > 0 ? (
-                              <div className={`absolute bottom-0 z-10 inline-flex items-center gap-0.5 translate-y-[75%] ${
-                                group.isCurrentUser ? "right-1" : "left-1"
-                              }`}>
-                                {entryReactions.map((reaction) => {
-                                  const reactionKey = reactionStateKey(entryMessageId, reaction.emoji);
-                                  const isReactionPending = pendingReactionByKey[reactionKey] === true;
-                                  const hasCurrentUserReaction = hasReactionFromUser(reaction, currentUserId);
-                                  const tooltipContent = reaction.users
-                                    .map((user) => user.label)
-                                    .filter(Boolean)
-                                    .join(", ");
-
-                                  return (
-                                    <Tooltip
-                                      key={`${entryMessageId}-reaction-${reaction.emoji}`}
-                                      content={tooltipContent || "Reaction"}
-                                      placement="top"
-                                    >
-                                      <button
-                                        aria-label={`${hasCurrentUserReaction ? "Remove" : "Add"} ${reaction.emoji} reaction`}
-                                        className={`inline-flex h-6 w-6 items-center justify-center text-[15px] leading-none transition-transform focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-300/70 ${
-                                          isReactionPending ? "cursor-not-allowed opacity-55" : "hover:scale-110"
-                                        }`}
-                                        disabled={isReactionPending}
-                                        type="button"
-                                        onClick={() => {
-                                          void toggleMessageReaction({
-                                            messageId: entryMessageId,
-                                            emoji: reaction.emoji,
-                                          });
-                                        }}
-                                      >
-                                        {reaction.emoji}
-                                      </button>
-                                    </Tooltip>
-                                  );
-                                })}
-                              </div>
-                            ) : null}
-                          </div>
-                          <div
-                            className={`${entryReactions.length > 0 ? "mt-[14px]" : "mt-px"} flex items-center gap-1 px-1 ${
-                              group.isCurrentUser ? "justify-end" : "justify-start"
-                            }`}
-                          >
-                            {shouldShowTimestamp ? (
-                              <p className={`text-[10px] text-[#9fb3d6]/46 transition-opacity duration-300 ease-in-out [@media(hover:none)]:opacity-45 ${
-                                isActionBarVisible ? "opacity-100" : "opacity-0"
-                              }`}>
-                                {isPersistedMessage ? formatTime(entry.createdAt) : "Sending..."}
-                              </p>
-                            ) : null}
-                            <div
-                              className={`inline-flex items-center gap-0.5 overflow-hidden rounded-full border border-white/10 bg-[#0f1c32]/88 shadow-[0_8px_20px_rgba(0,0,0,0.28)] transition-all duration-300 ease-in-out ${
-                                isActionBarVisible
-                                  ? "pointer-events-auto max-w-[12rem] px-1 py-0.5 opacity-100"
-                                  : "pointer-events-none max-w-0 px-0 py-0 opacity-0"
-                              }`}
-                            >
-                              {CHAT_QUICK_REACTIONS.map((emoji) => {
-                                const reaction = entryReactionByEmoji.get(emoji);
-                                const hasCurrentUserReaction = hasReactionFromUser(reaction, currentUserId);
-                                const reactionKey = reactionStateKey(entryMessageId, emoji);
-                                const isReactionPending = pendingReactionByKey[reactionKey] === true;
-                                return (
-                                  <button
-                                    key={`${entryMessageId}-quick-${emoji}`}
-                                    aria-label={`${hasCurrentUserReaction ? "Remove" : "React with"} ${emoji}`}
-                                    className={`inline-flex h-6 w-6 items-center justify-center rounded-full text-[14px] leading-none transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-300/70 ${
-                                      hasCurrentUserReaction ? "bg-white/16" : "hover:bg-white/12"
-                                    } ${
-                                      isReactionPending ? "cursor-not-allowed opacity-55" : ""
-                                    }`}
-                                    disabled={isReactionPending}
-                                    type="button"
-                                    onClick={() => {
-                                      void toggleMessageReaction({
-                                        messageId: entryMessageId,
-                                        emoji,
-                                        closeActionBar: true,
-                                      });
-                                    }}
-                                  >
-                                    {emoji}
-                                  </button>
-                                );
-                              })}
-                              <Button
-                                isIconOnly
-                                aria-label="Reply"
-                                className="h-6 w-6 min-h-6 min-w-6 text-[#b9cae7] data-[hover=true]:bg-white/10 data-[hover=true]:text-white"
-                                size="sm"
-                                variant="light"
-                                onPress={() => {
-                                  handleReplyToMessage(entry);
-                                }}
-                              >
-                                <Reply className="h-3.5 w-3.5" />
-                              </Button>
-                              <Button
-                                isIconOnly
-                                aria-label="Copy message"
-                                className="h-6 w-6 min-h-6 min-w-6 text-[#b9cae7] data-[hover=true]:bg-white/10 data-[hover=true]:text-white"
-                                size="sm"
-                                variant="light"
-                                onPress={() => {
-                                  void handleCopyMessage(entry);
-                                }}
-                              >
-                                <Copy className="h-3.5 w-3.5" />
-                              </Button>
-                              <Button
-                                isIconOnly
-                                aria-label={entry.imageUrl ? "Open image" : "More actions"}
-                                className="h-6 w-6 min-h-6 min-w-6 text-[#b9cae7] data-[hover=true]:bg-white/10 data-[hover=true]:text-white"
-                                size="sm"
-                                variant="light"
-                                onPress={() => {
-                                  void handleMoreMessageAction(entry);
-                                }}
-                              >
-                                <MoreHorizontal className="h-3.5 w-3.5" />
-                              </Button>
-                            </div>
-                          </div>
-                        </div>
-                      );
-
-                      return (
-                        <div
-                          key={entry.id}
-                          className={`flex items-end gap-1.5 px-0.5 ${
-                            group.isCurrentUser ? "justify-end" : "justify-start"
-                          }`}
-                        >
-                          {group.isCurrentUser ? (
-                            bubble
-                          ) : (
-                            <>
-                              {avatar}
-                              {bubble}
-                            </>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
+                  {renderBlockContent(block)}
+                </ChatMeasuredBlock>
+              ))}
+            </div>
+          ) : (
+            <div className="space-y-0 w-full">
+              {renderBlocks.map((block) => (
+                <div key={block.key} className="w-full">
+                  {renderBlockContent(block)}
                 </div>
-              );
-            })
+              ))}
+            </div>
           )}
         </div>
       </ScrollShadow>
     ),
     [
-      currentUserId,
-      groupedMessages,
-      handleCopyMessage,
-      handleMoreMessageAction,
-      handleReplyToMessage,
-      hasOlderMessages,
-      hiddenActionBarMessageId,
-      hoveredActionBarMessageId,
       isEmbedded,
-      loadOlderMessages,
-      loadingOlder,
-      openImageLightbox,
-      pendingReactionByKey,
-      sortedMessages.length,
-      toggleMessageReaction,
+      onMeasuredBlockHeight,
+      renderBlocks,
+      renderBlockContent,
+      scheduleVirtualViewportStateSync,
+      shouldVirtualizeBlocks,
+      totalBlockHeight,
+      visibleBlockLayouts,
     ],
   );
 
@@ -2373,7 +3211,7 @@ export const GlobalChatPanel = ({
     setMessageInput("");
     setAttachedImage(null);
     setReplyContext(null);
-    setMessages((currentMessages) => {
+    updateChatMessages((currentMessages) => {
       const mergeResult = mergeIncomingMessages(currentMessages, [optimisticMessage]);
       if (mergeResult.droppedCount > 0) {
         incrementClientMetric("duplicateDrops", mergeResult.droppedCount);
@@ -2398,7 +3236,7 @@ export const GlobalChatPanel = ({
       }
       const createdMessage = withNormalizedMessageReactions(payload.message);
       clearComposerIdempotency();
-      setMessages((currentMessages) => {
+      updateChatMessages((currentMessages) => {
         const withoutOptimistic = currentMessages.filter(
           (entry) => toMessageId(entry.id) !== optimisticMessageId,
         );
@@ -2410,7 +3248,7 @@ export const GlobalChatPanel = ({
         return mergeResult.messages;
       });
     } catch (sendError) {
-      setMessages((currentMessages) =>
+      updateChatMessages((currentMessages) =>
         currentMessages.filter((entry) => toMessageId(entry.id) !== optimisticMessageId),
       );
       setMessageInput((current) => (current.trim().length > 0 ? current : messageInputSnapshot));
@@ -2437,6 +3275,7 @@ export const GlobalChatPanel = ({
     queueIncrementalSync,
     pendingImageUpload,
     replyContext,
+    updateChatMessages,
   ]);
 
   useEffect(() => {
@@ -2497,6 +3336,11 @@ export const GlobalChatPanel = ({
     if (isEmbedded) {
       return;
     }
+    if (incrementalTrueUpTimeoutRef.current !== null) {
+      window.clearTimeout(incrementalTrueUpTimeoutRef.current);
+      incrementalTrueUpTimeoutRef.current = null;
+    }
+    cancelActionBarHide();
     setIsOpen(false);
     setShowJumpToLatest(false);
     setReplyContext(null);
@@ -2521,6 +3365,7 @@ export const GlobalChatPanel = ({
     : isPanelOpen && isMobileViewport
     ? "pointer-events-none fixed inset-0 z-[120] flex flex-col"
     : "pointer-events-none fixed bottom-3 left-0 right-0 z-[120] flex flex-col items-end gap-2 px-3 sm:bottom-4 sm:left-auto sm:right-4 sm:px-0";
+  const hasComposerAuxContent = Boolean(attachedImage || replyContext || pendingImageUpload || error);
 
   if (hideOnMobile && isMobileViewport) {
     return null;
@@ -2624,14 +3469,20 @@ export const GlobalChatPanel = ({
             <div
               className={`mt-auto ${
                 isEmbedded
-                  ? "border-t border-white/5 pt-1"
-                  : "border-t border-white/10 pt-1.5"
+                  ? hasComposerAuxContent
+                    ? "border-t border-white/5 py-1"
+                    : "border-t border-white/5"
+                  : hasComposerAuxContent
+                  ? "border-t border-white/10 pt-0.5"
+                  : "border-t border-white/10"
               }`}
               style={
                 isEmbedded
                   ? undefined
                   : {
-                      paddingBottom: "calc(env(safe-area-inset-bottom) + 0.35rem)",
+                      paddingBottom: hasComposerAuxContent
+                        ? "calc(env(safe-area-inset-bottom) + 0.15rem)"
+                        : "env(safe-area-inset-bottom)",
                       paddingLeft: "calc(env(safe-area-inset-left) + 0.625rem)",
                       paddingRight: "calc(env(safe-area-inset-right) + 0.625rem)",
                     }
@@ -2705,125 +3556,127 @@ export const GlobalChatPanel = ({
               {pendingImageUpload ? (
                 <p className="mb-2 text-xs text-[#9fb3d6]">Uploading image...</p>
               ) : null}
-              <form
-                autoComplete="off"
-                className="flex items-end gap-1.5"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  void submitMessage();
-                }}
-              >
-                <Button
-                  isIconOnly
-                  aria-label="Attach image"
-                  className="h-9 w-9 min-h-9 min-w-9 self-center text-[#b9c9e4] data-[hover=true]:bg-white/6 data-[hover=true]:text-white data-[disabled=true]:opacity-45"
-                  isDisabled={pendingSend || pendingImageUpload}
-                  type="button"
-                  variant="light"
-                  onPress={openChatImagePicker}
+              <div className={hasComposerAuxContent ? "" : isEmbedded ? "py-1" : "py-2"}>
+                <form
+                  autoComplete="off"
+                  className="flex items-center gap-1.5"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    void submitMessage();
+                  }}
                 >
-                  <ImagePlus className="h-4 w-4" />
-                </Button>
-                <label className="sr-only" htmlFor={CHAT_COMPOSER_FIELD_ID}>
-                  Type text
-                </label>
-                <div className="relative flex-1 rounded-[14px] bg-white/[0.05] transition-colors focus-within:bg-white/[0.07]">
-                  <textarea
-                    ref={chatInputRef}
-                    id={CHAT_COMPOSER_FIELD_ID}
-                    name={CHAT_COMPOSER_FIELD_NAME}
-                    aria-label="Type text"
-                    autoCapitalize="off"
-                    autoComplete="off"
-                    autoCorrect="off"
-                    className={`chat-scrollbar w-full resize-none rounded-[14px] border border-transparent bg-transparent outline-none transition focus:border-transparent focus:ring-1 focus:ring-white/20 ${
-                      isEmbedded
-                        ? "min-h-[32px] max-h-[72px] px-2.5 py-1.5 text-[13px] leading-[1.1rem] text-[#edf2ff]"
-                        : "min-h-[44px] max-h-[112px] px-3 py-2 text-sm leading-5 text-[#edf2ff]"
-                    }`}
-                    data-gramm="false"
-                    enterKeyHint="send"
-                    inputMode="text"
-                    maxLength={messageInputMaxLength}
-                    placeholder={
-                      replyContext
-                        ? `Reply to ${replyContext.senderLabel}`
-                        : "Type a message or add image"
-                    }
-                    rows={1}
-                    spellCheck={false}
-                    value={messageInput}
-                    onChange={(event) => {
-                      const nextValue = event.currentTarget.value.replace(/\u00a0/g, " ");
-                      const encodedMessage = encodeMessageWithReplyContext({
-                        message: nextValue,
-                        replyContext,
-                      });
-                      const signature = `${encodedMessage}::${attachedImage?.imageUrl ?? ""}`;
-                      if (signature !== composerIdempotencyMessageRef.current) {
-                        clearComposerIdempotency();
-                      }
-                      setMessageInput(nextValue);
-                      queueComposerHeightSync(event.currentTarget);
-                    }}
-                    onFocus={() => {
-                      if (!shouldStickToBottomRef.current) {
-                        return;
-                      }
-                      window.requestAnimationFrame(() => {
-                        scrollMessagesToBottom();
-                      });
-                      if (viewportSettleTimeoutRef.current !== null) {
-                        window.clearTimeout(viewportSettleTimeoutRef.current);
-                      }
-                      viewportSettleTimeoutRef.current = window.setTimeout(() => {
-                        scrollMessagesToBottom();
-                        viewportSettleTimeoutRef.current = null;
-                      }, 90);
-                    }}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter" && !event.shiftKey) {
-                        event.preventDefault();
-                        void submitMessage();
-                      }
-                    }}
-                    onPaste={handleComposerPaste}
-                  />
-                </div>
-                {!isEmbedded ? (
                   <Button
                     isIconOnly
-                    aria-label="Close chat"
-                    className="h-9 w-9 min-h-9 min-w-9 self-center text-slate-300 data-[hover=true]:bg-white/6 data-[hover=true]:text-white sm:hidden"
+                    aria-label="Attach image"
+                    className="h-9 w-9 min-h-9 min-w-9 self-center text-[#b9c9e4] data-[hover=true]:bg-white/6 data-[hover=true]:text-white data-[disabled=true]:opacity-45"
+                    isDisabled={pendingSend || pendingImageUpload}
                     type="button"
                     variant="light"
-                    onPress={closeChat}
+                    onPress={openChatImagePicker}
                   >
-                    <X className="h-4 w-4" />
+                    <ImagePlus className="h-4 w-4" />
                   </Button>
-                ) : null}
-                <Button
-                  aria-label="Send message"
-                  className="h-9 w-9 min-h-9 min-w-9 self-center bg-transparent text-[#c4d5ef] shadow-none hover:bg-transparent active:bg-transparent data-[hover=true]:bg-white/6 data-[hover=true]:text-white data-[pressed=true]:bg-transparent data-[disabled=true]:opacity-45"
-                  isIconOnly
-                  isDisabled={
-                    pendingSend ||
-                    pendingImageUpload ||
-                    (messageInput.trim().length === 0 && !attachedImage)
-                  }
-                  isLoading={pendingSend}
-                  type="submit"
-                  variant="light"
-                  onMouseDown={(event) => {
-                    event.preventDefault();
-                  }}
-                  onTouchStart={(event) => {
-                    event.preventDefault();
-                  }}
-                >
-                  <Send className="h-4 w-4" />
-                </Button>
-              </form>
+                  <label className="sr-only" htmlFor={CHAT_COMPOSER_FIELD_ID}>
+                    Type text
+                  </label>
+                  <div className="relative flex-1 rounded-[14px] bg-white/[0.05] transition-colors focus-within:bg-white/[0.07]">
+                    <textarea
+                      ref={chatInputRef}
+                      id={CHAT_COMPOSER_FIELD_ID}
+                      name={CHAT_COMPOSER_FIELD_NAME}
+                      aria-label="Type text"
+                      autoCapitalize="off"
+                      autoComplete="off"
+                      autoCorrect="off"
+                      className={`chat-scrollbar w-full resize-none rounded-[14px] border border-transparent bg-transparent outline-none transition focus:border-transparent focus:ring-1 focus:ring-white/20 ${
+                        isEmbedded
+                          ? "min-h-[30px] max-h-[72px] px-2.5 py-1 text-[13px] leading-[1.1rem] text-[#edf2ff]"
+                          : "min-h-[36px] max-h-[96px] px-3 py-1.5 text-sm leading-5 text-[#edf2ff]"
+                      }`}
+                      data-gramm="false"
+                      enterKeyHint="send"
+                      inputMode="text"
+                      maxLength={messageInputMaxLength}
+                      placeholder={
+                        replyContext
+                          ? `Reply to ${replyContext.senderLabel}`
+                          : "Type a message or add image"
+                      }
+                      rows={1}
+                      spellCheck={false}
+                      value={messageInput}
+                      onChange={(event) => {
+                        const nextValue = event.currentTarget.value.replace(/\u00a0/g, " ");
+                        const encodedMessage = encodeMessageWithReplyContext({
+                          message: nextValue,
+                          replyContext,
+                        });
+                        const signature = `${encodedMessage}::${attachedImage?.imageUrl ?? ""}`;
+                        if (signature !== composerIdempotencyMessageRef.current) {
+                          clearComposerIdempotency();
+                        }
+                        setMessageInput(nextValue);
+                        queueComposerHeightSync(event.currentTarget);
+                      }}
+                      onFocus={() => {
+                        if (!shouldStickToBottomRef.current) {
+                          return;
+                        }
+                        window.requestAnimationFrame(() => {
+                          scrollMessagesToBottom();
+                        });
+                        if (viewportSettleTimeoutRef.current !== null) {
+                          window.clearTimeout(viewportSettleTimeoutRef.current);
+                        }
+                        viewportSettleTimeoutRef.current = window.setTimeout(() => {
+                          scrollMessagesToBottom();
+                          viewportSettleTimeoutRef.current = null;
+                        }, 90);
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" && !event.shiftKey) {
+                          event.preventDefault();
+                          void submitMessage();
+                        }
+                      }}
+                      onPaste={handleComposerPaste}
+                    />
+                  </div>
+                  {!isEmbedded ? (
+                    <Button
+                      isIconOnly
+                      aria-label="Close chat"
+                      className="h-9 w-9 min-h-9 min-w-9 self-center text-slate-300 data-[hover=true]:bg-white/6 data-[hover=true]:text-white sm:hidden"
+                      type="button"
+                      variant="light"
+                      onPress={closeChat}
+                    >
+                      <X className="h-4 w-4" />
+                    </Button>
+                  ) : null}
+                  <Button
+                    aria-label="Send message"
+                    className="h-9 w-9 min-h-9 min-w-9 self-center bg-transparent text-[#c4d5ef] shadow-none hover:bg-transparent active:bg-transparent data-[hover=true]:bg-white/6 data-[hover=true]:text-white data-[pressed=true]:bg-transparent data-[disabled=true]:opacity-45"
+                    isIconOnly
+                    isDisabled={
+                      pendingSend ||
+                      pendingImageUpload ||
+                      (messageInput.trim().length === 0 && !attachedImage)
+                    }
+                    isLoading={pendingSend}
+                    type="submit"
+                    variant="light"
+                    onMouseDown={(event) => {
+                      event.preventDefault();
+                    }}
+                    onTouchStart={(event) => {
+                      event.preventDefault();
+                    }}
+                  >
+                    <Send className="h-4 w-4" />
+                  </Button>
+                </form>
+              </div>
               {error ? <p className="mt-1 text-sm text-danger-400">{error}</p> : null}
             </div>
           </CardBody>
@@ -2832,6 +3685,7 @@ export const GlobalChatPanel = ({
 
       <Modal
         classNames={{ wrapper: "z-[260]" }}
+        hideCloseButton
         isOpen={lightboxImage !== null}
         placement="center"
         size="4xl"
@@ -2850,26 +3704,28 @@ export const GlobalChatPanel = ({
                     <p className="truncate text-[11px] text-[#aabddf]/85 sm:text-xs">
                       {lightboxImage.senderLabel} · {formatTime(lightboxImage.createdAt)}
                     </p>
-                    <div className="flex items-center gap-1">
+                    <div className="flex items-center gap-2">
                       <Button
-                        className="h-8 min-h-8 bg-white/10 px-2.5 text-[11px] text-[#dbe7fb] data-[hover=true]:bg-white/15"
+                        isIconOnly
+                        aria-label="Open image in new tab"
+                        className="h-9 w-9 min-h-9 min-w-9 text-[#dbe7fb] data-[hover=true]:bg-white/10 data-[hover=true]:text-white"
                         size="sm"
-                        variant="flat"
+                        variant="light"
                         onPress={() => {
                           window.open(lightboxImage.imageUrl, "_blank", "noopener,noreferrer");
                         }}
                       >
-                        Open
+                        <ExternalLink className="h-4.5 w-4.5" />
                       </Button>
                       <Button
                         isIconOnly
                         aria-label="Close image viewer"
-                        className="h-8 w-8 min-h-8 min-w-8 text-[#c5d5ef] data-[hover=true]:bg-white/10 data-[hover=true]:text-white"
+                        className="h-10 w-10 min-h-10 min-w-10 rounded-full text-[#c5d5ef] data-[hover=true]:bg-white/10 data-[hover=true]:text-white"
                         size="sm"
                         variant="light"
                         onPress={onClose}
                       >
-                        <X className="h-4 w-4" />
+                        <X className="h-5 w-5" />
                       </Button>
                     </div>
                   </div>
@@ -2890,19 +3746,25 @@ export const GlobalChatPanel = ({
 
       {!isEmbedded ? (
         <Button
+          isIconOnly={isPanelOpen}
+          aria-label={isPanelOpen ? "Close chat" : "Open chat"}
           className={`pointer-events-auto relative z-10 rounded-full border border-[#C79B3B]/80 bg-[#C79B3B] text-[#2a2006] shadow-none transition-colors hover:bg-[#C79B3B] active:bg-[#C79B3B] data-[hover=true]:bg-[#C79B3B] data-[pressed=true]:bg-[#C79B3B] ${
-            isPanelOpen ? "hidden sm:inline-flex" : ""
+            isPanelOpen ? "hidden h-11 w-11 min-h-11 min-w-11 px-0 sm:inline-flex" : ""
           }`}
           color="default"
           radius="full"
           variant="solid"
           onPress={toggleChat}
         >
-          <span className="inline-flex items-center gap-2">
-            <MessageCircle className="h-4 w-4" />
-            Chat
-          </span>
-          {unreadCount > 0 ? (
+          {isPanelOpen ? (
+            <X className="h-4 w-4" />
+          ) : (
+            <span className="inline-flex items-center gap-2">
+              <MessageCircle className="h-4 w-4" />
+              Chat
+            </span>
+          )}
+          {!isPanelOpen && unreadCount > 0 ? (
             <span className="ml-2 inline-flex min-w-5 items-center justify-center rounded-full border border-[#C79B3B]/50 bg-[#121f34] px-1.5 text-[11px] font-semibold text-[#C79B3B]">
               {unreadCount > 99 ? "99+" : unreadCount}
             </span>

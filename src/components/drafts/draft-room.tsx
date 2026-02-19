@@ -5975,7 +5975,7 @@ export const DraftRoom = ({
                   <p className="text-xs text-default-500">Chat is hidden.</p>
                 </CardBody>
               ) : (
-                <CardBody className="h-full min-h-0 p-1.5 pt-0">
+                <CardBody className="h-full min-h-0 px-1.5 pt-0 pb-0">
                   <GlobalChatPanel
                     className="h-full"
                     currentUserId={currentUserId}

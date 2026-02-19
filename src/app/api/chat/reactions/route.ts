@@ -2,6 +2,7 @@ import { requireAuthUser } from "@/lib/draft-auth";
 import {
   formatChatReactionUserLabel,
   GlobalChatError,
+  listGlobalChatReactionsForMessage,
   toggleGlobalChatReaction,
 } from "@/lib/global-chat";
 import { getSupabaseAuthServerClient } from "@/lib/supabase-auth-server";
@@ -57,6 +58,32 @@ export async function POST(request: Request) {
       }
     }
     const message = error instanceof Error ? error.message : "Unable to toggle reaction.";
+    const status = message === "UNAUTHORIZED" ? 401 : 500;
+    return Response.json({ error: message }, { status });
+  }
+}
+
+export async function GET(request: Request) {
+  try {
+    const supabase = await getSupabaseAuthServerClient();
+    await requireAuthUser(supabase);
+    const { searchParams } = new URL(request.url);
+    const messageId = parseMessageId(searchParams.get("messageId"));
+    const result = await listGlobalChatReactionsForMessage({
+      supabase,
+      messageId,
+    });
+    return Response.json(result, { status: 200 });
+  } catch (error) {
+    if (error instanceof GlobalChatError) {
+      if (error.code === "UNAUTHORIZED") {
+        return Response.json({ error: error.message, code: error.code }, { status: 401 });
+      }
+      if (INVALID_REQUEST_CODES.has(error.code ?? "")) {
+        return Response.json({ error: error.message, code: error.code }, { status: 400 });
+      }
+    }
+    const message = error instanceof Error ? error.message : "Unable to load reactions.";
     const status = message === "UNAUTHORIZED" ? 401 : 500;
     return Response.json({ error: message }, { status });
   }
