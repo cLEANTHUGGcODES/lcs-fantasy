@@ -189,6 +189,63 @@ const hasReactionFromUser = (
 
 const reactionStateKey = (messageId: number, emoji: string): string => `${messageId}:${emoji}`;
 
+const formatOptimisticReactionLabel = (value: string): string => {
+  const compact = compactSenderLabel(value).replace(/\s+/g, " ").trim();
+  if (!compact) {
+    return "You";
+  }
+  const parts = compact.split(" ").filter(Boolean);
+  if (parts.length === 1) {
+    return parts[0];
+  }
+  const firstName = parts[0];
+  const lastInitial = parts[parts.length - 1]?.[0]?.toUpperCase();
+  return lastInitial ? `${firstName} ${lastInitial}.` : firstName;
+};
+
+const upsertReactionUsersForEmoji = ({
+  reactions,
+  emoji,
+  users,
+}: {
+  reactions: GlobalChatReaction[];
+  emoji: string;
+  users: GlobalChatReaction["users"] | null;
+}): GlobalChatReaction[] => {
+  const normalizedEmoji = emoji.trim();
+  if (!normalizedEmoji) {
+    return normalizeMessageReactions(reactions);
+  }
+
+  const nextUsersMap = new Map<string, string>();
+  for (const entry of users ?? []) {
+    const userId = entry.userId.trim();
+    const label = entry.label.trim();
+    if (!userId || !label || nextUsersMap.has(userId)) {
+      continue;
+    }
+    nextUsersMap.set(userId, label);
+  }
+
+  const withoutEmoji = normalizeMessageReactions(reactions).filter(
+    (entry) => entry.emoji !== normalizedEmoji,
+  );
+  if (nextUsersMap.size === 0) {
+    return withoutEmoji;
+  }
+
+  return normalizeMessageReactions([
+    ...withoutEmoji,
+    {
+      emoji: normalizedEmoji,
+      users: [...nextUsersMap.entries()].map(([userId, label]) => ({
+        userId,
+        label,
+      })),
+    },
+  ]);
+};
+
 const mergeIncomingMessages = (
   existing: GlobalChatMessage[],
   incoming: GlobalChatMessage[],
@@ -722,6 +779,7 @@ export const GlobalChatPanel = ({
   const reactionSyncQueuedRef = useRef(false);
   const messagesRef = useRef<GlobalChatMessage[]>([]);
   const pendingReactionByKeyRef = useRef<Record<string, boolean>>({});
+  const optimisticReactionRollbackByKeyRef = useRef<Record<string, GlobalChatReaction["users"] | null>>({});
   const wakeSyncTimeoutRef = useRef<number | null>(null);
   const lastRealtimeStatusRef = useRef<string | null>(null);
   const composerIdempotencyKeyRef = useRef<string | null>(null);
@@ -734,6 +792,13 @@ export const GlobalChatPanel = ({
   const metricsFlushInFlightRef = useRef(false);
   const isPanelOpen = isEmbedded ? true : isOpen;
   const sortedMessages = messages;
+  const currentUserReactionLabel = useMemo(() => {
+    const ownMessage = [...sortedMessages].reverse().find((entry) => entry.userId === currentUserId);
+    if (!ownMessage) {
+      return "You";
+    }
+    return formatOptimisticReactionLabel(ownMessage.senderLabel);
+  }, [currentUserId, sortedMessages]);
   const messageInputMaxLength = useMemo(
     () => maxComposerLengthForReply(replyContext),
     [replyContext],
@@ -980,9 +1045,9 @@ export const GlobalChatPanel = ({
           }
         }
       } finally {
-      incrementalSyncInFlightRef.current = false;
-    }
-  })();
+        incrementalSyncInFlightRef.current = false;
+      }
+    })();
   }, [loadMessages]);
 
   useEffect(() => {
@@ -1015,6 +1080,48 @@ export const GlobalChatPanel = ({
           return {
             ...entry,
             reactions: normalizedReactions,
+          };
+        });
+        return changed ? nextMessages : currentMessages;
+      });
+    },
+    [],
+  );
+
+  const applyReactionUsersToMessageEmoji = useCallback(
+    ({
+      messageId,
+      emoji,
+      users,
+    }: {
+      messageId: number;
+      emoji: string;
+      users: GlobalChatReaction["users"] | null;
+    }) => {
+      const normalizedMessageId = Math.max(1, Math.floor(messageId));
+      const normalizedEmoji = emoji.trim();
+      if (!normalizedMessageId || !normalizedEmoji) {
+        return;
+      }
+
+      setMessages((currentMessages) => {
+        let changed = false;
+        const nextMessages = currentMessages.map((entry) => {
+          if (toMessageId(entry.id) !== normalizedMessageId) {
+            return entry;
+          }
+          const nextReactions = upsertReactionUsersForEmoji({
+            reactions: entry.reactions,
+            emoji: normalizedEmoji,
+            users,
+          });
+          if (reactionSignature(entry.reactions) === reactionSignature(nextReactions)) {
+            return entry;
+          }
+          changed = true;
+          return {
+            ...entry,
+            reactions: nextReactions,
           };
         });
         return changed ? nextMessages : currentMessages;
@@ -1648,6 +1755,31 @@ export const GlobalChatPanel = ({
         return;
       }
 
+      const messageSnapshot = messagesRef.current.find(
+        (entry) => toMessageId(entry.id) === normalizedMessageId,
+      );
+      if (!messageSnapshot) {
+        return;
+      }
+
+      const normalizedReactions = normalizeMessageReactions(messageSnapshot.reactions);
+      const matchingReaction = normalizedReactions.find((entry) => entry.emoji === normalizedEmoji);
+      const previousUsers = matchingReaction ? [...matchingReaction.users] : null;
+      const optimisticUsers = (() => {
+        const currentUsers = matchingReaction?.users ?? [];
+        const hasCurrentUser = currentUsers.some((entry) => entry.userId === currentUserId);
+        if (hasCurrentUser) {
+          return currentUsers.filter((entry) => entry.userId !== currentUserId);
+        }
+        return [
+          ...currentUsers,
+          {
+            userId: currentUserId,
+            label: currentUserReactionLabel,
+          },
+        ];
+      })();
+
       if (closeActionBar) {
         setHiddenActionBarMessageId(normalizedMessageId);
         setHoveredActionBarMessageId(null);
@@ -1657,6 +1789,12 @@ export const GlobalChatPanel = ({
         ...current,
         [key]: true,
       }));
+      optimisticReactionRollbackByKeyRef.current[key] = previousUsers;
+      applyReactionUsersToMessageEmoji({
+        messageId: normalizedMessageId,
+        emoji: normalizedEmoji,
+        users: optimisticUsers,
+      });
       setError(null);
       try {
         const response = await fetch("/api/chat/reactions", {
@@ -1675,8 +1813,17 @@ export const GlobalChatPanel = ({
         }
         applyReactionsToMessage(payload.messageId, payload.reactions);
       } catch (reactionError) {
+        if (Object.prototype.hasOwnProperty.call(optimisticReactionRollbackByKeyRef.current, key)) {
+          applyReactionUsersToMessageEmoji({
+            messageId: normalizedMessageId,
+            emoji: normalizedEmoji,
+            users: optimisticReactionRollbackByKeyRef.current[key] ?? null,
+          });
+        }
+        queueReactionSync();
         setError(reactionError instanceof Error ? reactionError.message : "Unable to update reaction.");
       } finally {
+        delete optimisticReactionRollbackByKeyRef.current[key];
         setPendingReactionByKey((current) => {
           if (!current[key]) {
             return current;
@@ -1687,7 +1834,13 @@ export const GlobalChatPanel = ({
         });
       }
     },
-    [applyReactionsToMessage],
+    [
+      applyReactionUsersToMessageEmoji,
+      applyReactionsToMessage,
+      currentUserId,
+      currentUserReactionLabel,
+      queueReactionSync,
+    ],
   );
 
   const handleReplyToMessage = useCallback(
@@ -1981,7 +2134,9 @@ export const GlobalChatPanel = ({
                               ) : null}
                             </div>
                             {entryReactions.length > 0 ? (
-                              <div className="absolute bottom-0 left-1 z-10 inline-flex items-center gap-0.5 translate-y-[75%]">
+                              <div className={`absolute bottom-0 z-10 inline-flex items-center gap-0.5 translate-y-[75%] ${
+                                group.isCurrentUser ? "right-1" : "left-1"
+                              }`}>
                                 {entryReactions.map((reaction) => {
                                   const reactionKey = reactionStateKey(entryMessageId, reaction.emoji);
                                   const isReactionPending = pendingReactionByKey[reactionKey] === true;
