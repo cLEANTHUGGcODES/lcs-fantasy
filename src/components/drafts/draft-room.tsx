@@ -458,6 +458,16 @@ const DRAFT_SETTINGS_STORAGE_KEY = "draft-room-settings-v1";
 const DRAFT_ROOM_DESKTOP_CHAT_COLLAPSE_KEY = "draft-room-desktop-chat-collapsed-v1";
 const MAIN_TOP_BG_YOUTUBE_VIDEO_ID = "xBCBOoHyeSU";
 const MAIN_TOP_BG_YOUTUBE_EMBED_SRC = `https://www.youtube.com/embed/${MAIN_TOP_BG_YOUTUBE_VIDEO_ID}?autoplay=1&mute=1&controls=0&loop=1&playlist=${MAIN_TOP_BG_YOUTUBE_VIDEO_ID}&modestbranding=1&rel=0&playsinline=1&iv_load_policy=3&disablekb=1`;
+const DRAFT_ROOM_CURSOR_IMAGE_SRC = "/img/cursor.png";
+const MOUSE_TRAIL_IMAGE_SRC = "/img/mousetrail.png";
+const MOUSE_TRAIL_MAX_SPRITES = 14;
+const MOUSE_TRAIL_MIN_SPAWN_INTERVAL_MS = 120;
+const MOUSE_TRAIL_MAX_SPAWN_INTERVAL_MS = 300;
+const MOUSE_TRAIL_SPAWN_INTERVAL_MS = MOUSE_TRAIL_MIN_SPAWN_INTERVAL_MS;
+const MOUSE_TRAIL_MIN_DISTANCE_PX = 14;
+const MOUSE_TRAIL_SPAWN_CHANCE = 0.64;
+const MOUSE_TRAIL_BURST_CHANCE = 0.22;
+const MOUSE_TRAIL_LIFETIME_MS = 1400;
 const QUEUE_BG_IMAGE_SRC = "/img/queue_bg_1.jpg?v=20260218-1";
 const TOP_SECTION_BORDER_GRADIENT =
   "conic-gradient(from 0deg, rgba(56, 189, 248, 0.85), rgba(147, 197, 253, 0.95), rgba(199, 155, 59, 0.9), rgba(248, 113, 113, 0.85), rgba(56, 189, 248, 0.85))";
@@ -517,6 +527,14 @@ type DraftSystemFeedEvent = {
   label: string;
   overallPick?: number;
   createdAtMs: number;
+};
+
+type MouseTrailSprite = {
+  id: number;
+  x: number;
+  y: number;
+  size: number;
+  rotation: number;
 };
 
 type StateBannerColor =
@@ -1402,6 +1420,17 @@ export const DraftRoom = ({
   const hasHydratedQueueRef = useRef(false);
   const [lastDraftSyncMs, setLastDraftSyncMs] = useState(() => Date.now());
   const deferredSearchTerm = useDeferredValue(searchTerm);
+  const [mouseTrailSprites, setMouseTrailSprites] = useState<MouseTrailSprite[]>([]);
+  const mouseTrailSpriteIdRef = useRef(0);
+  const mouseTrailLastSpawnRef = useRef<{ x: number; y: number; at: number } | null>(null);
+  const mouseTrailNextSpawnAtRef = useRef(0);
+  const mouseTrailPendingPointRef = useRef<{ x: number; y: number } | null>(null);
+  const mouseTrailSpawnRafRef = useRef<number | null>(null);
+  const mouseTrailRemovalTimeoutIdsRef = useRef<number[]>([]);
+  const [customCursorPosition, setCustomCursorPosition] = useState<{ x: number; y: number } | null>(null);
+  const [isCustomCursorVisible, setIsCustomCursorVisible] = useState(false);
+  const customCursorPendingPointRef = useRef<{ x: number; y: number } | null>(null);
+  const customCursorPaintRafRef = useRef<number | null>(null);
 
   const queueClientMetric = useCallback(
     (
@@ -2389,6 +2418,201 @@ export const DraftRoom = ({
       mediaQuery.removeEventListener("change", syncViewport);
     };
   }, []);
+
+  useEffect(() => {
+    return () => {
+      if (customCursorPaintRafRef.current !== null) {
+        window.cancelAnimationFrame(customCursorPaintRafRef.current);
+        customCursorPaintRafRef.current = null;
+      }
+    };
+  }, []);
+
+  const scheduleCustomCursorPaint = useCallback(() => {
+    if (customCursorPaintRafRef.current !== null) {
+      return;
+    }
+    customCursorPaintRafRef.current = window.requestAnimationFrame(() => {
+      customCursorPaintRafRef.current = null;
+      const pendingPoint = customCursorPendingPointRef.current;
+      if (!pendingPoint) {
+        return;
+      }
+      setCustomCursorPosition((previous) => {
+        if (
+          previous &&
+          Math.abs(previous.x - pendingPoint.x) < 0.5 &&
+          Math.abs(previous.y - pendingPoint.y) < 0.5
+        ) {
+          return previous;
+        }
+        return pendingPoint;
+      });
+    });
+  }, []);
+
+  const handleDraftRoomMouseMove = useCallback((event: ReactMouseEvent<HTMLElement>) => {
+    if (isMobileViewport) {
+      return;
+    }
+    customCursorPendingPointRef.current = {
+      x: event.clientX,
+      y: event.clientY,
+    };
+    scheduleCustomCursorPaint();
+    setIsCustomCursorVisible(true);
+  }, [isMobileViewport, scheduleCustomCursorPaint]);
+
+  const handleDraftRoomMouseEnter = useCallback((event: ReactMouseEvent<HTMLElement>) => {
+    if (isMobileViewport) {
+      return;
+    }
+    customCursorPendingPointRef.current = {
+      x: event.clientX,
+      y: event.clientY,
+    };
+    scheduleCustomCursorPaint();
+    setIsCustomCursorVisible(true);
+  }, [isMobileViewport, scheduleCustomCursorPaint]);
+
+  const handleDraftRoomMouseLeave = useCallback(() => {
+    setIsCustomCursorVisible(false);
+  }, []);
+
+  useEffect(() => {
+    if (!isMobileViewport) {
+      return;
+    }
+    setIsCustomCursorVisible(false);
+    setCustomCursorPosition(null);
+    customCursorPendingPointRef.current = null;
+  }, [isMobileViewport]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || isMobileViewport || prefersReducedMotion) {
+      if (mouseTrailSpawnRafRef.current !== null) {
+        window.cancelAnimationFrame(mouseTrailSpawnRafRef.current);
+        mouseTrailSpawnRafRef.current = null;
+      }
+      for (const timeoutId of mouseTrailRemovalTimeoutIdsRef.current) {
+        window.clearTimeout(timeoutId);
+      }
+      mouseTrailRemovalTimeoutIdsRef.current = [];
+      mouseTrailPendingPointRef.current = null;
+      mouseTrailLastSpawnRef.current = null;
+      mouseTrailNextSpawnAtRef.current = 0;
+      setMouseTrailSprites((previous) => (previous.length > 0 ? [] : previous));
+      return;
+    }
+
+    const queueSpriteRemoval = (spriteId: number) => {
+      const timeoutId = window.setTimeout(() => {
+        mouseTrailRemovalTimeoutIdsRef.current = mouseTrailRemovalTimeoutIdsRef.current.filter(
+          (entry) => entry !== timeoutId,
+        );
+        setMouseTrailSprites((previous) =>
+          previous.filter((entry) => entry.id !== spriteId),
+        );
+      }, MOUSE_TRAIL_LIFETIME_MS);
+      mouseTrailRemovalTimeoutIdsRef.current.push(timeoutId);
+    };
+
+    const spawnSprite = (x: number, y: number) => {
+      const id = mouseTrailSpriteIdRef.current + 1;
+      mouseTrailSpriteIdRef.current = id;
+      const size = 18 + (id % 5) * 2;
+      const rotation = ((id * 13) % 28) - 14;
+      const sprite: MouseTrailSprite = {
+        id,
+        x,
+        y,
+        size,
+        rotation,
+      };
+      setMouseTrailSprites((previous) =>
+        [...previous.slice(-(MOUSE_TRAIL_MAX_SPRITES - 1)), sprite],
+      );
+      queueSpriteRemoval(id);
+    };
+
+    const handleMouseMove = (event: MouseEvent) => {
+      mouseTrailPendingPointRef.current = {
+        x: event.clientX,
+        y: event.clientY,
+      };
+      if (mouseTrailSpawnRafRef.current !== null) {
+        return;
+      }
+
+      mouseTrailSpawnRafRef.current = window.requestAnimationFrame(() => {
+        mouseTrailSpawnRafRef.current = null;
+        const pendingPoint = mouseTrailPendingPointRef.current;
+        if (!pendingPoint) {
+          return;
+        }
+
+        const now = performance.now();
+        if (now < mouseTrailNextSpawnAtRef.current) {
+          return;
+        }
+
+        const lastSpawn = mouseTrailLastSpawnRef.current;
+        if (lastSpawn) {
+          const distance = Math.hypot(
+            pendingPoint.x - lastSpawn.x,
+            pendingPoint.y - lastSpawn.y,
+          );
+          if (distance < MOUSE_TRAIL_MIN_DISTANCE_PX) {
+            return;
+          }
+        }
+
+        const nextIntervalMs =
+          MOUSE_TRAIL_SPAWN_INTERVAL_MS +
+          Math.random() * (MOUSE_TRAIL_MAX_SPAWN_INTERVAL_MS - MOUSE_TRAIL_MIN_SPAWN_INTERVAL_MS);
+        mouseTrailNextSpawnAtRef.current = now + nextIntervalMs;
+        if (Math.random() > MOUSE_TRAIL_SPAWN_CHANCE) {
+          return;
+        }
+
+        mouseTrailLastSpawnRef.current = {
+          x: pendingPoint.x,
+          y: pendingPoint.y,
+          at: now,
+        };
+        const spawnCount = Math.random() < MOUSE_TRAIL_BURST_CHANCE ? 2 : 1;
+        for (let index = 0; index < spawnCount; index += 1) {
+          const xJitter = (Math.random() - 0.5) * 14;
+          const yJitter = (Math.random() - 0.5) * 10;
+          spawnSprite(pendingPoint.x + xJitter, pendingPoint.y + yJitter);
+        }
+      });
+    };
+
+    const handleMouseLeave = () => {
+      mouseTrailPendingPointRef.current = null;
+    };
+
+    window.addEventListener("mousemove", handleMouseMove, { passive: true });
+    window.addEventListener("mouseleave", handleMouseLeave);
+
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseleave", handleMouseLeave);
+      if (mouseTrailSpawnRafRef.current !== null) {
+        window.cancelAnimationFrame(mouseTrailSpawnRafRef.current);
+        mouseTrailSpawnRafRef.current = null;
+      }
+      for (const timeoutId of mouseTrailRemovalTimeoutIdsRef.current) {
+        window.clearTimeout(timeoutId);
+      }
+      mouseTrailRemovalTimeoutIdsRef.current = [];
+      mouseTrailPendingPointRef.current = null;
+      mouseTrailLastSpawnRef.current = null;
+      mouseTrailNextSpawnAtRef.current = 0;
+      setMouseTrailSprites((previous) => (previous.length > 0 ? [] : previous));
+    };
+  }, [isMobileViewport, prefersReducedMotion]);
 
   useEffect(() => {
     const isCurrentUserClocked =
@@ -4174,6 +4398,7 @@ export const DraftRoom = ({
 
   return (
     <section
+      data-draft-room-custom-cursor={!isMobileViewport ? "true" : "false"}
       className={`space-y-5 pb-24 md:pb-6 ${
         isMobileViewport &&
         isLiveState &&
@@ -4187,7 +4412,85 @@ export const DraftRoom = ({
           ? "rounded-large border border-primary-300/30 bg-primary-500/[0.04] p-2 shadow-[0_0_0_1px_rgba(147,197,253,0.2)]"
           : ""
       }`}
+      onMouseEnter={handleDraftRoomMouseEnter}
+      onMouseLeave={handleDraftRoomMouseLeave}
+      onMouseMove={handleDraftRoomMouseMove}
     >
+      <style jsx global>{`
+        @media (hover: hover) and (pointer: fine) {
+          [data-draft-room-custom-cursor="true"],
+          [data-draft-room-custom-cursor="true"] * {
+            cursor: none !important;
+          }
+        }
+      `}</style>
+      {!isMobileViewport && isCustomCursorVisible && customCursorPosition ? (
+        <div
+          aria-hidden
+          className="pointer-events-none fixed left-0 top-0 z-[90]"
+          style={{
+            transform: `translate3d(${customCursorPosition.x - 13}px, ${customCursorPosition.y - 8}px, 0)`,
+          }}
+        >
+          <Image
+            alt=""
+            aria-hidden
+            className="h-12 w-auto select-none"
+            height={418}
+            src={DRAFT_ROOM_CURSOR_IMAGE_SRC}
+            width={330}
+          />
+        </div>
+      ) : null}
+      {!isMobileViewport && !prefersReducedMotion ? (
+        <div
+          aria-hidden
+          className="pointer-events-none fixed inset-0 z-40 overflow-hidden"
+        >
+          <AnimatePresence initial={false}>
+            {mouseTrailSprites.map((sprite) => (
+              <motion.div
+                key={sprite.id}
+                className="absolute"
+                style={{
+                  left: sprite.x,
+                  top: sprite.y,
+                  width: sprite.size,
+                  height: sprite.size,
+                }}
+                animate={{
+                  opacity: [0, 0.94, 0.74, 0],
+                  scale: [0.55, 0.94, 1.02, 1.08],
+                  x: [-sprite.size / 2, -sprite.size / 2 + 2, -sprite.size / 2 + 3, -sprite.size / 2 + 4],
+                  y: [-sprite.size / 2, -sprite.size / 2 + 10, -sprite.size / 2 + 26, -sprite.size / 2 + 42],
+                  rotate: [sprite.rotation - 8, sprite.rotation + 2, sprite.rotation + 11, sprite.rotation + 20],
+                }}
+                initial={{
+                  opacity: 0,
+                  scale: 0.55,
+                  x: -sprite.size / 2,
+                  y: -sprite.size / 2,
+                  rotate: sprite.rotation - 8,
+                }}
+                transition={{
+                  duration: MOUSE_TRAIL_LIFETIME_MS / 1000,
+                  ease: [0.22, 1, 0.36, 1],
+                  times: [0, 0.2, 0.72, 1],
+                }}
+              >
+                <Image
+                  alt=""
+                  aria-hidden
+                  className="h-full w-full select-none object-contain"
+                  height={sprite.size}
+                  src={MOUSE_TRAIL_IMAGE_SRC}
+                  width={sprite.size}
+                />
+              </motion.div>
+            ))}
+          </AnimatePresence>
+        </div>
+      ) : null}
       <div className="pointer-events-none fixed bottom-3 right-3 z-50 flex w-[min(22rem,calc(100vw-1.5rem))] flex-col gap-2">
         <AnimatePresence initial={false}>
           {toastNotices.map((toast) => (
@@ -4247,7 +4550,7 @@ export const DraftRoom = ({
           >
             <iframe
               allow="autoplay; encrypted-media; picture-in-picture"
-              className="absolute left-1/2 top-1/2 h-[56.25vw] min-h-full w-[177.78vw] min-w-full -translate-x-1/2 -translate-y-1/2"
+              className="absolute left-1/2 top-1/2 aspect-video h-full min-w-full -translate-x-1/2 -translate-y-1/2 scale-[1.6] grayscale"
               loading="lazy"
               src={MAIN_TOP_BG_YOUTUBE_EMBED_SRC}
               tabIndex={-1}
