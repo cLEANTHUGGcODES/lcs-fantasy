@@ -88,6 +88,8 @@ type DraftClientMetricName =
   | "client_draft_presence_latency_ms"
   | "client_draft_pick_latency_ms"
   | "client_draft_status_latency_ms"
+  | "client_draft_apply_latency_ms"
+  | "client_draft_queue_persist_latency_ms"
   | "client_realtime_disconnect"
   | "client_refresh_retry";
 
@@ -473,6 +475,7 @@ const DRAFT_CLIENT_METRICS_FLUSH_INTERVAL_MS = 30000;
 const DRAFT_CLIENT_METRICS_MAX_BATCH = 24;
 const DRAFT_CLIENT_METRICS_MAX_QUEUE = 120;
 const DRAFT_CLIENT_METRICS_MAX_VALUE = 600000;
+const QUEUE_STORAGE_WRITE_DEBOUNCE_MS = 140;
 const ROLE_SCARCITY_THRESHOLD = 2;
 const QUEUE_EMPTY_AUTOPICK_WARNING =
   "Queue empty - autopick will use Best Available with server constraints.";
@@ -687,6 +690,21 @@ const compareAutopickCandidates = (
 
 const queueStorageKeyFor = (draftId: number, userId: string): string =>
   `draft-room-queue-v1:${draftId}:${userId}`;
+
+const areStringArraysEqual = (left: string[], right: string[]): boolean => {
+  if (left === right) {
+    return true;
+  }
+  if (left.length !== right.length) {
+    return false;
+  }
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) {
+      return false;
+    }
+  }
+  return true;
+};
 
 const DESKTOP_PLAYER_TABLE_ROW_HEIGHT_PX = 44;
 const DESKTOP_PLAYER_TABLE_OVERSCAN_ROWS = 10;
@@ -1265,6 +1283,42 @@ const DraftClockBadge = ({
   );
 };
 
+const DraftCountdownLabel = memo(({
+  deadlineIso,
+  serverOffsetMs,
+  className,
+}: {
+  deadlineIso: string | null;
+  serverOffsetMs: number;
+  className?: string;
+}) => {
+  const [countdownLabel, setCountdownLabel] = useState(() =>
+    formatCountdown(deadlineIso, Date.now() + serverOffsetMs),
+  );
+
+  useEffect(() => {
+    const updateLabel = () => {
+      setCountdownLabel((previous) => {
+        const next = formatCountdown(deadlineIso, Date.now() + serverOffsetMs);
+        return next === previous ? previous : next;
+      });
+    };
+
+    updateLabel();
+    if (!deadlineIso) {
+      return;
+    }
+
+    const id = window.setInterval(updateLabel, 250);
+    return () => {
+      window.clearInterval(id);
+    };
+  }, [deadlineIso, serverOffsetMs]);
+
+  return <span className={className}>{countdownLabel}</span>;
+});
+DraftCountdownLabel.displayName = "DraftCountdownLabel";
+
 export const DraftRoom = ({
   draftId,
   currentUserId,
@@ -1341,17 +1395,69 @@ export const DraftRoom = ({
   const clientMetricsFlushInFlightRef = useRef(false);
   const autoPickAutoEnabledForPickRef = useRef<string | null>(null);
   const draggedQueueIndexRef = useRef<number | null>(null);
+  const pickQueueRef = useRef<string[]>([]);
+  const pickQueueChangeStartedAtRef = useRef<number | null>(null);
+  const pickQueuePersistTimerRef = useRef<number | null>(null);
+  const suppressPickQueuePersistMetricRef = useRef(false);
+  const hasHydratedQueueRef = useRef(false);
   const [lastDraftSyncMs, setLastDraftSyncMs] = useState(() => Date.now());
   const deferredSearchTerm = useDeferredValue(searchTerm);
 
-  const applyDraft = useCallback((nextDraft: DraftDetail) => {
+  const queueClientMetric = useCallback(
+    (
+      metricName: DraftClientMetricName,
+      metricValue: number,
+      metadata?: Record<string, unknown>,
+    ) => {
+      if (!Number.isFinite(metricValue)) {
+        return;
+      }
+      const normalizedValue = Math.max(
+        0,
+        Math.min(Math.floor(metricValue), DRAFT_CLIENT_METRICS_MAX_VALUE),
+      );
+      if (normalizedValue < 1) {
+        return;
+      }
+      clientMetricsQueueRef.current.push({
+        metricName,
+        metricValue: normalizedValue,
+        metadata,
+      });
+      if (clientMetricsQueueRef.current.length > DRAFT_CLIENT_METRICS_MAX_QUEUE) {
+        clientMetricsQueueRef.current = clientMetricsQueueRef.current.slice(
+          clientMetricsQueueRef.current.length - DRAFT_CLIENT_METRICS_MAX_QUEUE,
+        );
+      }
+    },
+    [],
+  );
+
+  const applyDraft = useCallback((
+    nextDraft: DraftDetail,
+    {
+      source,
+      applyStartedAt,
+    }: {
+      source?: string;
+      applyStartedAt?: number;
+    } = {},
+  ) => {
     setDraft(nextDraft);
     setLastDraftSyncMs(Date.now());
     const serverNowMs = new Date(nextDraft.serverNow).getTime();
     if (Number.isFinite(serverNowMs)) {
       setServerOffsetMs(serverNowMs - Date.now());
     }
-  }, []);
+    if (typeof applyStartedAt === "number") {
+      queueClientMetric("client_draft_apply_latency_ms", performance.now() - applyStartedAt, {
+        source: source ?? "unknown",
+        draftId: nextDraft.id,
+        pickCount: nextDraft.pickCount,
+        status: nextDraft.status,
+      });
+    }
+  }, [queueClientMetric]);
 
   const dismissToast = useCallback((toastId: number) => {
     setToastNotices((prev) => prev.filter((entry) => entry.id !== toastId));
@@ -1385,36 +1491,6 @@ export const DraftRoom = ({
       [...previous, { id, label, overallPick, createdAtMs }].slice(-60),
     );
   }, []);
-
-  const queueClientMetric = useCallback(
-    (
-      metricName: DraftClientMetricName,
-      metricValue: number,
-      metadata?: Record<string, unknown>,
-    ) => {
-      if (!Number.isFinite(metricValue)) {
-        return;
-      }
-      const normalizedValue = Math.max(
-        0,
-        Math.min(Math.floor(metricValue), DRAFT_CLIENT_METRICS_MAX_VALUE),
-      );
-      if (normalizedValue < 1) {
-        return;
-      }
-      clientMetricsQueueRef.current.push({
-        metricName,
-        metricValue: normalizedValue,
-        metadata,
-      });
-      if (clientMetricsQueueRef.current.length > DRAFT_CLIENT_METRICS_MAX_QUEUE) {
-        clientMetricsQueueRef.current = clientMetricsQueueRef.current.slice(
-          clientMetricsQueueRef.current.length - DRAFT_CLIENT_METRICS_MAX_QUEUE,
-        );
-      }
-    },
-    [],
-  );
 
   const flushClientMetrics = useCallback(async () => {
     if (clientMetricsFlushInFlightRef.current) {
@@ -1579,7 +1655,11 @@ export const DraftRoom = ({
         throw new Error(payload.error ?? "Unable to load draft.");
       }
 
-      applyDraft(payload.draft);
+      const applyStartedAt = performance.now();
+      applyDraft(payload.draft, {
+        source: processDue ? "refresh_process_due" : "refresh",
+        applyStartedAt,
+      });
     } finally {
       queueClientMetric("client_draft_refresh_latency_ms", performance.now() - startedAt, {
         statusCode: responseStatus,
@@ -1760,16 +1840,25 @@ export const DraftRoom = ({
       return;
     }
     setIsQueueHydrated(false);
+    hasHydratedQueueRef.current = false;
     const storageKey = queueStorageKeyFor(draftId, currentUserId);
     try {
       const raw = window.localStorage.getItem(storageKey);
       if (!raw) {
+        pickQueueRef.current = [];
+        pickQueueChangeStartedAtRef.current = null;
+        suppressPickQueuePersistMetricRef.current = true;
+        hasHydratedQueueRef.current = true;
         setPickQueue([]);
         setIsQueueHydrated(true);
         return;
       }
       const parsed = JSON.parse(raw);
       if (!Array.isArray(parsed)) {
+        pickQueueRef.current = [];
+        pickQueueChangeStartedAtRef.current = null;
+        suppressPickQueuePersistMetricRef.current = true;
+        hasHydratedQueueRef.current = true;
         setPickQueue([]);
         setIsQueueHydrated(true);
         return;
@@ -1777,21 +1866,128 @@ export const DraftRoom = ({
       const normalized = parsed
         .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
         .filter((entry): entry is string => Boolean(entry));
-      setPickQueue([...new Set(normalized)]);
+      const nextQueue = [...new Set(normalized)];
+      pickQueueRef.current = nextQueue;
+      pickQueueChangeStartedAtRef.current = null;
+      suppressPickQueuePersistMetricRef.current = true;
+      hasHydratedQueueRef.current = true;
+      setPickQueue(nextQueue);
       setIsQueueHydrated(true);
     } catch {
+      pickQueueRef.current = [];
+      pickQueueChangeStartedAtRef.current = null;
+      suppressPickQueuePersistMetricRef.current = true;
+      hasHydratedQueueRef.current = true;
       setPickQueue([]);
       setIsQueueHydrated(true);
     }
   }, [currentUserId, draftId]);
 
   useEffect(() => {
+    if (!isQueueHydrated || !hasHydratedQueueRef.current) {
+      return;
+    }
+    pickQueueRef.current = pickQueue;
+    pickQueueChangeStartedAtRef.current = performance.now();
+  }, [isQueueHydrated, pickQueue]);
+
+  useEffect(() => {
     if (typeof window === "undefined" || !isQueueHydrated) {
       return;
     }
     const storageKey = queueStorageKeyFor(draftId, currentUserId);
-    window.localStorage.setItem(storageKey, JSON.stringify(pickQueue));
-  }, [currentUserId, draftId, isQueueHydrated, pickQueue]);
+    if (pickQueuePersistTimerRef.current !== null) {
+      window.clearTimeout(pickQueuePersistTimerRef.current);
+      pickQueuePersistTimerRef.current = null;
+    }
+    pickQueuePersistTimerRef.current = window.setTimeout(() => {
+      pickQueuePersistTimerRef.current = null;
+      window.localStorage.setItem(storageKey, JSON.stringify(pickQueueRef.current));
+      if (!suppressPickQueuePersistMetricRef.current) {
+        const mutationStartedAt = pickQueueChangeStartedAtRef.current;
+        if (typeof mutationStartedAt === "number") {
+          queueClientMetric(
+            "client_draft_queue_persist_latency_ms",
+            performance.now() - mutationStartedAt,
+            {
+              draftId,
+              queueLength: pickQueueRef.current.length,
+            },
+          );
+        }
+      }
+      suppressPickQueuePersistMetricRef.current = false;
+      pickQueueChangeStartedAtRef.current = null;
+    }, QUEUE_STORAGE_WRITE_DEBOUNCE_MS);
+
+    return () => {
+      if (pickQueuePersistTimerRef.current !== null) {
+        window.clearTimeout(pickQueuePersistTimerRef.current);
+        pickQueuePersistTimerRef.current = null;
+      }
+    };
+  }, [currentUserId, draftId, isQueueHydrated, pickQueue, queueClientMetric]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !isQueueHydrated) {
+      return;
+    }
+    const storageKey = queueStorageKeyFor(draftId, currentUserId);
+    const flushPickQueue = () => {
+      if (pickQueuePersistTimerRef.current !== null) {
+        window.clearTimeout(pickQueuePersistTimerRef.current);
+        pickQueuePersistTimerRef.current = null;
+      }
+      window.localStorage.setItem(storageKey, JSON.stringify(pickQueueRef.current));
+      suppressPickQueuePersistMetricRef.current = false;
+      pickQueueChangeStartedAtRef.current = null;
+    };
+    window.addEventListener("pagehide", flushPickQueue);
+    return () => {
+      window.removeEventListener("pagehide", flushPickQueue);
+      flushPickQueue();
+    };
+  }, [currentUserId, draftId, isQueueHydrated]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    const storageKey = queueStorageKeyFor(draftId, currentUserId);
+    const onStorage = (event: StorageEvent) => {
+      if (event.storageArea !== window.localStorage || event.key !== storageKey) {
+        return;
+      }
+      const raw = event.newValue;
+      let nextQueue: string[] = [];
+      if (raw) {
+        try {
+          const parsed = JSON.parse(raw);
+          if (!Array.isArray(parsed)) {
+            return;
+          }
+          nextQueue = parsed
+            .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
+            .filter((entry): entry is string => Boolean(entry));
+        } catch {
+          return;
+        }
+      }
+      setPickQueue((currentQueue) => {
+        if (areStringArraysEqual(currentQueue, nextQueue)) {
+          return currentQueue;
+        }
+        pickQueueRef.current = nextQueue;
+        pickQueueChangeStartedAtRef.current = performance.now();
+        suppressPickQueuePersistMetricRef.current = true;
+        return nextQueue;
+      });
+    };
+    window.addEventListener("storage", onStorage);
+    return () => {
+      window.removeEventListener("storage", onStorage);
+    };
+  }, [currentUserId, draftId]);
 
   useEffect(() => {
     let canceled = false;
@@ -1835,7 +2031,7 @@ export const DraftRoom = ({
       : draftStatus === "scheduled"
       ? 5000
       : 10000;
-    const shouldProcessDue = !isRealtimeHealthy && (draftStatus === "live" || draftStatus === "scheduled");
+    const shouldProcessDue = draftStatus === "live" || draftStatus === "scheduled";
     const id = window.setInterval(() => {
       void requestDraftRefresh({
         processDue: shouldProcessDue,
@@ -1844,6 +2040,43 @@ export const DraftRoom = ({
     }, intervalMs);
     return () => window.clearInterval(id);
   }, [connectionStatus, draftStatus, requestDraftRefresh]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    if (draftStatus !== "live" && draftStatus !== "scheduled") {
+      return;
+    }
+
+    const dueAtIso = draftStatus === "live" ? draft?.currentPickDeadlineAt : draft?.scheduledAt;
+    if (!dueAtIso) {
+      return;
+    }
+    const dueAtMs = new Date(dueAtIso).getTime();
+    if (!Number.isFinite(dueAtMs)) {
+      return;
+    }
+
+    const delayMs = Math.max(0, dueAtMs - (Date.now() + serverOffsetMs) + 80);
+    const dueReason = draftStatus === "live" ? "clock_due" : "scheduled_due";
+    const id = window.setTimeout(() => {
+      void requestDraftRefresh({
+        processDue: true,
+        reason: dueReason,
+      }).catch(() => undefined);
+    }, delayMs);
+
+    return () => {
+      window.clearTimeout(id);
+    };
+  }, [
+    draft?.currentPickDeadlineAt,
+    draft?.scheduledAt,
+    draftStatus,
+    requestDraftRefresh,
+    serverOffsetMs,
+  ]);
 
   useEffect(() => {
     const supabase = getSupabaseBrowserClient();
@@ -2158,21 +2391,28 @@ export const DraftRoom = ({
   }, []);
 
   useEffect(() => {
+    const isCurrentUserClocked =
+      draftStatus === "live" && draft?.nextPick?.participantUserId === currentUserId;
     const shouldTick =
+      isCurrentUserClocked ||
       connectionStatus !== "SUBSCRIBED" ||
       Boolean(timeoutOutcomeMessage);
     if (!shouldTick) {
       setClientNowMs(Date.now());
       return;
     }
-    // Only tick while disconnected/degraded so the main draft room does not rerender every second during healthy realtime.
-    const intervalMs = 2000;
+    // Keep one-second ticks while the local user is on the clock and during reconnect states.
+    const intervalMs = 1000;
     const id = window.setInterval(() => {
       setClientNowMs(Date.now());
     }, intervalMs);
     return () => window.clearInterval(id);
   }, [
     connectionStatus,
+    currentUserId,
+    draft?.currentPickDeadlineAt,
+    draft?.nextPick?.participantUserId,
+    draftStatus,
     timeoutOutcomeMessage,
   ]);
 
@@ -2215,7 +2455,11 @@ export const DraftRoom = ({
         }
 
         if (payload.draft) {
-          applyDraft(payload.draft);
+          const applyStartedAt = performance.now();
+          applyDraft(payload.draft, {
+            source: typeof ready === "boolean" ? "presence_ready_toggle" : "presence_heartbeat",
+            applyStartedAt,
+          });
           return;
         }
 
@@ -2698,10 +2942,6 @@ export const DraftRoom = ({
     }
     return deadlineMs - (clientNowMs + serverOffsetMs);
   }, [clientNowMs, draft?.currentPickDeadlineAt, serverOffsetMs]);
-  const liveTimeLeftLabel = useMemo(
-    () => formatCountdown(draft?.currentPickDeadlineAt ?? null, clientNowMs + serverOffsetMs),
-    [clientNowMs, draft?.currentPickDeadlineAt, serverOffsetMs],
-  );
   const topPickStripSlots = useMemo(() => {
     const labelForOffset = (offset: number): string => {
       if (offset === 0) {
@@ -3157,7 +3397,11 @@ export const DraftRoom = ({
       if (!response.ok || !payload.draft) {
         throw new Error(payload.error ?? "Unable to update draft status.");
       }
-      applyDraft(payload.draft);
+      const applyStartedAt = performance.now();
+      applyDraft(payload.draft, {
+        source: "status_update",
+        applyStartedAt,
+      });
     } catch (updateError) {
       setError(updateError instanceof Error ? updateError.message : "Unable to update status.");
     } finally {
@@ -3259,7 +3503,11 @@ export const DraftRoom = ({
             .catch(() => undefined);
           return;
         }
-        applyDraft(payload.draft);
+        const applyStartedAt = performance.now();
+        applyDraft(payload.draft, {
+          source: source === "autopick" ? "pick_autopick" : "pick_manual",
+          applyStartedAt,
+        });
         setPickQueue((prevQueue) => prevQueue.filter((queuedName) => queuedName !== playerName));
         setSelectedPlayerName(null);
         setPendingManualDraftPlayerName(null);
@@ -3349,14 +3597,14 @@ export const DraftRoom = ({
     [canQueueActions],
   );
 
-  const removePlayerFromQueue = (playerName: string) => {
+  const removePlayerFromQueue = useCallback((playerName: string) => {
     if (!canQueueActions) {
       return;
     }
     setPickQueue((prevQueue) => prevQueue.filter((queuedName) => queuedName !== playerName));
-  };
+  }, [canQueueActions]);
 
-  const clearQueue = () => {
+  const clearQueue = useCallback(() => {
     if (!canQueueActions || pickQueue.length === 0) {
       return;
     }
@@ -3364,9 +3612,9 @@ export const DraftRoom = ({
       return;
     }
     setPickQueue([]);
-  };
+  }, [canQueueActions, pickQueue.length]);
 
-  const moveQueueItem = (fromIndex: number, toIndex: number) => {
+  const moveQueueItem = useCallback((fromIndex: number, toIndex: number) => {
     if (!canQueueActions) {
       return;
     }
@@ -3385,7 +3633,7 @@ export const DraftRoom = ({
       nextQueue.splice(toIndex, 0, movedPlayer);
       return nextQueue;
     });
-  };
+  }, [canQueueActions]);
 
   const handlePlayerTapOrClick = useCallback(
     (
@@ -4350,9 +4598,11 @@ export const DraftRoom = ({
                               />
                             </div>
                           </div>
-                          <p className="pointer-events-none absolute bottom-3 right-2 z-35 mono-points text-lg font-black leading-none tabular-nums text-white drop-shadow-[0_1px_1px_rgba(0,0,0,0.75)] md:text-xl">
-                            {liveTimeLeftLabel}
-                          </p>
+                          <DraftCountdownLabel
+                            className="pointer-events-none absolute bottom-3 right-2 z-35 mono-points text-lg font-black leading-none tabular-nums text-white drop-shadow-[0_1px_1px_rgba(0,0,0,0.75)] md:text-xl"
+                            deadlineIso={draft.currentPickDeadlineAt}
+                            serverOffsetMs={serverOffsetMs}
+                          />
                         </>
                       ) : null}
                       {item.slot && (rightPortraitImageUrl || item.slot.pickedTeamIconUrl || roleBackgroundIconUrl) ? (
@@ -4454,9 +4704,11 @@ export const DraftRoom = ({
               {canCurrentUserPick && draft.nextPick ? (
                 <div className="mt-2 mx-auto grid w-fit grid-cols-[auto_minmax(0,1fr)] items-center gap-3">
                   <div className="grid h-28 w-28 place-items-center rounded-large border border-white/25 bg-black/62 shadow-[0_8px_22px_rgba(0,0,0,0.35)]">
-                    <p className="text-3xl font-black leading-none text-white tabular-nums sm:text-4xl">
-                      {liveTimeLeftLabel}
-                    </p>
+                    <DraftCountdownLabel
+                      className="text-3xl font-black leading-none text-white tabular-nums sm:text-4xl"
+                      deadlineIso={draft.currentPickDeadlineAt}
+                      serverOffsetMs={serverOffsetMs}
+                    />
                   </div>
                   <div className="min-w-0 space-y-2">
                     <div>
