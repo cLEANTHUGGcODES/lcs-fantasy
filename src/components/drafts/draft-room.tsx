@@ -10,14 +10,6 @@ import { Link } from "@heroui/link";
 import { Popover, PopoverContent, PopoverTrigger } from "@heroui/popover";
 import { ScrollShadow } from "@heroui/scroll-shadow";
 import { Spinner } from "@heroui/spinner";
-import {
-  Table as HeroTable,
-  TableBody,
-  TableCell,
-  TableColumn,
-  TableHeader,
-  TableRow,
-} from "@heroui/table";
 import { Tab, Tabs } from "@heroui/tabs";
 import { Tooltip } from "@heroui/tooltip";
 import {
@@ -54,7 +46,10 @@ import Image from "next/image";
 import dynamic from "next/dynamic";
 import {
   type CSSProperties,
+  type MouseEvent as ReactMouseEvent,
+  memo,
   useCallback,
+  useDeferredValue,
   useEffect,
   useMemo,
   useRef,
@@ -693,6 +688,427 @@ const compareAutopickCandidates = (
 const queueStorageKeyFor = (draftId: number, userId: string): string =>
   `draft-room-queue-v1:${draftId}:${userId}`;
 
+const DESKTOP_PLAYER_TABLE_ROW_HEIGHT_PX = 44;
+const DESKTOP_PLAYER_TABLE_OVERSCAN_ROWS = 10;
+const DESKTOP_PLAYER_TABLE_VIRTUALIZE_THRESHOLD = 70;
+
+type AvailablePlayer = DraftDetail["availablePlayers"][number];
+
+const DesktopAvailablePlayersTable = memo(({
+  players,
+  queuedPlayerNameSet,
+  selectedPlayerName,
+  canQueueActions,
+  canCurrentUserPick,
+  canDraftActions,
+  isRealtimeReadOnly,
+  onPlayerTapOrClick,
+  onAddPlayerToQueue,
+  onRequestManualDraft,
+  onOpenPlayerDetails,
+}: {
+  players: AvailablePlayer[];
+  queuedPlayerNameSet: Set<string>;
+  selectedPlayerName: string | null;
+  canQueueActions: boolean;
+  canCurrentUserPick: boolean;
+  canDraftActions: boolean;
+  isRealtimeReadOnly: boolean;
+  onPlayerTapOrClick: (playerName: string, event: ReactMouseEvent) => void;
+  onAddPlayerToQueue: (playerName: string) => void;
+  onRequestManualDraft: (playerName: string) => void;
+  onOpenPlayerDetails: (playerName: string) => void;
+}) => {
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportHeight, setViewportHeight] = useState(0);
+  const virtualizationEnabled = players.length >= DESKTOP_PLAYER_TABLE_VIRTUALIZE_THRESHOLD;
+
+  useEffect(() => {
+    const scroller = scrollRef.current;
+    if (!scroller) {
+      return;
+    }
+    const syncViewport = () => {
+      setViewportHeight((current) => {
+        const next = scroller.clientHeight;
+        return current === next ? current : next;
+      });
+    };
+    syncViewport();
+    if (typeof ResizeObserver === "undefined") {
+      return;
+    }
+    const observer = new ResizeObserver(() => {
+      syncViewport();
+    });
+    observer.observe(scroller);
+    return () => {
+      observer.disconnect();
+    };
+  }, [players.length]);
+
+  const { startIndex, endIndex, topSpacerHeight, bottomSpacerHeight } = useMemo(() => {
+    if (!virtualizationEnabled) {
+      return {
+        startIndex: 0,
+        endIndex: players.length,
+        topSpacerHeight: 0,
+        bottomSpacerHeight: 0,
+      };
+    }
+
+    const safeViewportHeight = Math.max(viewportHeight, DESKTOP_PLAYER_TABLE_ROW_HEIGHT_PX);
+    const firstVisibleRow = Math.max(
+      0,
+      Math.floor(scrollTop / DESKTOP_PLAYER_TABLE_ROW_HEIGHT_PX),
+    );
+    const visibleRowCount = Math.max(
+      1,
+      Math.ceil(safeViewportHeight / DESKTOP_PLAYER_TABLE_ROW_HEIGHT_PX),
+    );
+    const nextStart = Math.max(0, firstVisibleRow - DESKTOP_PLAYER_TABLE_OVERSCAN_ROWS);
+    const nextEnd = Math.min(
+      players.length,
+      firstVisibleRow + visibleRowCount + DESKTOP_PLAYER_TABLE_OVERSCAN_ROWS,
+    );
+
+    return {
+      startIndex: nextStart,
+      endIndex: nextEnd,
+      topSpacerHeight: nextStart * DESKTOP_PLAYER_TABLE_ROW_HEIGHT_PX,
+      bottomSpacerHeight: (players.length - nextEnd) * DESKTOP_PLAYER_TABLE_ROW_HEIGHT_PX,
+    };
+  }, [players.length, scrollTop, viewportHeight, virtualizationEnabled]);
+
+  const visiblePlayers = useMemo(
+    () => players.slice(startIndex, endIndex),
+    [endIndex, players, startIndex],
+  );
+
+  return (
+    <div className="min-h-0 flex flex-1 flex-col overflow-hidden rounded-large border border-default-200/40 bg-content2/45">
+      <div className="grid grid-cols-3 bg-content2/95">
+        <p className="flex h-9 translate-x-[clamp(1px,0.25vw,4px)] items-center justify-center border-b border-default-200/40 px-2 text-center text-[11px] font-semibold uppercase tracking-wide text-default-500">
+          Player
+        </p>
+        <p className="flex h-9 translate-x-[clamp(1px,0.25vw,4px)] items-center justify-center border-b border-default-200/40 px-2 text-center text-[11px] font-semibold uppercase tracking-wide text-default-500">
+          Role
+        </p>
+        <p className="flex h-9 translate-x-[clamp(1px,0.25vw,4px)] items-center justify-center border-b border-default-200/40 px-2 text-center text-[11px] font-semibold uppercase tracking-wide text-default-500">
+          Actions
+        </p>
+      </div>
+      <ScrollShadow
+        ref={scrollRef}
+        className="min-h-0 flex-1"
+        orientation="vertical"
+        onScroll={(event) => {
+          if (!virtualizationEnabled) {
+            return;
+          }
+          const nextScrollTop = event.currentTarget.scrollTop;
+          setScrollTop((current) => (
+            Math.abs(current - nextScrollTop) < 1 ? current : nextScrollTop
+          ));
+        }}
+      >
+        {players.length === 0 ? (
+          <div className="p-3 text-xs text-default-500">No players found.</div>
+        ) : (
+          <div className="w-full">
+            {topSpacerHeight > 0 ? <div style={{ height: `${topSpacerHeight}px` }} /> : null}
+            {visiblePlayers.map((player) => {
+              const isQueued = queuedPlayerNameSet.has(player.playerName);
+              const isSelected = selectedPlayerName === player.playerName;
+              const playerRoleIconUrl = roleIconUrl(player.playerRole);
+              return (
+                <div
+                  key={player.id}
+                  className={`grid min-h-11 grid-cols-3 items-stretch border-b border-default-200/30 transition data-[hover=true]:bg-content2/70 ${
+                    isRealtimeReadOnly ? "cursor-not-allowed" : "cursor-pointer"
+                  } ${
+                    isSelected
+                      ? "shadow-[inset_0_0_0_1px_rgba(147,197,253,0.7)]"
+                      : isQueued
+                      ? "shadow-[inset_0_0_0_1px_rgba(147,197,253,0.4)]"
+                      : ""
+                  }`}
+                  onClick={(event) => {
+                    if (isRealtimeReadOnly) {
+                      return;
+                    }
+                    onPlayerTapOrClick(player.playerName, event);
+                  }}
+                >
+                  <div className="flex items-center px-2 py-1.5">
+                    <div className="mx-auto flex w-fit min-w-0 translate-x-[clamp(1px,0.25vw,4px)] items-center gap-2">
+                      {player.teamIconUrl ? (
+                        <Tooltip content={player.playerTeam ?? "Unknown team"}>
+                          <button
+                            aria-label={`Show team for ${player.playerName}`}
+                            className="shrink-0 rounded-small focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-300/70"
+                            type="button"
+                            onClick={(event) => event.stopPropagation()}
+                            onPointerDown={(event) => event.stopPropagation()}
+                          >
+                            <CroppedTeamLogo
+                              alt={`${player.playerName} team logo`}
+                              frameClassName="h-5 w-7"
+                              height={20}
+                              imageClassName="h-5"
+                              src={player.teamIconUrl}
+                              width={48}
+                            />
+                          </button>
+                        </Tooltip>
+                      ) : null}
+                      <div className="min-w-0 text-left">
+                        <p className="truncate font-medium">{player.playerName}</p>
+                        {player.analytics?.overallRank || player.analytics?.positionRank ? (
+                          <p className="text-[11px] text-sky-300">
+                            {player.analytics?.overallRank ? `OVR #${player.analytics.overallRank}` : "OVR —"}
+                            {player.analytics?.positionRank
+                              ? ` • POS #${player.analytics.positionRank}`
+                              : " • POS —"}
+                          </p>
+                        ) : null}
+                        <p className="text-[11px] text-default-500">
+                          Avg pts/g:{" "}
+                          {typeof player.analytics?.averageFantasyPoints === "number"
+                            ? player.analytics.averageFantasyPoints.toFixed(2)
+                            : "N/A"}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-center px-2 py-1.5 text-center">
+                    {playerRoleIconUrl ? (
+                      <div className="mx-auto flex w-full translate-x-[clamp(1px,0.25vw,4px)] items-center justify-center">
+                        <Image
+                          alt={`${formatRoleLabel(player.playerRole)} role icon`}
+                          className="h-5 w-5 rounded-sm object-contain"
+                          height={20}
+                          src={playerRoleIconUrl}
+                          width={20}
+                        />
+                      </div>
+                    ) : (
+                      <span className="text-[11px] text-default-500">
+                        {formatRoleLabel(player.playerRole)}
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center justify-center px-2 py-1.5">
+                    <div className="mx-auto flex w-full translate-x-[clamp(1px,0.25vw,4px)] items-center justify-center gap-1.5">
+                      <Tooltip content={isQueued ? "Already in queue" : "Add to queue"}>
+                        <span
+                          className="inline-flex"
+                          onClick={(event) => event.stopPropagation()}
+                          onPointerDown={(event) => event.stopPropagation()}
+                        >
+                          <Button
+                            isIconOnly
+                            aria-label={isQueued ? "Queued" : "Queue player"}
+                            color={isQueued ? "primary" : "default"}
+                            isDisabled={isQueued || !canQueueActions}
+                            size="sm"
+                            variant={isQueued ? "flat" : "light"}
+                            onPress={() => onAddPlayerToQueue(player.playerName)}
+                          >
+                            <Plus className="h-4 w-4" />
+                          </Button>
+                        </span>
+                      </Tooltip>
+                      {canCurrentUserPick ? (
+                        <Button
+                          color="primary"
+                          isDisabled={!canDraftActions}
+                          size="sm"
+                          variant="solid"
+                          onPress={() => onRequestManualDraft(player.playerName)}
+                        >
+                          Draft
+                        </Button>
+                      ) : (
+                        <Tooltip content="View player info">
+                          <span
+                            className="inline-flex"
+                            onClick={(event) => event.stopPropagation()}
+                            onPointerDown={(event) => event.stopPropagation()}
+                          >
+                            <Button
+                              isIconOnly
+                              size="sm"
+                              variant="light"
+                              onPress={() => onOpenPlayerDetails(player.playerName)}
+                            >
+                              <Eye className="h-4 w-4" />
+                            </Button>
+                          </span>
+                        </Tooltip>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+            {bottomSpacerHeight > 0 ? <div style={{ height: `${bottomSpacerHeight}px` }} /> : null}
+          </div>
+        )}
+      </ScrollShadow>
+    </div>
+  );
+});
+DesktopAvailablePlayersTable.displayName = "DesktopAvailablePlayersTable";
+
+const MobileAvailablePlayersCards = memo(({
+  players,
+  queuedPlayerNameSet,
+  selectedPlayerName,
+  canQueueActions,
+  canCurrentUserPick,
+  canDraftActions,
+  onPlayerTapOrClick,
+  onAddPlayerToQueue,
+  onRequestManualDraft,
+  onOpenPlayerDetails,
+}: {
+  players: AvailablePlayer[];
+  queuedPlayerNameSet: Set<string>;
+  selectedPlayerName: string | null;
+  canQueueActions: boolean;
+  canCurrentUserPick: boolean;
+  canDraftActions: boolean;
+  onPlayerTapOrClick: (playerName: string, event: ReactMouseEvent<HTMLDivElement>) => void;
+  onAddPlayerToQueue: (playerName: string) => void;
+  onRequestManualDraft: (playerName: string) => void;
+  onOpenPlayerDetails: (playerName: string) => void;
+}) => (
+  <div className="space-y-2">
+    {players.map((player) => {
+      const isQueued = queuedPlayerNameSet.has(player.playerName);
+      const isSelected = selectedPlayerName === player.playerName;
+      return (
+        <div
+          key={player.id}
+          aria-label={`Select ${player.playerName}`}
+          className={`w-full rounded-large border border-default-200/35 bg-content2/30 px-3 py-3 text-left transition ${
+            isSelected
+              ? "ring-1 ring-primary-300/65"
+              : isQueued
+              ? "ring-1 ring-primary-300/35"
+              : ""
+          }`}
+          role="button"
+          tabIndex={0}
+          onClick={(event) => onPlayerTapOrClick(player.playerName, event)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              onOpenPlayerDetails(player.playerName);
+            }
+          }}
+        >
+          <div className="flex items-start justify-between gap-2">
+            <div className="flex min-w-0 items-center gap-2">
+              {player.teamIconUrl ? (
+                <Popover placement="top" showArrow>
+                  <PopoverTrigger>
+                    <button
+                      aria-label={`Show team for ${player.playerName}`}
+                      className="shrink-0 rounded-small focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-300/70"
+                      type="button"
+                      onClick={(event) => event.stopPropagation()}
+                      onPointerDown={(event) => event.stopPropagation()}
+                    >
+                      <CroppedTeamLogo
+                        alt={`${player.playerName} team logo`}
+                        frameClassName="h-5 w-7"
+                        height={20}
+                        imageClassName="h-5"
+                        src={player.teamIconUrl}
+                        width={48}
+                      />
+                    </button>
+                  </PopoverTrigger>
+                  <PopoverContent>
+                    <p className="px-1 py-0.5 text-xs">{player.playerTeam ?? "Unknown team"}</p>
+                  </PopoverContent>
+                </Popover>
+              ) : null}
+              <p className="truncate text-sm font-semibold">{player.playerName}</p>
+            </div>
+            <div className="flex items-center gap-1.5">
+              {player.analytics?.overallRank ? (
+                <Chip
+                  className="border border-sky-300/45 bg-sky-400/20 text-sky-100"
+                  size="sm"
+                  variant="flat"
+                >
+                  OVR #{player.analytics.overallRank}
+                </Chip>
+              ) : null}
+              {player.analytics?.positionRank ? (
+                <Chip
+                  className="border border-amber-300/45 bg-amber-400/20 text-amber-100"
+                  size="sm"
+                  variant="flat"
+                >
+                  POS #{player.analytics.positionRank}
+                </Chip>
+              ) : null}
+              <Chip className={roleChipClassName(player.playerRole)} size="sm" variant="flat">
+                {formatRoleLabel(player.playerRole)}
+              </Chip>
+            </div>
+          </div>
+          <p className="mt-1.5 text-[11px] text-default-500">
+            Avg pts/g:{" "}
+            {typeof player.analytics?.averageFantasyPoints === "number"
+              ? player.analytics.averageFantasyPoints.toFixed(2)
+              : "N/A"}
+          </p>
+          <div className="mt-2 flex items-center gap-2">
+            <Button
+              isIconOnly
+              aria-label={isQueued ? "Queued" : "Queue player"}
+              color={isQueued ? "primary" : "default"}
+              isDisabled={isQueued || !canQueueActions}
+              size="sm"
+              variant={isQueued ? "flat" : "light"}
+              onPress={() => onAddPlayerToQueue(player.playerName)}
+            >
+              <Plus className="h-4 w-4" />
+            </Button>
+            {canCurrentUserPick ? (
+              <Button
+                color="primary"
+                isDisabled={!canDraftActions}
+                size="sm"
+                variant="flat"
+                onPress={() => onRequestManualDraft(player.playerName)}
+              >
+                Draft
+              </Button>
+            ) : (
+              <Button
+                isIconOnly
+                size="sm"
+                variant="light"
+                onPress={() => onOpenPlayerDetails(player.playerName)}
+              >
+                <Eye className="h-4 w-4" />
+              </Button>
+            )}
+          </div>
+        </div>
+      );
+    })}
+  </div>
+));
+MobileAvailablePlayersCards.displayName = "MobileAvailablePlayersCards";
+
 const DraftClockBadge = ({
   deadlineIso,
   pickSeconds,
@@ -893,6 +1309,7 @@ export const DraftRoom = ({
   const autoPickAutoEnabledForPickRef = useRef<string | null>(null);
   const draggedQueueIndexRef = useRef<number | null>(null);
   const [lastDraftSyncMs, setLastDraftSyncMs] = useState(() => Date.now());
+  const deferredSearchTerm = useDeferredValue(searchTerm);
 
   const applyDraft = useCallback((nextDraft: DraftDetail) => {
     setDraft(nextDraft);
@@ -1385,7 +1802,7 @@ export const DraftRoom = ({
       : draftStatus === "scheduled"
       ? 5000
       : 10000;
-    const shouldProcessDue = draftStatus === "live" || draftStatus === "scheduled";
+    const shouldProcessDue = !isRealtimeHealthy && (draftStatus === "live" || draftStatus === "scheduled");
     const id = window.setInterval(() => {
       void requestDraftRefresh({
         processDue: shouldProcessDue,
@@ -1888,7 +2305,7 @@ export const DraftRoom = ({
     [draft?.availablePlayers.length, roleCounts],
   );
   const filteredAvailablePlayers = useMemo(() => {
-    const normalizedSearch = searchTerm.trim().toLowerCase();
+    const normalizedSearch = deferredSearchTerm.trim().toLowerCase();
 
     return (draft?.availablePlayers ?? []).filter((player) => {
       const matchesRole =
@@ -1909,7 +2326,7 @@ export const DraftRoom = ({
         roleLabel.includes(normalizedSearch)
       );
     });
-  }, [draft?.availablePlayers, roleFilter, searchTerm]);
+  }, [deferredSearchTerm, draft?.availablePlayers, roleFilter]);
   const sortedAvailablePlayers = useMemo(
     () => sortAvailablePlayers(filteredAvailablePlayers, playerSort),
     [filteredAvailablePlayers, playerSort],
@@ -5058,148 +5475,20 @@ export const DraftRoom = ({
                         ))}
                       </Tabs>
                     </ScrollShadow>
-                    <div className="space-y-2">
-                      {displayAvailablePlayers.map((player) => {
-                        const isQueued = queuedPlayerNameSet.has(player.playerName);
-                        const isSelected = selectedPlayerName === player.playerName;
-                        return (
-                          <div
-                            key={player.id}
-                            aria-label={`Select ${player.playerName}`}
-                            className={`w-full rounded-large border border-default-200/35 bg-content2/30 px-3 py-3 text-left transition ${
-                              isSelected
-                                ? "ring-1 ring-primary-300/65"
-                                : isQueued
-                                ? "ring-1 ring-primary-300/35"
-                                : ""
-                            }`}
-                            role="button"
-                            tabIndex={0}
-                            onClick={(event) => handlePlayerTapOrClick(player.playerName, event)}
-                            onKeyDown={(event) => {
-                              if (event.key === "Enter" || event.key === " ") {
-                                event.preventDefault();
-                                setSelectedPlayerName(player.playerName);
-                              }
-                            }}
-                          >
-                            <div className="flex items-start justify-between gap-2">
-                              <div className="flex min-w-0 items-center gap-2">
-                                {player.teamIconUrl ? (
-                                  isMobileViewport ? (
-                                    <Popover placement="top" showArrow>
-                                      <PopoverTrigger>
-                                        <button
-                                          aria-label={`Show team for ${player.playerName}`}
-                                          className="shrink-0 rounded-small focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-300/70"
-                                          type="button"
-                                          onClick={(event) => event.stopPropagation()}
-                                          onPointerDown={(event) => event.stopPropagation()}
-                                        >
-                                          <CroppedTeamLogo
-                                            alt={`${player.playerName} team logo`}
-                                            frameClassName="h-5 w-7"
-                                            height={20}
-                                            imageClassName="h-5"
-                                            src={player.teamIconUrl}
-                                            width={48}
-                                          />
-                                        </button>
-                                      </PopoverTrigger>
-                                      <PopoverContent>
-                                        <p className="px-1 py-0.5 text-xs">{player.playerTeam ?? "Unknown team"}</p>
-                                      </PopoverContent>
-                                    </Popover>
-                                  ) : (
-                                    <Tooltip content={player.playerTeam ?? "Unknown team"}>
-                                      <button
-                                        aria-label={`Show team for ${player.playerName}`}
-                                        className="shrink-0 rounded-small focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-300/70"
-                                        type="button"
-                                        onClick={(event) => event.stopPropagation()}
-                                        onPointerDown={(event) => event.stopPropagation()}
-                                      >
-                                        <CroppedTeamLogo
-                                          alt={`${player.playerName} team logo`}
-                                          frameClassName="h-5 w-7"
-                                          height={20}
-                                          imageClassName="h-5"
-                                          src={player.teamIconUrl}
-                                          width={48}
-                                        />
-                                      </button>
-                                    </Tooltip>
-                                  )
-                                ) : null}
-                                <p className="truncate text-sm font-semibold">{player.playerName}</p>
-                              </div>
-                              <div className="flex items-center gap-1.5">
-                                {player.analytics?.overallRank ? (
-                                  <Chip
-                                    className="border border-sky-300/45 bg-sky-400/20 text-sky-100"
-                                    size="sm"
-                                    variant="flat"
-                                  >
-                                    OVR #{player.analytics.overallRank}
-                                  </Chip>
-                                ) : null}
-                                {player.analytics?.positionRank ? (
-                                  <Chip
-                                    className="border border-amber-300/45 bg-amber-400/20 text-amber-100"
-                                    size="sm"
-                                    variant="flat"
-                                  >
-                                    POS #{player.analytics.positionRank}
-                                  </Chip>
-                                ) : null}
-                                <Chip className={roleChipClassName(player.playerRole)} size="sm" variant="flat">
-                                  {formatRoleLabel(player.playerRole)}
-                                </Chip>
-                              </div>
-                            </div>
-                            <p className="mt-1.5 text-[11px] text-default-500">
-                              Avg pts/g:{" "}
-                              {typeof player.analytics?.averageFantasyPoints === "number"
-                                ? player.analytics.averageFantasyPoints.toFixed(2)
-                                : "N/A"}
-                            </p>
-                            <div className="mt-2 flex items-center gap-2">
-                              <Button
-                                isIconOnly
-                                aria-label={isQueued ? "Queued" : "Queue player"}
-                                color={isQueued ? "primary" : "default"}
-                                isDisabled={isQueued || !canQueueActions}
-                                size="sm"
-                                variant={isQueued ? "flat" : "light"}
-                                onPress={() => addPlayerToQueue(player.playerName)}
-                              >
-                                <Plus className="h-4 w-4" />
-                              </Button>
-                              {canCurrentUserPick ? (
-                                <Button
-                                  color="primary"
-                                  isDisabled={!canDraftActions}
-                                  size="sm"
-                                  variant="flat"
-                                  onPress={() => requestManualDraft(player.playerName)}
-                                >
-                                  Draft
-                                </Button>
-                              ) : (
-                                <Button
-                                  isIconOnly
-                                  size="sm"
-                                  variant="light"
-                                  onPress={() => setSelectedPlayerName(player.playerName)}
-                                >
-                                  <Eye className="h-4 w-4" />
-                                </Button>
-                              )}
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
+                    <MobileAvailablePlayersCards
+                      canCurrentUserPick={canCurrentUserPick}
+                      canDraftActions={canDraftActions}
+                      canQueueActions={canQueueActions}
+                      players={displayAvailablePlayers}
+                      queuedPlayerNameSet={queuedPlayerNameSet}
+                      selectedPlayerName={selectedPlayerName}
+                      onAddPlayerToQueue={addPlayerToQueue}
+                      onOpenPlayerDetails={(playerName) => {
+                        setSelectedPlayerName(playerName);
+                      }}
+                      onPlayerTapOrClick={handlePlayerTapOrClick}
+                      onRequestManualDraft={requestManualDraft}
+                    />
                   </CardBody>
                 </Card>
               </Tab>
@@ -5828,205 +6117,22 @@ export const DraftRoom = ({
                     </select>
                   </div>
                 </div>
-                <div className="min-h-0 flex flex-1 flex-col overflow-hidden rounded-large border border-default-200/40 bg-content2/45">
-                  <div className="grid grid-cols-3 bg-content2/95">
-                    <p className="flex h-9 translate-x-[clamp(1px,0.25vw,4px)] items-center justify-center border-b border-default-200/40 px-2 text-center text-[11px] font-semibold uppercase tracking-wide text-default-500">
-                      Player
-                    </p>
-                    <p className="flex h-9 translate-x-[clamp(1px,0.25vw,4px)] items-center justify-center border-b border-default-200/40 px-2 text-center text-[11px] font-semibold uppercase tracking-wide text-default-500">
-                      Role
-                    </p>
-                    <p className="flex h-9 translate-x-[clamp(1px,0.25vw,4px)] items-center justify-center border-b border-default-200/40 px-2 text-center text-[11px] font-semibold uppercase tracking-wide text-default-500">
-                      Actions
-                    </p>
-                  </div>
-                  <ScrollShadow className="min-h-0 flex-1" orientation="vertical">
-                    <HeroTable
-                      removeWrapper
-                      aria-label="Available players table"
-                      classNames={{
-                        base: "w-full",
-                        table: "w-full table-fixed",
-                        thead: "hidden",
-                        th: "hidden",
-                        td: "h-11 border-b border-default-200/30 px-2 py-1.5 align-middle",
-                        tr: "transition last:[&>td]:border-b-0 data-[hover=true]:bg-content2/70",
-                      }}
-                    >
-                      <TableHeader>
-                        <TableColumn key="player" className="w-1/3">Player</TableColumn>
-                        <TableColumn key="role" className="w-1/3 text-center">Role</TableColumn>
-                        <TableColumn key="actions" className="w-1/3 text-center">Actions</TableColumn>
-                      </TableHeader>
-                      <TableBody
-                        emptyContent={<span className="text-xs text-default-500">No players found.</span>}
-                      >
-                        {displayAvailablePlayers.map((player) => {
-                          const isQueued = queuedPlayerNameSet.has(player.playerName);
-                          const isSelected = selectedPlayerName === player.playerName;
-                          const playerRoleIconUrl = roleIconUrl(player.playerRole);
-                          return (
-                            <TableRow
-                              key={player.id}
-                              className={`${isRealtimeReadOnly ? "cursor-not-allowed" : "cursor-pointer"} border-t border-default-200/30 transition ${
-                                isSelected
-                                  ? "shadow-[inset_0_0_0_1px_rgba(147,197,253,0.7)]"
-                                  : isQueued
-                                  ? "shadow-[inset_0_0_0_1px_rgba(147,197,253,0.4)]"
-                                  : ""
-                              }`}
-                              onClick={(event) => {
-                                if (isRealtimeReadOnly) {
-                                  return;
-                                }
-                                handlePlayerTapOrClick(player.playerName, event);
-                              }}
-                            >
-                              <TableCell className="w-1/3">
-                                <div className="mx-auto flex w-fit min-w-0 translate-x-[clamp(1px,0.25vw,4px)] items-center gap-2">
-                                  {player.teamIconUrl ? (
-                                    isMobileViewport ? (
-                                      <Popover placement="top" showArrow>
-                                        <PopoverTrigger>
-                                          <button
-                                            aria-label={`Show team for ${player.playerName}`}
-                                            className="shrink-0 rounded-small focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-300/70"
-                                            type="button"
-                                            onClick={(event) => event.stopPropagation()}
-                                            onPointerDown={(event) => event.stopPropagation()}
-                                          >
-                                            <CroppedTeamLogo
-                                              alt={`${player.playerName} team logo`}
-                                              frameClassName="h-5 w-7"
-                                              height={20}
-                                              imageClassName="h-5"
-                                              src={player.teamIconUrl}
-                                              width={48}
-                                            />
-                                          </button>
-                                        </PopoverTrigger>
-                                        <PopoverContent>
-                                          <p className="px-1 py-0.5 text-xs">{player.playerTeam ?? "Unknown team"}</p>
-                                        </PopoverContent>
-                                      </Popover>
-                                    ) : (
-                                      <Tooltip content={player.playerTeam ?? "Unknown team"}>
-                                        <button
-                                          aria-label={`Show team for ${player.playerName}`}
-                                          className="shrink-0 rounded-small focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-300/70"
-                                          type="button"
-                                          onClick={(event) => event.stopPropagation()}
-                                          onPointerDown={(event) => event.stopPropagation()}
-                                        >
-                                          <CroppedTeamLogo
-                                            alt={`${player.playerName} team logo`}
-                                            frameClassName="h-5 w-7"
-                                            height={20}
-                                            imageClassName="h-5"
-                                            src={player.teamIconUrl}
-                                            width={48}
-                                          />
-                                        </button>
-                                      </Tooltip>
-                                    )
-                                  ) : null}
-                                  <div className="min-w-0 text-left">
-                                    <p className="truncate font-medium">{player.playerName}</p>
-                                    {player.analytics?.overallRank || player.analytics?.positionRank ? (
-                                      <p className="text-[11px] text-sky-300">
-                                        {player.analytics?.overallRank ? `OVR #${player.analytics.overallRank}` : "OVR —"}
-                                        {player.analytics?.positionRank
-                                          ? ` • POS #${player.analytics.positionRank}`
-                                          : " • POS —"}
-                                      </p>
-                                    ) : null}
-                                    <p className="text-[11px] text-default-500">
-                                      Avg pts/g:{" "}
-                                      {typeof player.analytics?.averageFantasyPoints === "number"
-                                        ? player.analytics.averageFantasyPoints.toFixed(2)
-                                        : "N/A"}
-                                    </p>
-                                  </div>
-                                </div>
-                              </TableCell>
-                              <TableCell className="w-1/3 whitespace-nowrap text-center">
-                                {playerRoleIconUrl ? (
-                                  <div className="mx-auto flex w-full translate-x-[clamp(1px,0.25vw,4px)] items-center justify-center">
-                                    <Image
-                                      alt={`${formatRoleLabel(player.playerRole)} role icon`}
-                                      className="h-5 w-5 rounded-sm object-contain"
-                                      height={20}
-                                      src={playerRoleIconUrl}
-                                      width={20}
-                                    />
-                                  </div>
-                                ) : (
-                                  <span className="text-[11px] text-default-500">
-                                    {formatRoleLabel(player.playerRole)}
-                                  </span>
-                                )}
-                              </TableCell>
-                              <TableCell className="w-1/3 whitespace-nowrap">
-                                <div className="mx-auto flex w-full translate-x-[clamp(1px,0.25vw,4px)] items-center justify-center gap-1.5">
-                                  <Tooltip content={isQueued ? "Already in queue" : "Add to queue"}>
-                                    <span
-                                      className="inline-flex"
-                                      onClick={(event) => event.stopPropagation()}
-                                      onPointerDown={(event) => event.stopPropagation()}
-                                    >
-                                      <Button
-                                        isIconOnly
-                                        aria-label={isQueued ? "Queued" : "Queue player"}
-                                        color={isQueued ? "primary" : "default"}
-                                        isDisabled={isQueued || !canQueueActions}
-                                        size="sm"
-                                        variant={isQueued ? "flat" : "light"}
-                                        onPress={() => addPlayerToQueue(player.playerName)}
-                                      >
-                                        <Plus className="h-4 w-4" />
-                                      </Button>
-                                    </span>
-                                  </Tooltip>
-                                  {canCurrentUserPick ? (
-                                    <Button
-                                      color="primary"
-                                      isDisabled={!canDraftActions}
-                                      size="sm"
-                                      variant="solid"
-                                      onPress={() => requestManualDraft(player.playerName)}
-                                    >
-                                      Draft
-                                    </Button>
-                                  ) : (
-                                    <Tooltip content="View player info">
-                                      <span
-                                        className="inline-flex"
-                                        onClick={(event) => event.stopPropagation()}
-                                        onPointerDown={(event) => event.stopPropagation()}
-                                      >
-                                        <Button
-                                          isIconOnly
-                                          size="sm"
-                                          variant="light"
-                                          onPress={() => {
-                                            setSelectedPlayerName(player.playerName);
-                                            setIsPlayerDetailDrawerOpen(true);
-                                          }}
-                                        >
-                                          <Eye className="h-4 w-4" />
-                                        </Button>
-                                      </span>
-                                    </Tooltip>
-                                  )}
-                                </div>
-                              </TableCell>
-                            </TableRow>
-                          );
-                        })}
-                      </TableBody>
-                    </HeroTable>
-                  </ScrollShadow>
-                </div>
+                <DesktopAvailablePlayersTable
+                  canCurrentUserPick={canCurrentUserPick}
+                  canDraftActions={canDraftActions}
+                  canQueueActions={canQueueActions}
+                  isRealtimeReadOnly={isRealtimeReadOnly}
+                  players={displayAvailablePlayers}
+                  queuedPlayerNameSet={queuedPlayerNameSet}
+                  selectedPlayerName={selectedPlayerName}
+                  onAddPlayerToQueue={addPlayerToQueue}
+                  onOpenPlayerDetails={(playerName) => {
+                    setSelectedPlayerName(playerName);
+                    setIsPlayerDetailDrawerOpen(true);
+                  }}
+                  onPlayerTapOrClick={handlePlayerTapOrClick}
+                  onRequestManualDraft={requestManualDraft}
+                />
               </CardBody>
               {showReadOnlyInteractionOverlay ? (
                 <div className="pointer-events-none absolute inset-0 z-20 grid place-items-center rounded-[inherit] bg-content1/55 backdrop-blur-[1px]">
