@@ -4536,7 +4536,7 @@ export const DraftRoom = ({
       <DraftRoomPointerEffects
         containerRef={draftRoomSectionRef}
         enabled={!isMobileViewport}
-        prefersReducedMotion={prefersReducedMotion}
+        prefersReducedMotion={Boolean(prefersReducedMotion)}
       />
       <div className="pointer-events-none fixed bottom-3 right-3 z-50 flex w-[min(22rem,calc(100vw-1.5rem))] flex-col gap-2">
         <AnimatePresence initial={false}>
