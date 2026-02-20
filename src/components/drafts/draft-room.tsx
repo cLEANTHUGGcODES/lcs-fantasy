@@ -461,6 +461,7 @@ const MAIN_TOP_BG_YOUTUBE_VIDEO_ID = "xBCBOoHyeSU";
 const MAIN_TOP_BG_YOUTUBE_EMBED_SRC = `https://www.youtube.com/embed/${MAIN_TOP_BG_YOUTUBE_VIDEO_ID}?autoplay=1&mute=1&controls=0&loop=1&playlist=${MAIN_TOP_BG_YOUTUBE_VIDEO_ID}&modestbranding=1&rel=0&playsinline=1&iv_load_policy=3&disablekb=1`;
 const DRAFT_ROOM_CURSOR_IMAGE_SRC = "/img/cursor.png";
 const MOUSE_TRAIL_IMAGE_SRC = "/img/mousetrail.png";
+const DRAFT_ROOM_CHAT_PANEL_SELECTOR = "[data-draft-chat-panel='true']";
 const MOUSE_TRAIL_MAX_SPRITES = 14;
 const MOUSE_TRAIL_MIN_SPAWN_INTERVAL_MS = 120;
 const MOUSE_TRAIL_MAX_SPAWN_INTERVAL_MS = 300;
@@ -1515,6 +1516,13 @@ const DraftRoomPointerEffects = memo(({
       cursorPendingPointRef.current = { x, y };
       scheduleCursorPaint();
       setCursorVisibility(true);
+      const isOverChatPanel =
+        event.target instanceof Element &&
+        event.target.closest(DRAFT_ROOM_CHAT_PANEL_SELECTOR) !== null;
+      if (isOverChatPanel) {
+        trailPendingPointRef.current = null;
+        return;
+      }
       maybeSpawnTrail(x, y);
     };
 
@@ -6788,7 +6796,10 @@ export const DraftRoom = ({
               ) : null}
             </Card>
 
-            <Card className="h-full min-h-0 overflow-hidden border border-default-200/40 bg-content1/90 shadow-sm">
+            <Card
+              data-draft-chat-panel="true"
+              className="h-full min-h-0 overflow-hidden border border-default-200/40 bg-content1/90 shadow-sm"
+            >
               <CardHeader className="flex items-center justify-between gap-2 py-2">
                 <Image
                   alt="Insight LoL Fantasy"
