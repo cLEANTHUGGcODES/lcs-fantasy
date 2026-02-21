@@ -1,248 +1,344 @@
 # INSIGHT LoL Fantasy
 
-Lightweight Next.js app that pulls Leaguepedia scoreboard data and turns it into:
+INSIGHT LoL Fantasy is a Next.js 16 + Supabase app for running an LCS fantasy league with:
 
-- Friend league standings (based on local rosters)
-- Player fantasy leaderboard
-- Best single-game performances
-- JSON snapshot endpoint for integrations
-- Supabase Auth (email/password register + login)
-- Supabase-hosted profile images (Storage bucket)
-- End-to-end reverse-snake player draft management
+- league standings and weekly head-to-head views
+- live multiplayer draft room (3RR + timeout autopick)
+- authenticated global chat with image upload and reactions
+- Leaguepedia snapshot sync + stale-data auto-refresh
+- observability for draft/chat latency and reconnect health
 
-## UI Stack
+## Architecture
 
-- HeroUI `2.8.8` (`@heroui/react`)
-- Framer Motion `12.x`
-- Tailwind CSS v4 with HeroUI plugin via `hero.mjs`
+High-level flow:
 
-## Supabase Data Flow
+1. Leaguepedia parser fetches and normalizes scoreboard data.
+2. Snapshot sync writes full payloads into Supabase (`fantasy_match_snapshots`).
+3. App/API reads snapshots from Supabase only.
+4. Scoring settings (admin-managed) are applied at read time.
+5. Draft + chat run live over Supabase DB, RPCs, RLS, Storage, and Realtime.
 
-Runtime reads match data **only from Supabase**.
+Core stack:
 
-- App/API snapshot endpoint: reads latest row from `fantasy_match_snapshots`
-- Sync endpoint: fetches from Leaguepedia and writes a new snapshot row to Supabase
-- Automatic refresh: snapshot reads can auto-sync when data is stale (configurable throttling)
-- Each row stores full payload: matches (including blue/red team icon URLs from Fandom), scoring config, rosters, standings, player totals, top performances
-- Sync stores Leaguepedia `revid` (`sourceRevisionId`) and skips insert when revision is unchanged
+- `next@16.1.6` + React 19 App Router
+- `@heroui/react@2.8.8` + Tailwind CSS v4
+- Supabase Auth + Postgres + Realtime + Storage
+- TypeScript + ESLint
 
-## Data Source
+## Repo Layout
 
-By default this app parses:
+```text
+src/app/                   Pages + API routes
+src/components/            UI (dashboard, draft room, chat, auth widgets)
+src/lib/                   Domain logic (draft engine, sync, Supabase access, scoring)
+src/data/friends-league.json
+supabase/schema.sql        Canonical DB schema (tables, RPCs, RLS, storage policies)
+supabase/migrations/       Incremental SQL changes
+scripts/                   Tooling (launcher, load test, scoring optimizer, font checks)
+tests/                     Manual draft-room audit checklist
+```
 
-`https://lol.fandom.com/wiki/LCS/2026_Season/Lock-In`
+## Prerequisites
 
-It uses the MediaWiki `action=parse` API under the hood, discovers linked
-`/Scoreboards/...` pages for the tournament, and extracts each `table.sb` game block.
+- Node.js 20+ (Node 20 LTS recommended)
+- npm 10+
+- Supabase project with:
+  - project URL
+  - publishable key (or anon key)
+  - service role key
 
-## Local Setup
+## Quick Start
+
+1. Install dependencies.
 
 ```bash
 npm install
+```
+
+2. Create local env file.
+
+```bash
+cp .env.example .env.local
+```
+
+3. Configure required environment variables (see table below).
+4. Apply database schema in Supabase SQL editor using `supabase/schema.sql`.
+5. In Supabase Dashboard, enable `Authentication -> Providers -> Email`.
+6. Start dev server.
+
+```bash
 npm run dev
 ```
 
-Open `http://localhost:3000`.
+7. Open `http://localhost:3000`.
 
-If you switch shells (for example WSL -> PowerShell), rerun `npm install` in that shell so local CLI binaries are created for that environment.
+Windows note: if you switch shells (PowerShell <-> WSL), rerun `npm install` in that shell so local binaries are correct.
 
-If you see a Windows `lightningcss.win32-x64-msvc.node` or `../pkg` error, run `node .\\scripts\\ensure-lightningcss-win.mjs` once in the project root and retry `npm run dev`.
+## Environment Variables
+
+### Required
+
+| Variable | Required | Notes |
+| --- | --- | --- |
+| `NEXT_PUBLIC_SUPABASE_URL` | Yes | Public Supabase URL used by browser/server auth clients. |
+| `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | Yes* | Preferred public key. |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Yes* | Fallback if publishable key is not set. |
+| `SUPABASE_URL` | Yes | Server-side Supabase URL for service-role client. |
+| `SUPABASE_SERVICE_ROLE_KEY` | Yes | Required by server APIs/RPCs/storage/admin actions. |
+
+\* Set at least one of `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` or `NEXT_PUBLIC_SUPABASE_ANON_KEY`.
+
+### App/Data Controls
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `LEAGUEPEDIA_PAGE` | `src/data/friends-league.json` value | Source page override for sync/snapshot reads. |
+| `SUPABASE_MATCH_SNAPSHOTS_TABLE` | `fantasy_match_snapshots` | Snapshot table override. |
+| `SUPABASE_SCORING_SETTINGS_TABLE` | `fantasy_scoring_settings` | Scoring settings table override. |
+| `SNAPSHOT_STALE_MINUTES` | `30` | Stale threshold used by `/api/snapshot-status`. |
+| `AUTO_SYNC_ON_READ` | `true` | Enables stale snapshot auto-sync during reads. |
+| `AUTO_SYNC_STALE_MINUTES` | `10` | Auto-sync stale threshold. |
+| `AUTO_SYNC_MIN_ATTEMPT_SECONDS` | `45` | Throttle between auto-sync attempts. |
+
+### Protected Endpoint Tokens
+
+| Variable | Used By |
+| --- | --- |
+| `SYNC_API_TOKEN` | `POST /api/admin/sync-leaguepedia` via `x-sync-token` |
+| `DRAFT_AUTOMATION_TOKEN` | `GET/POST /api/cron/drafts` via bearer or `x-cron-token` |
+| `CRON_SECRET` | Fallback token for `/api/cron/drafts` if `DRAFT_AUTOMATION_TOKEN` is unset |
+
+### Advanced Local Launcher Flags
+
+Used by `scripts/run-next-with-css-wasm.mjs`:
+
+- `NEXT_DEV_BUNDLER=turbopack` to force Turbopack in dev
+- `NEXT_LAUNCHER_DEBUG=1` for launcher diagnostics
+- Windows-only recovery flags:
+  - `NEXT_FORCE_WINDOWS_NO_ADDONS=1`
+  - `NEXT_FORCE_WINDOWS_SWC_WASM=1`
+  - `NEXT_FORCE_WINDOWS_CSS_WASM=1`
+
+## League Configuration
+
+Default league config lives in `src/data/friends-league.json`:
+
+- `leagueName`: display name shown in the app
+- `sourcePage`: Leaguepedia page title (example: `LCS/2026_Season/Lock-In`)
+- `scoring`: fallback scoring values
+- `rosters`: friend/team fantasy rosters
+
+Notes:
+
+- `LEAGUEPEDIA_PAGE` env var overrides `sourcePage` at runtime.
+- Admin scoring updates are saved in Supabase and override JSON fallback scoring.
 
 ## Supabase Setup
 
-1. Create the table using `supabase/schema.sql` in your Supabase SQL editor.
-   - If your database was initialized before February 14, 2026, also run
-     `supabase/migrations/20260214_allow_pick_seconds_min_1.sql` to allow
-     1-second pick timers.
-   - Apply `supabase/migrations/20260214_enforce_unique_positions_max5.sql`
-     to enforce draft roster rules (one position each, max 5 players).
-   - Apply `supabase/migrations/20260216_draft_observability_metrics.sql` for
-     draft-room latency metrics and p50/p95 summaries.
-2. Copy `.env.example` to `.env.local` and fill:
-   - `NEXT_PUBLIC_SUPABASE_URL`
-   - `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` (preferred) or `NEXT_PUBLIC_SUPABASE_ANON_KEY`
-   - `SUPABASE_URL`
-   - `SUPABASE_SERVICE_ROLE_KEY`
-   - `SUPABASE_MATCH_SNAPSHOTS_TABLE` (default is `fantasy_match_snapshots`)
-   - `SUPABASE_SCORING_SETTINGS_TABLE` (default is `fantasy_scoring_settings`)
-   - `SYNC_API_TOKEN` (recommended)
-   - `SNAPSHOT_STALE_MINUTES` (default `30`)
-   - `AUTO_SYNC_ON_READ` (`true` by default; set `false` to disable)
-   - `AUTO_SYNC_STALE_MINUTES` (default `10`)
-   - `AUTO_SYNC_MIN_ATTEMPT_SECONDS` (default `45`)
-   - `DRAFT_AUTOMATION_TOKEN` (recommended for cron endpoint protection)
-3. In Supabase Dashboard, enable Email provider in Auth:
-   - `Authentication -> Providers -> Email`
-4. Start the app.
+### Canonical Setup (recommended)
 
-## Authentication
+Run `supabase/schema.sql` against your Supabase project. The file is idempotent and includes:
 
-- `GET /auth` provides register/login UI.
-- Registration requires a display name and stores it in Supabase Auth user metadata (`display_name`).
-- Signed-in users can upload/remove a profile image. Files are stored in Supabase Storage bucket `profile-images`, and the image path is stored in Auth user metadata (`avatar_path`).
-- `/` requires an authenticated session and redirects unauthenticated users to `/auth`.
-- Session refresh is handled by `middleware.ts` using Supabase SSR cookies.
+- core tables for snapshots, drafts, chat, scoring, observability
+- RPCs:
+  - `fantasy_process_due_drafts`
+  - `fantasy_submit_draft_pick`
+  - `fantasy_chat_post_message`
+  - `fantasy_chat_observability_summary`
+  - `fantasy_draft_observability_summary`
+  - `fantasy_cleanup_chat_data`
+- grants and RLS policies
+- Realtime publication setup for draft/chat tables
+- storage bucket policies for:
+  - `profile-images`
+  - `chat-images`
 
-## Draft Management
+### Existing Databases
 
-- `GET /drafts` provides commissioner tools to:
-  - create a draft tied to a specific league + season (`LCS`, `2026`) and source page
-  - choose draft time, rounds, and seconds-per-pick
-  - select and order registered website users as participants
-- Draft room at `GET /drafts/:draftId` includes:
-  - commissioner controls (start, force start, pause, resume, complete)
-  - reverse-snake on-clock logic (round 1 runs bottom-to-top, round 2 top-to-bottom)
-  - participant presence + ready check
-  - server-time-synced pick countdown
-  - atomic live pick submission with turn/team/timer enforcement
-  - automatic timeout picks and auto-complete via background processing
-  - draft board and full pick log
+If your database predates recent features, also apply SQL files in `supabase/migrations/` (in order). Current migrations include:
 
-The new draft tables are included in `supabase/schema.sql`:
+- pick timer constraints
+- role uniqueness/max-5 draft enforcement
+- draft observability + perf indexes
+- player portrait + autopick projection support
+- chat hardening + image support + reactions
+- draft timeout event tracking
+
+## Authentication and Roles
+
+- Dashboard and draft pages require auth (unauthenticated users redirect to `/auth`).
+- Auth uses Supabase email/password with profile metadata:
+  - `first_name`, `last_name`, `team_name`, `display_name`
+  - optional `avatar_path`, `avatar_border_color`
+- Global admin identity is stored in `fantasy_app_admin` (`id = 1`).
+- On `/`, admin can auto-seed if missing (`seedIfUnset: true`), then:
+  - admin can manage scoring settings and draft management
+  - non-admin users can join drafts where they are participants
+
+## Draft System
+
+Key behavior:
+
+- 3RR order:
+  - round 1: `1 -> N`
+  - rounds 2-3: `N -> 1`
+  - round 4+: alternates
+- max roster size is 5 (one per role: TOP/JNG/MID/ADC/SUP)
+- draft status lifecycle: `scheduled -> live -> paused -> completed`
+- timeout automation + autopick runs via RPC and cron/api processing
+- server endpoints emit `Server-Timing` headers for draft latency
+
+Data model:
 
 - `fantasy_drafts`
 - `fantasy_draft_participants`
-- `fantasy_draft_team_pool` (stores player pool entries)
+- `fantasy_draft_team_pool`
 - `fantasy_draft_picks`
 - `fantasy_draft_presence`
+- `fantasy_draft_timeout_events`
+- `fantasy_draft_observability_events`
 
-Also included in `supabase/schema.sql`:
+## Global Chat
 
-- `fantasy_submit_draft_pick(...)` RPC for race-safe pick commits
-- `fantasy_process_due_drafts(...)` RPC for auto-start + timeout handling
-- Realtime publication setup for draft tables
-- RLS policies for authenticated draft viewers
+Features:
 
-### Draft Performance Audit
+- authenticated global room
+- text + image messages (JPG/PNG/WEBP, up to 3MB)
+- idempotent sends (`x-idempotency-key`)
+- emoji reactions
+- realtime updates with fallback sync
+- client/server observability metrics
 
-The draft APIs now emit a `Server-Timing` header and record server/client
-latency metrics to `fantasy_draft_observability_events`.
+Data model:
 
-- Metrics endpoint: `POST /api/drafts/metrics` (client writes)
-- Metrics summary: `GET /api/drafts/metrics?windowMinutes=180` (admin only)
+- `fantasy_global_chat_messages`
+- `fantasy_global_chat_reactions`
+- `fantasy_chat_observability_events`
 
-Run synthetic multi-user load against a draft room:
+## API Reference
 
-1. Create a users file from `scripts/draft-load-users.example.json`.
-2. Run:
+### Snapshot + Sync
+
+| Route | Methods | Auth | Notes |
+| --- | --- | --- | --- |
+| `/api/snapshot` | `GET` | none | Returns latest computed fantasy snapshot from Supabase. |
+| `/api/snapshot-status` | `GET` | none | Returns freshness metadata (`storedAt`, `sourceRevisionId`, staleness). |
+| `/api/admin/sync-leaguepedia` | `POST` | token (optional) | Manual sync; checks Leaguepedia revision and skips unchanged snapshots. |
+
+### Scoring
+
+| Route | Methods | Auth | Notes |
+| --- | --- | --- | --- |
+| `/api/scoring-settings` | `GET`, `POST` | auth + admin | Read/update league scoring weights. |
+
+### Drafts
+
+| Route | Methods | Auth | Notes |
+| --- | --- | --- | --- |
+| `/api/drafts` | `GET` | auth | Lists drafts (also processes due drafts). |
+| `/api/drafts` | `POST` | auth + admin | Creates draft + participants + player pool from synced source page. |
+| `/api/drafts/users` | `GET` | auth + admin | Lists registered users for participant selection. |
+| `/api/drafts/validate-source` | `POST` | auth + admin | Validates source page snapshot and player pool coverage. |
+| `/api/drafts/metrics` | `POST` | auth | Client draft observability batch ingest. |
+| `/api/drafts/metrics` | `GET` | auth + admin | Draft observability summary (`windowMinutes` query). |
+| `/api/drafts/[draftId]` | `GET` | auth | Draft detail payload for authenticated users. |
+| `/api/drafts/[draftId]` | `DELETE` | commissioner/admin | Deletes a draft. |
+| `/api/drafts/[draftId]/pick` | `POST` | on-clock participant | Atomic manual pick submission. |
+| `/api/drafts/[draftId]/presence` | `POST` | participant | Presence heartbeat/ready toggle. |
+| `/api/drafts/[draftId]/status` | `POST` | commissioner | Transition status (supports force-start). |
+
+### Chat
+
+| Route | Methods | Auth | Notes |
+| --- | --- | --- | --- |
+| `/api/chat` | `GET` | auth | Paginated message fetch (`limit`, `afterId`, `beforeId`). |
+| `/api/chat` | `POST` | auth | Send message/image message with optional idempotency key. |
+| `/api/chat/upload` | `POST` | auth | Upload chat image to `chat-images` bucket. |
+| `/api/chat/reactions` | `GET`, `POST` | auth | Read/toggle reactions per message. |
+| `/api/chat/metrics` | `POST` | auth | Client chat observability events. |
+
+### Automation + Account
+
+| Route | Methods | Auth | Notes |
+| --- | --- | --- | --- |
+| `/api/cron/drafts` | `GET`, `POST` | cron token/header | Processes due drafts, chat cleanup, observability summaries, snapshot sync. |
+| `/api/account` | `DELETE` | auth | Account deletion; request body must include `{ "confirmation": "DELETE" }`. |
+
+## Operational Tasks
+
+### Manually Trigger Snapshot Sync
 
 ```bash
-npm run loadtest:draftroom -- --draft-id 123 --users-file scripts/draft-load-users.json --duration 90 --out /tmp/draft-load-summary.json
+curl -X POST "http://localhost:3000/api/admin/sync-leaguepedia" \
+  -H "x-sync-token: YOUR_SYNC_API_TOKEN"
 ```
-
-Key flags:
-
-- `--base-url` (default `http://127.0.0.1:3000`)
-- `--presence-ratio` (default `0.25`; remainder is draft GET requests)
-- `--think-ms` (default `280`)
-- `--window-minutes` (window for DB summary RPC)
-
-### Draft Automation Cron
-
-Route:
-
-- `GET|POST /api/cron/drafts`
-
-Behavior:
-
-- Processes draft automation (starts drafts, timeout picks, completion checks)
-- Cleans up chat retention and emits chat observability summary
-- Triggers Leaguepedia score snapshot sync using the same dedupe rules as `/api/admin/sync-leaguepedia`
-
-Auth:
-
-- `Authorization: Bearer <DRAFT_AUTOMATION_TOKEN>` or `x-cron-token: <DRAFT_AUTOMATION_TOKEN>`
-- If `DRAFT_AUTOMATION_TOKEN` is not set, only requests with `x-vercel-cron` are accepted.
-
-Suggested Vercel Cron cadence:
-
-- every minute (`* * * * *`)
-
-Example `vercel.json`:
-
-```json
-{
-  "crons": [
-    {
-      "path": "/api/cron/drafts",
-      "schedule": "* * * * *"
-    }
-  ]
-}
-```
-
-## Sync Leaguepedia -> Supabase
-
-The app includes a protected sync endpoint:
-
-`POST /api/admin/sync-leaguepedia`
 
 Optional query parameter:
 
-- `page` (overrides source page for this sync call)
+- `?page=LCS/2026_Season/Lock-In`
 
-Headers:
-
-- `x-sync-token: <SYNC_API_TOKEN>` (required if `SYNC_API_TOKEN` is set)
-
-Example PowerShell:
-
-```powershell
-Invoke-RestMethod -Method Post `
-  -Uri "http://localhost:3000/api/admin/sync-leaguepedia" `
-  -Headers @{ "x-sync-token" = "YOUR_PRIVATE_SYNC_TOKEN" }
-```
-
-Sync response includes:
-
-- `updated: true` when a new Leaguepedia revision was written
-- `updated: false` when latest stored revision already matches
-
-## Customize Your League
-
-Edit `src/data/friends-league.json`:
-
-- `leagueName`
-- `sourcePage`
-- `scoring` (default/fallback values; live overrides can be managed in the Settings -> Scoring Settings modal)
-- `rosters` (friends + picked players)
-
-Example player format:
-
-```json
-{
-  "friend": "Alex",
-  "players": ["Morgan", "Josedeodo", "Quid", "Yeon", "CoreJJ"]
-}
-```
-
-## Optional Environment Override
-
-Set `LEAGUEPEDIA_PAGE` to target a different source page without editing JSON:
+### Manually Trigger Draft/Cron Processing
 
 ```bash
-LEAGUEPEDIA_PAGE="LCS/2026_Season/Lock-In"
+curl -X POST "http://localhost:3000/api/cron/drafts" \
+  -H "Authorization: Bearer YOUR_DRAFT_AUTOMATION_TOKEN"
 ```
 
-## API Endpoint
+## Scripts
 
-`GET /api/snapshot`
+| Command | What it does |
+| --- | --- |
+| `npm run dev` | Runs Next dev via Windows-safe launcher. |
+| `npm run build` | Production build via launcher. |
+| `npm run start` | Starts production server via launcher. |
+| `npm run lint` | Runs ESLint. |
+| `npm run optimize:scoring` | Searches for improved scoring settings and can apply results. |
+| `npm run loadtest:draftroom -- --draft-id ... --users-file ...` | Synthetic multi-user draft room load test. |
+| `npm run check:fonts` | Enforces League Spartan-only font usage in `src/`. |
 
-Returns the latest full fantasy snapshot from Supabase.
+## Deployment
 
-`GET /api/snapshot-status`
+Standard Next.js flow:
 
-Returns freshness metadata:
+```bash
+npm run build
+npm run start
+```
 
-- latest `storedAt`
-- `sourceRevisionId` (Leaguepedia revision)
-- age in minutes and `isStale` based on `SNAPSHOT_STALE_MINUTES`
+`vercel.json` currently schedules:
 
-## Deploy / Self-Host
+- `/api/cron/drafts` at `0 12 * * *`
 
-Any standard Next.js host works:
+For active live drafts, a tighter cadence (for example every minute) is typically better.
 
-1. `npm run build`
-2. `npm run start`
+## Troubleshooting
 
-Or deploy to platforms like Vercel, Netlify, Render, Railway, or your own VPS.
+### `No snapshot found in Supabase`
+
+- Run `POST /api/admin/sync-leaguepedia` first.
+- Verify `LEAGUEPEDIA_PAGE` and source page in draft creation match synced data.
+
+### Auth setup error on `/auth`
+
+- Ensure `NEXT_PUBLIC_SUPABASE_URL` and public key (`NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` or `NEXT_PUBLIC_SUPABASE_ANON_KEY`) are set.
+
+### Missing draft/chat columns or RPC errors
+
+- Apply latest `supabase/schema.sql`.
+- If using incremental upgrades, apply all files in `supabase/migrations/`.
+
+### Windows `lightningcss` native binding errors
+
+- Run:
+
+```bash
+node .\\scripts\\ensure-lightningcss-win.mjs
+```
+
+- Then retry `npm run dev`.
+
+## Notes for Contributors
+
+- Keep `README.md` and `supabase/schema.sql` in sync when behavior changes.
+- Prefer adding migration files for production upgrades and then reflecting final state in `schema.sql`.
+- If you add/modify API routes, update the API reference table above in the same PR.
