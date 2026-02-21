@@ -1,6 +1,7 @@
 import type { User } from "@supabase/supabase-js";
 import { aggregatePlayerTotals } from "@/lib/fantasy";
 import { getSupabaseAuthEnv } from "@/lib/supabase-auth-env";
+import { listAdminAuthUsersCached } from "@/lib/supabase-admin-cache";
 import { getSupabaseServerClient } from "@/lib/supabase-server";
 import {
   getUserAvatarBorderColor,
@@ -12,6 +13,7 @@ import type { ParsedGame, PlayerTotal } from "@/types/fantasy";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const BYE_USER_ID = "__BYE__";
+const DASHBOARD_STANDINGS_CACHE_TTL_MS = 5_000;
 
 type CompletedDraftRow = {
   id: number;
@@ -180,6 +182,15 @@ export type DashboardStandings = {
   rows: DashboardStandingRow[];
   headToHead: HeadToHeadSummary;
 };
+
+const dashboardStandingsByCacheKey = new Map<
+  string,
+  {
+    value: DashboardStandings;
+    expiresAtMs: number;
+  }
+>();
+const inFlightDashboardStandingsByCacheKey = new Map<string, Promise<DashboardStandings>>();
 
 const normalizeName = (value: string): string => value.trim().toLowerCase();
 const normalizeTeam = (value: string): string => value.trim().toLowerCase();
@@ -430,24 +441,8 @@ const buildRoundRobinRounds = (participantUserIds: string[]): RoundRobinPair[][]
 };
 
 const listRegisteredUserProfiles = async (): Promise<RegisteredUserProfile[]> => {
-  const supabase = getSupabaseServerClient();
   const { supabaseUrl } = getSupabaseAuthEnv();
-  const users: User[] = [];
-  let page = 1;
-  const perPage = 200;
-
-  while (true) {
-    const { data, error } = await supabase.auth.admin.listUsers({ page, perPage });
-    if (error) {
-      throw new Error(`Unable to list registered users: ${error.message}`);
-    }
-
-    users.push(...data.users);
-    if (data.users.length < perPage || page >= 50) {
-      break;
-    }
-    page += 1;
-  }
+  const users: User[] = await listAdminAuthUsersCached();
 
   return users
     .map((user) => ({
@@ -943,108 +938,152 @@ const buildHeadToHeadSummary = ({
 export const getDashboardStandings = async ({
   playerTotals,
   games,
+  snapshotVersion,
 }: {
   playerTotals: PlayerTotal[];
   games: ParsedGame[];
+  snapshotVersion?: string | null;
 }): Promise<DashboardStandings> => {
-  const users = await listRegisteredUserProfiles();
-  const usersById = new Map(users.map((user) => [user.userId, user]));
   const latestCompletedDraft = await loadLatestCompletedDraft();
+  const draftVersionKey = latestCompletedDraft
+    ? `${latestCompletedDraft.id}:${latestCompletedDraft.started_at ?? latestCompletedDraft.scheduled_at}`
+    : "none";
+  const snapshotVersionKey =
+    snapshotVersion?.trim() || `${playerTotals.length}:${games.length}`;
+  const cacheKey = `${snapshotVersionKey}::${draftVersionKey}`;
+  const nowMs = Date.now();
+  const cached = dashboardStandingsByCacheKey.get(cacheKey);
+  if (cached && cached.expiresAtMs > nowMs) {
+    return cached.value;
+  }
 
-  if (!latestCompletedDraft) {
-    return {
-      completedDraftId: null,
-      completedDraftName: null,
-      completedDraftAt: null,
-      rows: users.map((user) => ({
+  const inFlight = inFlightDashboardStandingsByCacheKey.get(cacheKey);
+  if (inFlight) {
+    return inFlight;
+  }
+
+  const computePromise = (async (): Promise<DashboardStandings> => {
+    const users = await listRegisteredUserProfiles();
+    const usersById = new Map(users.map((user) => [user.userId, user]));
+
+    if (!latestCompletedDraft) {
+      return {
+        completedDraftId: null,
+        completedDraftName: null,
+        completedDraftAt: null,
+        rows: users.map((user) => ({
+          userId: user.userId,
+          displayName: user.displayName,
+          teamName: user.teamName,
+          email: user.email,
+          avatarUrl: user.avatarUrl,
+          avatarBorderColor: user.avatarBorderColor,
+          drafted: false,
+          totalPoints: 0,
+          averagePerPick: 0,
+          breakdown: [],
+        })),
+        headToHead: emptyHeadToHeadSummary(),
+      };
+    }
+
+    const [picks, participants] = await Promise.all([
+      loadDraftPicks(latestCompletedDraft.id),
+      loadDraftParticipants(latestCompletedDraft.id),
+    ]);
+    const participantTeamNameByUserId = new Map(
+      participants.map((participant) => [
+        participant.user_id,
+        participant.team_name?.trim() || null,
+      ]),
+    );
+
+    const picksByUserId = new Map<string, DraftPickRow[]>();
+    for (const pick of picks) {
+      const list = picksByUserId.get(pick.participant_user_id) ?? [];
+      list.push(pick);
+      picksByUserId.set(pick.participant_user_id, list);
+    }
+
+    const { byName, byNameAndTeam } = buildPlayerTotalsLookups(playerTotals);
+
+    const rows: DashboardStandingRow[] = users.map((user) => {
+      const userPicks = picksByUserId.get(user.userId) ?? [];
+      const breakdown = userPicks.map((pick) => {
+        const resolved = resolvePlayerTotal({ pick, byName, byNameAndTeam });
+        return {
+          playerName: pick.team_name,
+          playerTeam: resolved?.team ?? pick.player_team,
+          playerRole: pick.player_role,
+          playerTeamIconUrl: pick.team_icon_url,
+          points: resolved?.fantasyPoints ?? 0,
+          games: resolved?.games ?? 0,
+        };
+      });
+
+      const totalPoints = breakdown.reduce((total, entry) => total + entry.points, 0);
+      const averagePerPick = breakdown.length > 0 ? totalPoints / breakdown.length : 0;
+
+      return {
         userId: user.userId,
         displayName: user.displayName,
-        teamName: user.teamName,
+        teamName: participantTeamNameByUserId.get(user.userId) ?? user.teamName,
         email: user.email,
         avatarUrl: user.avatarUrl,
         avatarBorderColor: user.avatarBorderColor,
-        drafted: false,
-        totalPoints: 0,
-        averagePerPick: 0,
-        breakdown: [],
-      })),
-      headToHead: emptyHeadToHeadSummary(),
-    };
-  }
-
-  const [picks, participants] = await Promise.all([
-    loadDraftPicks(latestCompletedDraft.id),
-    loadDraftParticipants(latestCompletedDraft.id),
-  ]);
-  const participantTeamNameByUserId = new Map(
-    participants.map((participant) => [
-      participant.user_id,
-      participant.team_name?.trim() || null,
-    ]),
-  );
-
-  const picksByUserId = new Map<string, DraftPickRow[]>();
-  for (const pick of picks) {
-    const list = picksByUserId.get(pick.participant_user_id) ?? [];
-    list.push(pick);
-    picksByUserId.set(pick.participant_user_id, list);
-  }
-
-  const { byName, byNameAndTeam } = buildPlayerTotalsLookups(playerTotals);
-
-  const rows: DashboardStandingRow[] = users.map((user) => {
-    const userPicks = picksByUserId.get(user.userId) ?? [];
-    const breakdown = userPicks.map((pick) => {
-      const resolved = resolvePlayerTotal({ pick, byName, byNameAndTeam });
-      return {
-        playerName: pick.team_name,
-        playerTeam: resolved?.team ?? pick.player_team,
-        playerRole: pick.player_role,
-        playerTeamIconUrl: pick.team_icon_url,
-        points: resolved?.fantasyPoints ?? 0,
-        games: resolved?.games ?? 0,
+        drafted: breakdown.length > 0,
+        totalPoints,
+        averagePerPick,
+        breakdown,
       };
     });
 
-    const totalPoints = breakdown.reduce((total, entry) => total + entry.points, 0);
-    const averagePerPick = breakdown.length > 0 ? totalPoints / breakdown.length : 0;
+    rows.sort((a, b) => {
+      if (a.drafted !== b.drafted) {
+        return a.drafted ? -1 : 1;
+      }
+      if (a.totalPoints !== b.totalPoints) {
+        return b.totalPoints - a.totalPoints;
+      }
+      return a.displayName.localeCompare(b.displayName);
+    });
 
     return {
-      userId: user.userId,
-      displayName: user.displayName,
-      teamName: participantTeamNameByUserId.get(user.userId) ?? user.teamName,
-      email: user.email,
-      avatarUrl: user.avatarUrl,
-      avatarBorderColor: user.avatarBorderColor,
-      drafted: breakdown.length > 0,
-      totalPoints,
-      averagePerPick,
-      breakdown,
+      completedDraftId: latestCompletedDraft.id,
+      completedDraftName: latestCompletedDraft.name,
+      completedDraftAt: latestCompletedDraft.started_at ?? latestCompletedDraft.scheduled_at,
+      rows,
+      headToHead: buildHeadToHeadSummary({
+        completedDraftAt:
+          latestCompletedDraft.started_at ?? latestCompletedDraft.scheduled_at,
+        participants,
+        picksByUserId,
+        usersById,
+        games,
+      }),
     };
-  });
+  })()
+    .then((computed) => {
+      dashboardStandingsByCacheKey.set(cacheKey, {
+        value: computed,
+        expiresAtMs: Date.now() + DASHBOARD_STANDINGS_CACHE_TTL_MS,
+      });
 
-  rows.sort((a, b) => {
-    if (a.drafted !== b.drafted) {
-      return a.drafted ? -1 : 1;
-    }
-    if (a.totalPoints !== b.totalPoints) {
-      return b.totalPoints - a.totalPoints;
-    }
-    return a.displayName.localeCompare(b.displayName);
-  });
+      if (dashboardStandingsByCacheKey.size > 32) {
+        const cutoff = Date.now();
+        for (const [key, value] of dashboardStandingsByCacheKey.entries()) {
+          if (value.expiresAtMs <= cutoff) {
+            dashboardStandingsByCacheKey.delete(key);
+          }
+        }
+      }
 
-  return {
-    completedDraftId: latestCompletedDraft.id,
-    completedDraftName: latestCompletedDraft.name,
-    completedDraftAt: latestCompletedDraft.started_at ?? latestCompletedDraft.scheduled_at,
-    rows,
-    headToHead: buildHeadToHeadSummary({
-      completedDraftAt:
-        latestCompletedDraft.started_at ?? latestCompletedDraft.scheduled_at,
-      participants,
-      picksByUserId,
-      usersById,
-      games,
-    }),
-  };
+      return computed;
+    })
+    .finally(() => {
+      inFlightDashboardStandingsByCacheKey.delete(cacheKey);
+    });
+
+  inFlightDashboardStandingsByCacheKey.set(cacheKey, computePromise);
+  return computePromise;
 };

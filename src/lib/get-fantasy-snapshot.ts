@@ -8,7 +8,7 @@ import {
 import { getActiveScoringSettings } from "@/lib/scoring-settings";
 import { syncLeaguepediaSnapshot } from "@/lib/snapshot-sync";
 import { tryGetLatestSnapshotFromSupabase } from "@/lib/supabase-match-store";
-import type { FantasySnapshot, LeagueConfig } from "@/types/fantasy";
+import type { FantasyScoring, FantasySnapshot, LeagueConfig } from "@/types/fantasy";
 
 const leagueConfig = leagueConfigData as LeagueConfig;
 const readPositiveInteger = (value: string | undefined, fallback: number): number => {
@@ -34,6 +34,16 @@ const AUTO_SYNC_MIN_ATTEMPT_SECONDS = readPositiveInteger(
 
 let inFlightAutoSync: Promise<void> | null = null;
 let lastAutoSyncAttemptAtMs = 0;
+const SNAPSHOT_COMPUTE_CACHE_TTL_MS = 5_000;
+
+const computedSnapshotByKey = new Map<
+  string,
+  {
+    snapshot: FantasySnapshot;
+    expiresAtMs: number;
+  }
+>();
+const inFlightComputedSnapshotByKey = new Map<string, Promise<FantasySnapshot>>();
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
@@ -62,6 +72,45 @@ const isSnapshotStale = (storedAt: string | null): boolean => {
     return true;
   }
   return snapshotAgeMinutes(storedAt) >= AUTO_SYNC_STALE_MINUTES;
+};
+
+const scoringSignature = (scoring: FantasyScoring): string =>
+  [
+    scoring.kill,
+    scoring.death,
+    scoring.assist,
+    scoring.win,
+    scoring.csPer100,
+    scoring.goldPer1000,
+  ].join("|");
+
+const computedSnapshotCacheKey = ({
+  sourcePage,
+  storedAt,
+  scoring,
+}: {
+  sourcePage: string;
+  storedAt: string;
+  scoring: FantasyScoring;
+}): string => `${sourcePage}::${storedAt}::${scoringSignature(scoring)}`;
+
+const pruneComputedSnapshotCache = (): void => {
+  const nowMs = Date.now();
+  for (const [key, entry] of computedSnapshotByKey.entries()) {
+    if (entry.expiresAtMs <= nowMs) {
+      computedSnapshotByKey.delete(key);
+    }
+  }
+  if (computedSnapshotByKey.size <= 32) {
+    return;
+  }
+
+  const sortedKeys = [...computedSnapshotByKey.entries()]
+    .sort((left, right) => left[1].expiresAtMs - right[1].expiresAtMs)
+    .map(([key]) => key);
+  for (const key of sortedKeys.slice(0, computedSnapshotByKey.size - 32)) {
+    computedSnapshotByKey.delete(key);
+  }
 };
 
 const maybeAutoSyncSnapshot = async ({
@@ -130,22 +179,51 @@ export const getFantasySnapshot = async (): Promise<FantasySnapshot> => {
   }
 
   const { scoring } = await getActiveScoringSettings();
-  const games = applyScoringToGames(payload.games, scoring);
-  const playerTotals = aggregatePlayerTotals(games);
-  const standings = buildLeagueStandings(playerTotals, payload.rosters);
-  const topPerformances = topSingleGamePerformances(games, 15);
-
-  return {
-    generatedAt: payload.generatedAt ?? storedAt,
+  const cacheKey = computedSnapshotCacheKey({
     sourcePage: payload.sourcePage,
-    leagueName: payload.leagueName,
+    storedAt,
     scoring,
-    rosters: payload.rosters,
-    matchCount: games.length,
-    playerCount: playerTotals.length,
-    games,
-    playerTotals,
-    standings,
-    topPerformances,
-  };
+  });
+  const nowMs = Date.now();
+  const cached = computedSnapshotByKey.get(cacheKey);
+  if (cached && cached.expiresAtMs > nowMs) {
+    return cached.snapshot;
+  }
+
+  const inFlight = inFlightComputedSnapshotByKey.get(cacheKey);
+  if (inFlight) {
+    return inFlight;
+  }
+
+  const computePromise = (async (): Promise<FantasySnapshot> => {
+    const games = applyScoringToGames(payload.games, scoring);
+    const playerTotals = aggregatePlayerTotals(games);
+    const standings = buildLeagueStandings(playerTotals, payload.rosters);
+    const topPerformances = topSingleGamePerformances(games, 15);
+    const computedSnapshot: FantasySnapshot = {
+      generatedAt: payload.generatedAt ?? storedAt,
+      sourcePage: payload.sourcePage,
+      leagueName: payload.leagueName,
+      scoring,
+      rosters: payload.rosters,
+      matchCount: games.length,
+      playerCount: playerTotals.length,
+      games,
+      playerTotals,
+      standings,
+      topPerformances,
+    };
+
+    computedSnapshotByKey.set(cacheKey, {
+      snapshot: computedSnapshot,
+      expiresAtMs: Date.now() + SNAPSHOT_COMPUTE_CACHE_TTL_MS,
+    });
+    pruneComputedSnapshotCache();
+    return computedSnapshot;
+  })().finally(() => {
+    inFlightComputedSnapshotByKey.delete(cacheKey);
+  });
+
+  inFlightComputedSnapshotByKey.set(cacheKey, computePromise);
+  return computePromise;
 };

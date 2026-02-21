@@ -3,12 +3,11 @@ import { isGlobalAdminUser } from "@/lib/admin-access";
 import { getPickSlot, resolveCurrentPickDeadline, resolveNextPick } from "@/lib/draft-engine";
 import { withResolvedDraftPlayerImages } from "@/lib/draft-player-images";
 import { calculateFantasyPoints, DEFAULT_SCORING } from "@/lib/fantasy";
-import { getSupabaseAuthEnv } from "@/lib/supabase-auth-env";
+import { listAdminAuthUsersCached, resolveAdminAvatarProfiles } from "@/lib/supabase-admin-cache";
 import { getLatestSnapshotFromSupabase } from "@/lib/supabase-match-store";
 import { getSupabaseServerClient } from "@/lib/supabase-server";
 import {
   formatUserLabelFromDisplayName,
-  getUserAvatarUrl,
   getUserDisplayName,
   getUserFirstName,
   getUserLastName,
@@ -69,13 +68,6 @@ type CachedPlayerAnalytics = {
 };
 
 const draftPlayerAnalyticsCache = new Map<string, CachedPlayerAnalytics>();
-const draftParticipantAvatarCache = new Map<
-  string,
-  {
-    avatarUrl: string | null;
-    cachedAtMs: number;
-  }
->();
 
 const normalizeForKey = (value: string | null | undefined): string =>
   value?.trim().toLowerCase() ?? "";
@@ -601,75 +593,19 @@ const resolveParticipantAvatarUrls = async (
     return resolved;
   }
 
-  const nowMs = Date.now();
-  const userIdsToFetch: string[] = [];
-
+  const profilesByUserId = await resolveAdminAvatarProfiles({
+    userIds: uniqueUserIds,
+    ttlMs: DRAFT_PARTICIPANT_AVATAR_CACHE_TTL_MS,
+  });
   for (const userId of uniqueUserIds) {
-    const cached = draftParticipantAvatarCache.get(userId);
-    if (cached && nowMs - cached.cachedAtMs <= DRAFT_PARTICIPANT_AVATAR_CACHE_TTL_MS) {
-      resolved.set(userId, cached.avatarUrl);
-      continue;
-    }
-    userIdsToFetch.push(userId);
+    resolved.set(userId, profilesByUserId.get(userId)?.avatarUrl ?? null);
   }
-
-  if (userIdsToFetch.length < 1) {
-    return resolved;
-  }
-
-  const supabase = getSupabaseServerClient();
-  const { supabaseUrl } = getSupabaseAuthEnv();
-
-  await Promise.all(
-    userIdsToFetch.map(async (userId) => {
-      let avatarUrl: string | null = null;
-      try {
-        const { data, error } = await supabase.auth.admin.getUserById(userId);
-        if (error) {
-          throw new Error(error.message);
-        }
-        avatarUrl = getUserAvatarUrl({
-          user: data.user ?? null,
-          supabaseUrl,
-        });
-      } catch {
-        avatarUrl = null;
-      }
-      draftParticipantAvatarCache.set(userId, {
-        avatarUrl,
-        cachedAtMs: Date.now(),
-      });
-      resolved.set(userId, avatarUrl);
-    }),
-  );
 
   return resolved;
 };
 
 export const listRegisteredUsers = async (): Promise<RegisteredUser[]> => {
-  const supabase = getSupabaseServerClient();
-  const users: User[] = [];
-  let page = 1;
-  const perPage = 200;
-
-  while (true) {
-    const { data, error } = await supabase.auth.admin.listUsers({
-      page,
-      perPage,
-    });
-    if (error) {
-      throw new Error(`Unable to list registered users: ${error.message}`);
-    }
-
-    users.push(...data.users);
-    if (data.users.length < perPage) {
-      break;
-    }
-    page += 1;
-    if (page > 50) {
-      break;
-    }
-  }
+  const users: User[] = await listAdminAuthUsersCached();
 
   return users
     .map(mapRegisteredUser)

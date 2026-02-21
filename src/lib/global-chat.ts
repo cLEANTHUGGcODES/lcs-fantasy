@@ -1,8 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { MAX_CHAT_IMAGE_URL_LENGTH, normalizeChatImageUrl } from "@/lib/chat-image";
-import { getSupabaseAuthEnv } from "@/lib/supabase-auth-env";
+import { resolveAdminAvatarProfiles } from "@/lib/supabase-admin-cache";
 import { getSupabaseServerClient } from "@/lib/supabase-server";
-import { getUserAvatarBorderColor, getUserAvatarUrl } from "@/lib/user-profile";
 import type { GlobalChatMessage, GlobalChatReaction } from "@/types/chat";
 
 const GLOBAL_CHAT_TABLE = "fantasy_global_chat_messages";
@@ -16,7 +15,6 @@ const MAX_GLOBAL_CHAT_LIMIT = 200;
 export const MAX_GLOBAL_CHAT_MESSAGE_LENGTH = 320;
 export const MAX_GLOBAL_CHAT_IMAGE_URL_LENGTH = MAX_CHAT_IMAGE_URL_LENGTH;
 export const MAX_GLOBAL_CHAT_REACTION_EMOJI_LENGTH = 16;
-const AVATAR_CACHE_TTL_MS = 5 * 60 * 1000;
 
 const GLOBAL_CHAT_SELECT_COLUMNS = [
   "id",
@@ -48,14 +46,6 @@ type GlobalChatReactionRow = {
   emoji: string;
   created_at: string;
 };
-
-type CachedAvatarProfile = {
-  avatarUrl: string | null;
-  avatarBorderColor: string | null;
-  expiresAt: number;
-};
-
-const avatarProfileByUserIdCache = new Map<string, CachedAvatarProfile>();
 
 const asObject = (value: unknown): Record<string, unknown> | null =>
   typeof value === "object" && value !== null ? (value as Record<string, unknown>) : null;
@@ -150,57 +140,7 @@ const toGlobalChatMessage = (row: GlobalChatRow): GlobalChatMessage => ({
 const resolveAvatarProfilesForUsers = async (
   userIds: string[],
 ): Promise<Map<string, { avatarUrl: string | null; avatarBorderColor: string | null }>> => {
-  const now = Date.now();
-  const resolved = new Map<string, { avatarUrl: string | null; avatarBorderColor: string | null }>();
-  const missingUserIds: string[] = [];
-
-  for (const userId of userIds) {
-    const cached = avatarProfileByUserIdCache.get(userId);
-    if (cached && cached.expiresAt > now) {
-      resolved.set(userId, {
-        avatarUrl: cached.avatarUrl,
-        avatarBorderColor: cached.avatarBorderColor,
-      });
-      continue;
-    }
-    missingUserIds.push(userId);
-  }
-
-  if (missingUserIds.length === 0) {
-    return resolved;
-  }
-
-  const supabase = getSupabaseServerClient();
-  const { supabaseUrl } = getSupabaseAuthEnv();
-
-  await Promise.all(
-    missingUserIds.map(async (userId) => {
-      let avatarUrl: string | null = null;
-      let avatarBorderColor: string | null = null;
-      try {
-        const { data, error } = await supabase.auth.admin.getUserById(userId);
-        if (!error && data?.user) {
-          avatarUrl = getUserAvatarUrl({
-            user: data.user,
-            supabaseUrl,
-          });
-          avatarBorderColor = getUserAvatarBorderColor(data.user);
-        }
-      } catch {
-        avatarUrl = null;
-        avatarBorderColor = null;
-      }
-
-      avatarProfileByUserIdCache.set(userId, {
-        avatarUrl,
-        avatarBorderColor,
-        expiresAt: now + AVATAR_CACHE_TTL_MS,
-      });
-      resolved.set(userId, { avatarUrl, avatarBorderColor });
-    }),
-  );
-
-  return resolved;
+  return resolveAdminAvatarProfiles({ userIds });
 };
 
 const hydrateMissingAvatarFields = async (
