@@ -4537,6 +4537,17 @@ export const DraftRoom = ({
     settings.autoPickFromQueue && queuedEligiblePlayers.length > 0
       ? `Autopick will take #1: ${queuedEligiblePlayers[0].playerName}`
       : null;
+  const showMobileBottomAutopickLine = canCurrentUserPick && Boolean(autopickPreviewLine);
+  const showMobileBottomConfirmLine = hasPendingManualConfirm && Boolean(pendingManualDraftPlayer);
+  const showMobileBottomReadOnlyLine = isRealtimeReadOnly;
+  const showMobileBottomQueueWarningLine = showQueueEmptyAutopickWarning && canCurrentUserPick;
+  const showMobileBottomActionCtas = hasPendingManualConfirm || canCurrentUserPick;
+  const isMobileIconBarCompactOnly =
+    !showMobileBottomActionCtas &&
+    !showMobileBottomAutopickLine &&
+    !showMobileBottomConfirmLine &&
+    !showMobileBottomReadOnlyLine &&
+    !showMobileBottomQueueWarningLine;
   const isMobileBottomActionBarVisible =
     isLiveState &&
     isMobileViewport &&
@@ -7111,9 +7122,20 @@ export const DraftRoom = ({
       ) : null}
 
       {isLiveState && isMobileViewport && !selectedPlayer && !isMobileQueueSheetOpen ? (
-        <div className="fixed inset-x-3 z-40" style={{ bottom: "max(0.75rem, env(safe-area-inset-bottom))" }}>
-          <div className="rounded-large border border-primary-300/35 bg-content1/95 p-2 shadow-lg backdrop-blur">
-            {canCurrentUserPick && autopickPreviewLine ? (
+        <div
+          className={
+            isMobileIconBarCompactOnly
+              ? "fixed left-1/2 z-40 -translate-x-1/2"
+              : "fixed inset-x-3 z-40"
+          }
+          style={{ bottom: "max(0.75rem, env(safe-area-inset-bottom))" }}
+        >
+          <div
+            className={`rounded-large border border-primary-300/35 bg-content1/95 shadow-lg backdrop-blur ${
+              isMobileIconBarCompactOnly ? "px-2 py-1.5" : "p-2"
+            }`}
+          >
+            {showMobileBottomAutopickLine ? (
               <p
                 className={`mb-2 rounded-medium border px-2 py-1 text-[11px] ${
                   isLowTimerWarning
@@ -7124,7 +7146,7 @@ export const DraftRoom = ({
                 {autopickPreviewLine}
               </p>
             ) : null}
-            {hasPendingManualConfirm && pendingManualDraftPlayer ? (
+            {showMobileBottomConfirmLine ? (
               <p className="mb-2 text-[11px] text-default-500">
                 Confirming {pendingManualDraftPlayer.playerName} ({formatRoleLabel(pendingManualDraftPlayer.playerRole)})
                 {pendingManualSlotImpact ? ` • Fills ${pendingManualSlotImpact.fills}` : ""}
@@ -7235,7 +7257,7 @@ export const DraftRoom = ({
                 Read-only while reconnecting. Last synced {secondsSinceLastSync}s ago.
               </p>
             ) : null}
-            {showQueueEmptyAutopickWarning && canCurrentUserPick ? (
+            {showMobileBottomQueueWarningLine ? (
               <p className="mt-1 text-[11px] text-warning-300">
                 {queueAutopickWarningMessage}
               </p>
