@@ -1422,14 +1422,28 @@ export const GlobalChatPanel = ({
   className,
   mode = "floating",
   hideOnMobile = false,
+  isOpen: isOpenProp,
+  onOpenChange,
+  onUnreadCountChange,
+  hideLauncherButton = false,
 }: {
   currentUserId: string;
   className?: string;
   mode?: "floating" | "embedded";
   hideOnMobile?: boolean;
+  isOpen?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  onUnreadCountChange?: (count: number) => void;
+  hideLauncherButton?: boolean;
 }) => {
   const isEmbedded = mode === "embedded";
-  const [isOpen, setIsOpen] = useState(false);
+  const [uncontrolledIsOpen, setUncontrolledIsOpen] = useState(false);
+  const setPanelOpen = useCallback((nextOpen: boolean) => {
+    if (isOpenProp === undefined) {
+      setUncontrolledIsOpen(nextOpen);
+    }
+    onOpenChange?.(nextOpen);
+  }, [isOpenProp, onOpenChange]);
   const [isMobileViewport, setIsMobileViewport] = useState(false);
   const [chatStore, dispatchChatStore] = useReducer(chatStoreReducer, INITIAL_CHAT_STORE_STATE);
   const [loading, setLoading] = useState(true);
@@ -1483,7 +1497,7 @@ export const GlobalChatPanel = ({
   const incrementalTrueUpTimeoutRef = useRef<number | null>(null);
   const scrollSyncFrameRef = useRef<number | null>(null);
   const blockMeasuredHeightsRef = useRef<Record<string, number>>({});
-  const isPanelOpen = isEmbedded ? true : isOpen;
+  const isPanelOpen = isEmbedded ? true : (isOpenProp ?? uncontrolledIsOpen);
   const sortedMessages = chatStore.messages;
   const hasOlderMessages = chatStore.hasOlderMessages;
   const oldestCursorId = chatStore.oldestCursorId;
@@ -3323,7 +3337,7 @@ export const GlobalChatPanel = ({
     if (isEmbedded) {
       return;
     }
-    setIsOpen(true);
+    setPanelOpen(true);
     setShowJumpToLatest(false);
     setLastSeenMessageId(latestPersistedMessageId);
     setUnreadCount(0);
@@ -3341,7 +3355,7 @@ export const GlobalChatPanel = ({
       incrementalTrueUpTimeoutRef.current = null;
     }
     cancelActionBarHide();
-    setIsOpen(false);
+    setPanelOpen(false);
     setShowJumpToLatest(false);
     setReplyContext(null);
     setHoveredActionBarMessageId(null);
@@ -3366,6 +3380,10 @@ export const GlobalChatPanel = ({
     ? "pointer-events-none fixed inset-0 z-[120] flex flex-col"
     : "pointer-events-none fixed bottom-3 left-0 right-0 z-[120] flex flex-col items-end gap-2 px-3 sm:bottom-4 sm:left-auto sm:right-4 sm:px-0";
   const hasComposerAuxContent = Boolean(attachedImage || replyContext || pendingImageUpload || error);
+
+  useEffect(() => {
+    onUnreadCountChange?.(unreadCount);
+  }, [onUnreadCountChange, unreadCount]);
 
   if (hideOnMobile && isMobileViewport) {
     return null;
@@ -3744,7 +3762,7 @@ export const GlobalChatPanel = ({
         </ModalContent>
       </Modal>
 
-      {!isEmbedded ? (
+      {!isEmbedded && !hideLauncherButton ? (
         <Button
           isIconOnly={isPanelOpen}
           aria-label={isPanelOpen ? "Close chat" : "Open chat"}

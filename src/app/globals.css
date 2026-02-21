@@ -156,3 +156,47 @@ body {
     font-size: 16px;
   }
 }
+
+@keyframes draft-title-rgb-shift {
+  0% {
+    background-position: 0% 50%;
+  }
+  100% {
+    background-position: 200% 50%;
+  }
+}
+
+@keyframes draft-title-rgb-glow {
+  0%,
+  100% {
+    filter: drop-shadow(0 0 8px rgba(56, 189, 248, 0.55))
+      drop-shadow(0 0 16px rgba(244, 63, 94, 0.35));
+  }
+  50% {
+    filter: drop-shadow(0 0 11px rgba(59, 130, 246, 0.8))
+      drop-shadow(0 0 22px rgba(236, 72, 153, 0.6));
+  }
+}
+
+.draft-title-rgb {
+  color: #f8fafc;
+  background-image: linear-gradient(
+    90deg,
+    #ff0040 0%,
+    #ff7a00 16%,
+    #ffe600 32%,
+    #44ff00 48%,
+    #00f0ff 64%,
+    #3b82f6 78%,
+    #a855f7 90%,
+    #ff2a9b 100%
+  );
+  background-size: 220% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  animation:
+    draft-title-rgb-shift 4.5s linear infinite,
+    draft-title-rgb-glow 1.9s ease-in-out infinite;
+}

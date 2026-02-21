@@ -17,6 +17,7 @@ import {
   ChevronDown,
   Cog,
   MoreHorizontal,
+  MessageCircle,
   ArrowDown,
   ArrowUp,
   Gauge,
@@ -1709,6 +1710,8 @@ export const DraftRoom = ({
   const [isPlayerDetailDrawerOpen, setIsPlayerDetailDrawerOpen] = useState(false);
   const [isQueueDrawerOpen, setIsQueueDrawerOpen] = useState(false);
   const [isMobileQueueSheetOpen, setIsMobileQueueSheetOpen] = useState(false);
+  const [isMobileChatOpen, setIsMobileChatOpen] = useState(false);
+  const [mobileChatUnreadCount, setMobileChatUnreadCount] = useState(0);
   const [timelineHighlightPick, setTimelineHighlightPick] = useState<number | null>(null);
   const [topStripHighlightPick, setTopStripHighlightPick] = useState<number | null>(null);
   const [showStatusDetails, setShowStatusDetails] = useState(false);
@@ -2639,6 +2642,12 @@ export const DraftRoom = ({
   }, []);
 
   useEffect(() => {
+    if (!isMobileViewport) {
+      setIsMobileChatOpen(false);
+    }
+  }, [isMobileViewport]);
+
+  useEffect(() => {
     const expectedPick = timeoutExpectedPickRef.current;
     if (!draft || expectedPick === null) {
       return;
@@ -3329,6 +3338,36 @@ export const DraftRoom = ({
 
     const currentOverallPick =
       draft.nextPick?.overallPick ?? (draft.picks.length > 0 ? draft.totalPickCount + 1 : 1);
+    const stripOffsets = (() => {
+      if (!isMobileViewport) {
+        return TOP_PICK_STRIP_OFFSETS;
+      }
+
+      const maxPick = draft.totalPickCount;
+      if (maxPick < 1) {
+        return [] as number[];
+      }
+
+      // On mobile, show at most 3 tiles in a sliding window.
+      const anchorPick = Math.min(Math.max(1, currentOverallPick), maxPick);
+      let startPick = anchorPick - 1;
+      let endPick = anchorPick + 1;
+
+      if (startPick < 1) {
+        endPick = Math.min(maxPick, endPick + (1 - startPick));
+        startPick = 1;
+      }
+      if (endPick > maxPick) {
+        startPick = Math.max(1, startPick - (endPick - maxPick));
+        endPick = maxPick;
+      }
+
+      const offsets: number[] = [];
+      for (let pick = startPick; pick <= endPick; pick += 1) {
+        offsets.push(pick - currentOverallPick);
+      }
+      return offsets;
+    })();
     const participantCount = participantsByPosition.length;
     const slots: Array<{
       key: string;
@@ -3348,7 +3387,7 @@ export const DraftRoom = ({
       } | null;
     }> = [];
 
-    for (const offset of TOP_PICK_STRIP_OFFSETS) {
+    for (const offset of stripOffsets) {
       const overallPick = currentOverallPick + offset;
       if (overallPick < 1 || overallPick > draft.totalPickCount) {
         continue;
@@ -3386,7 +3425,7 @@ export const DraftRoom = ({
       });
     }
     return slots;
-  }, [draft, participantsByPosition, pickPlayerImageUrl, picksByOverallPick]);
+  }, [draft, isMobileViewport, participantsByPosition, pickPlayerImageUrl, picksByOverallPick]);
   const yourNextPickMeta = useMemo(() => {
     if (!draft?.nextPick || typeof picksUntilCurrentUser !== "number") {
       return null;
@@ -4602,6 +4641,12 @@ export const DraftRoom = ({
           <div
             aria-hidden
             className="pointer-events-none absolute inset-0 z-0 overflow-hidden opacity-[0.05]"
+            style={{
+              WebkitMaskImage:
+                "linear-gradient(to right, transparent 0%, black 14%, black 86%, transparent 100%)",
+              maskImage:
+                "linear-gradient(to right, transparent 0%, black 14%, black 86%, transparent 100%)",
+            }}
           >
             <iframe
               allow="autoplay; encrypted-media; picture-in-picture"
@@ -4613,49 +4658,87 @@ export const DraftRoom = ({
             />
           </div>
         {isMobileViewport ? (
-          <div className="absolute right-2 top-2 z-20 flex items-center gap-2 rounded-large border border-default-200/40 bg-content1/92 p-1.5 shadow-sm backdrop-blur">
-            <Tooltip content={showStatusDetails ? "Hide status details" : "Show status details"} showArrow>
-              <Button
-                isIconOnly
-                aria-label={showStatusDetails ? "Hide status details" : "Show status details"}
-                size="sm"
-                variant="flat"
-                onPress={() => setShowStatusDetails((prev) => !prev)}
+          <div className="absolute right-2 top-2 z-20 flex flex-col items-end gap-1.5">
+            <Tooltip content={stateBanner.label} showArrow>
+              <div
+                className={
+                  isConnectedIndicator
+                    ? "inline-flex h-9 w-9 items-center justify-center"
+                    : `grid h-9 w-9 place-items-center rounded-large border ${statusBannerToneClass}`
+                }
               >
-                <MoreHorizontal className="h-4 w-4" />
-              </Button>
+                <StateBannerIcon
+                  className={
+                    isConnectedIndicator
+                      ? "h-4 w-4 text-emerald-300 animate-pulse [animation-duration:1.7s] drop-shadow-[0_0_8px_rgba(74,222,128,0.65)]"
+                      : `h-4 w-4 ${stateBanner.iconClassName}`
+                  }
+                />
+              </div>
             </Tooltip>
-            <Tooltip content={showDraftSettings ? "Hide draft settings" : "Show draft settings"} showArrow>
-              <Button
-                isIconOnly
-                aria-label={showDraftSettings ? "Hide draft settings" : "Show draft settings"}
-                size="sm"
-                variant="flat"
-                onPress={() => setShowDraftSettings((prev) => !prev)}
-              >
-                <Cog className="h-4 w-4" />
-              </Button>
-            </Tooltip>
-            {draft.isCommissioner ? (
-              <Tooltip content="Open commissioner controls" showArrow>
+            <div className="flex items-center gap-2">
+              <Tooltip content={isMobileChatOpen ? "Hide chat room" : "Open chat room"} showArrow>
+                <div className="relative">
+                  <Button
+                    isIconOnly
+                    aria-label={isMobileChatOpen ? "Hide chat room" : "Open chat room"}
+                    color={isMobileChatOpen ? "primary" : "default"}
+                    size="sm"
+                    variant="flat"
+                    onPress={() => setIsMobileChatOpen((prev) => !prev)}
+                  >
+                    <MessageCircle className="h-4 w-4" />
+                  </Button>
+                  {!isMobileChatOpen && mobileChatUnreadCount > 0 ? (
+                    <span className="pointer-events-none absolute -right-1 -top-1 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-danger px-1 text-[10px] font-bold leading-none text-white">
+                      {mobileChatUnreadCount > 99 ? "99+" : mobileChatUnreadCount}
+                    </span>
+                  ) : null}
+                </div>
+              </Tooltip>
+              <Tooltip content={showStatusDetails ? "Hide status details" : "Show status details"} showArrow>
                 <Button
                   isIconOnly
-                  aria-label="Open commissioner controls"
-                  color="warning"
+                  aria-label={showStatusDetails ? "Hide status details" : "Show status details"}
                   size="sm"
                   variant="flat"
-                  onPress={() => setIsCommissionerDrawerOpen(true)}
+                  onPress={() => setShowStatusDetails((prev) => !prev)}
                 >
-                  <Shield className="h-4 w-4" />
+                  <MoreHorizontal className="h-4 w-4" />
                 </Button>
               </Tooltip>
-            ) : null}
+              <Tooltip content={showDraftSettings ? "Hide draft settings" : "Show draft settings"} showArrow>
+                <Button
+                  isIconOnly
+                  aria-label={showDraftSettings ? "Hide draft settings" : "Show draft settings"}
+                  size="sm"
+                  variant="flat"
+                  onPress={() => setShowDraftSettings((prev) => !prev)}
+                >
+                  <Cog className="h-4 w-4" />
+                </Button>
+              </Tooltip>
+              {draft.isCommissioner ? (
+                <Tooltip content="Open commissioner controls" showArrow>
+                  <Button
+                    isIconOnly
+                    aria-label="Open commissioner controls"
+                    color="warning"
+                    size="sm"
+                    variant="flat"
+                    onPress={() => setIsCommissionerDrawerOpen(true)}
+                  >
+                    <Shield className="h-4 w-4" />
+                  </Button>
+                </Tooltip>
+              ) : null}
+            </div>
           </div>
         ) : null}
         <CardHeader className="relative z-10 grid grid-cols-1 gap-3 md:grid-cols-[1fr_auto] md:items-center">
           <div className="space-y-1">
             <div className="flex flex-wrap items-center gap-2">
-              <h1 className="text-xl font-semibold md:text-2xl">{draft.name}</h1>
+              <h1 className="draft-title-rgb text-xl font-semibold md:text-2xl">{draft.name}</h1>
               {draft.status !== "live" ? (
                 <Chip color={statusColor(draft.status)} size="sm" variant="flat">
                   {draft.status}
@@ -4667,30 +4750,44 @@ export const DraftRoom = ({
             </p>
             <div className="flex items-center gap-1.5 text-xs text-default-500">
               <span>Format: Reverse snake (3RR)</span>
-              <Popover
-                isOpen={isFormatPopoverOpen}
-                placement="bottom-start"
-                showArrow
-                onOpenChange={setIsFormatPopoverOpen}
-              >
-                <PopoverTrigger>
-                  <button
-                    aria-label="Explain reverse snake (3RR)"
-                    className="inline-flex h-5 w-5 items-center justify-center rounded-full text-default-400 transition hover:bg-content2/40 hover:text-default-200"
-                    type="button"
-                    onBlur={() => setIsFormatPopoverOpen(false)}
-                    onFocus={() => setIsFormatPopoverOpen(true)}
-                    onMouseEnter={() => setIsFormatPopoverOpen(true)}
-                    onMouseLeave={() => setIsFormatPopoverOpen(false)}
-                  >
-                    <Info className="h-3.5 w-3.5" />
-                  </button>
-                </PopoverTrigger>
-                <PopoverContent
-                  className="max-w-xs p-3 text-xs text-default-600"
-                  onMouseEnter={() => setIsFormatPopoverOpen(true)}
-                  onMouseLeave={() => setIsFormatPopoverOpen(false)}
-                >
+	              <Popover
+	                isOpen={isFormatPopoverOpen}
+	                placement="bottom-start"
+	                showArrow
+	                onOpenChange={setIsFormatPopoverOpen}
+	              >
+	                <PopoverTrigger>
+	                  <button
+	                    aria-label="Explain reverse snake (3RR)"
+	                    className="inline-flex h-5 w-5 items-center justify-center rounded-full text-default-400 transition hover:bg-content2/40 hover:text-default-200"
+	                    type="button"
+	                    onMouseEnter={() => {
+	                      if (!isMobileViewport) {
+	                        setIsFormatPopoverOpen(true);
+	                      }
+	                    }}
+	                    onMouseLeave={() => {
+	                      if (!isMobileViewport) {
+	                        setIsFormatPopoverOpen(false);
+	                      }
+	                    }}
+	                  >
+	                    <Info className="h-3.5 w-3.5" />
+	                  </button>
+	                </PopoverTrigger>
+	                <PopoverContent
+	                  className="max-w-xs p-3 text-xs text-default-600"
+	                  onMouseEnter={() => {
+	                    if (!isMobileViewport) {
+	                      setIsFormatPopoverOpen(true);
+	                    }
+	                  }}
+	                  onMouseLeave={() => {
+	                    if (!isMobileViewport) {
+	                      setIsFormatPopoverOpen(false);
+	                    }
+	                  }}
+	                >
                   <div className="space-y-1.5">
                     <p className="font-semibold text-default-800">Reverse snake (3RR)</p>
                     <p>Round 1: 1 to N</p>
@@ -4716,32 +4813,34 @@ export const DraftRoom = ({
 
           <div className="w-full self-start pt-0.5 md:w-auto md:justify-self-end">
             <div className="flex items-center justify-end gap-2">
-              {stateBanner.iconOnly ? (
-                <Tooltip content={stateBanner.label} showArrow>
-                  <div
-                    className={
-                      isConnectedIndicator
-                        ? "inline-flex h-9 w-9 items-center justify-center"
-                        : `grid h-9 w-9 place-items-center rounded-large border ${statusBannerToneClass}`
-                    }
-                  >
-                    <StateBannerIcon
+              {!isMobileViewport ? (
+                stateBanner.iconOnly ? (
+                  <Tooltip content={stateBanner.label} showArrow>
+                    <div
                       className={
                         isConnectedIndicator
-                          ? "h-4 w-4 text-emerald-300 animate-pulse [animation-duration:1.7s] drop-shadow-[0_0_8px_rgba(74,222,128,0.65)]"
-                          : `h-4 w-4 ${stateBanner.iconClassName}`
+                          ? "inline-flex h-9 w-9 items-center justify-center"
+                          : `grid h-9 w-9 place-items-center rounded-large border ${statusBannerToneClass}`
                       }
-                    />
+                    >
+                      <StateBannerIcon
+                        className={
+                          isConnectedIndicator
+                            ? "h-4 w-4 text-emerald-300 animate-pulse [animation-duration:1.7s] drop-shadow-[0_0_8px_rgba(74,222,128,0.65)]"
+                            : `h-4 w-4 ${stateBanner.iconClassName}`
+                        }
+                      />
+                    </div>
+                  </Tooltip>
+                ) : (
+                  <div
+                    className={`flex items-center gap-2 rounded-large border px-3 py-2 text-xs ${statusBannerToneClass}`}
+                  >
+                    <StateBannerIcon className={`h-4 w-4 ${stateBanner.iconClassName}`} />
+                    <p className="font-semibold">{stateBanner.label}</p>
                   </div>
-                </Tooltip>
-              ) : (
-                <div
-                  className={`flex items-center gap-2 rounded-large border px-3 py-2 text-xs ${statusBannerToneClass}`}
-                >
-                  <StateBannerIcon className={`h-4 w-4 ${stateBanner.iconClassName}`} />
-                  <p className="font-semibold">{stateBanner.label}</p>
-                </div>
-              )}
+                )
+              ) : null}
               {!isMobileViewport ? (
                 <>
                   <Tooltip content={showStatusDetails ? "Hide status details" : "Show status details"} showArrow>
@@ -4829,7 +4928,7 @@ export const DraftRoom = ({
               className="overflow-y-visible pt-1 pb-1 [overscroll-behavior-x:contain] [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden md:overflow-visible md:pt-0 md:pb-0"
               orientation="horizontal"
             >
-              <motion.div layout className="flex w-max items-end gap-1.5 md:w-full md:gap-2">
+              <motion.div layout className="flex w-full items-end gap-1.5 md:gap-2">
               <AnimatePresence initial={false}>
                 {topPickStripSlots.map((item) => {
                   const isNowTile = item.offset === 0;
@@ -4853,6 +4952,17 @@ export const DraftRoom = ({
                     : null;
                   const onClockParticipantAvatarUrl =
                     isNowTile && !item.slot?.pickedPlayerName ? item.slot?.participantAvatarUrl ?? null : null;
+                  const onClockAvatarBackgroundStyle: CSSProperties | undefined =
+                    isNowTile && !item.slot?.pickedPlayerName && onClockParticipantAvatarUrl
+                      ? {
+                          backgroundImage:
+                            `linear-gradient(rgba(8, 12, 22, 0.9), rgba(8, 12, 22, 0.9)), ` +
+                            `url("${onClockParticipantAvatarUrl}")`,
+                          backgroundSize: "100% 100%",
+                          backgroundPosition: "center",
+                          backgroundRepeat: "no-repeat",
+                        }
+                      : undefined;
                   const onClockTeamLabel =
                     item.slot?.participantTeamName?.trim() || item.slot?.participantDisplayName || "Pending";
                   const onClockParticipantShortLabel = formatShortPlayerName(
@@ -4898,8 +5008,8 @@ export const DraftRoom = ({
                         isNowTile ? "overflow-visible" : "overflow-hidden"
                       } ${
                         isNowTile
-                          ? "h-[6.6rem] w-[7.35rem] p-2.5 md:h-[6.8rem] md:min-w-0 md:flex-[1.25] md:p-3"
-                          : "h-[4.9rem] w-[3rem] p-1.5 md:h-[5rem] md:min-w-0 md:flex-[0.5] md:p-2"
+                          ? "h-[7rem] min-w-0 basis-0 flex-[1.35] p-2.5 md:h-[6.8rem] md:flex-[1.25] md:p-3"
+                          : "h-[5.25rem] min-w-0 basis-0 flex-1 p-1.5 md:h-[5rem] md:flex-[0.5] md:p-2"
                       } ${
                         item.slot?.pickedPlayerName
                           ? roleTileClassName(item.slot.pickedPlayerRole)
@@ -4919,6 +5029,7 @@ export const DraftRoom = ({
                           ? "shadow-[0_0_0_1px_rgba(110,231,183,0.45),0_0_20px_rgba(16,185,129,0.28)]"
                           : ""
                       }`}
+                      style={onClockAvatarBackgroundStyle}
                     >
                       {isNowTile ? (
                         <p className="pointer-events-none absolute -top-2.5 left-1/2 z-40 min-w-[7rem] -translate-x-1/2 whitespace-nowrap rounded-full border border-primary-200/65 bg-content1/96 px-3 py-1 text-center text-[10px] font-black uppercase tracking-[0.1em] text-white md:min-w-[7.5rem] md:text-[11px]">
@@ -4927,7 +5038,7 @@ export const DraftRoom = ({
                       ) : null}
                       {isNowTile ? (
                         <p
-                          className="pointer-events-none absolute left-2 top-2 z-35 max-w-[4.75rem] overflow-hidden text-ellipsis whitespace-nowrap text-[10px] font-semibold tracking-[0.04em] text-white/92 drop-shadow-[0_1px_1px_rgba(0,0,0,0.75)]"
+                          className="pointer-events-none absolute left-2 top-4 z-35 max-w-[4.75rem] overflow-hidden text-ellipsis whitespace-nowrap text-[10px] font-semibold tracking-[0.04em] text-white/92 drop-shadow-[0_1px_1px_rgba(0,0,0,0.75)] md:top-2"
                         >
                           {onClockParticipantShortLabel}
                         </p>
@@ -4946,7 +5057,7 @@ export const DraftRoom = ({
                       {showNowClock ? (
                         <>
                           <div className="pointer-events-none absolute inset-x-2 top-1/2 z-30 -translate-y-1/2">
-                            <div className="flex items-center justify-center">
+                            <div className="flex origin-center scale-[0.85] items-center justify-center">
                               <DraftClockBadge
                                 deadlineIso={draft.currentPickDeadlineAt}
                                 draftStatus={draft.status}
@@ -4960,7 +5071,7 @@ export const DraftRoom = ({
                             </div>
                           </div>
                           <DraftCountdownLabel
-                            className="pointer-events-none absolute bottom-3 right-2 z-35 mono-points text-lg font-black leading-none tabular-nums text-white drop-shadow-[0_1px_1px_rgba(0,0,0,0.75)] md:text-xl"
+                            className="pointer-events-none absolute bottom-3 right-2 z-35 mono-points text-[15px] font-black leading-none tabular-nums text-white drop-shadow-[0_1px_1px_rgba(0,0,0,0.75)] md:text-[17px]"
                             deadlineIso={draft.currentPickDeadlineAt}
                             serverOffsetMs={serverOffsetMs}
                           />
@@ -7343,6 +7454,17 @@ export const DraftRoom = ({
             </div>
           </div>
         </div>
+      ) : null}
+
+      {isMobileViewport ? (
+        <GlobalChatPanel
+          currentUserId={currentUserId}
+          hideLauncherButton
+          isOpen={isMobileChatOpen}
+          mode="floating"
+          onUnreadCountChange={setMobileChatUnreadCount}
+          onOpenChange={setIsMobileChatOpen}
+        />
       ) : null}
 
       <footer className="mt-8 border-t border-default-200/28 pt-4">
