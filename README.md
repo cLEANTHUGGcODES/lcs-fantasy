@@ -99,7 +99,7 @@ Windows note: if you switch shells (PowerShell <-> WSL), rerun `npm install` in 
 | `AUTO_SYNC_ON_READ` | `true` | Enables stale snapshot auto-sync during reads. |
 | `AUTO_SYNC_STALE_MINUTES` | `10` | Auto-sync stale threshold. |
 | `AUTO_SYNC_MIN_ATTEMPT_SECONDS` | `45` | Throttle between auto-sync attempts. |
-| `NEXT_PUBLIC_CHAT_VIRTUALIZATION` | `1` | Enables chat message-list virtualization (`0` disables for rollback/debug). |
+| `NEXT_PUBLIC_CHAT_VIRTUALIZATION` | `0` | Enables chat message-list virtualization when set to `1` (default off for stability). |
 | `NEXT_PUBLIC_CHAT_PROFILE` | `0` | Enables client-side chat profiler logs (`window.__chatProfileSnapshot()`). |
 
 ### Protected Endpoint Tokens

@@ -178,7 +178,7 @@ const CHAT_ACTION_BAR_HIDE_DELAY_MS = 140;
 const CHAT_INCREMENTAL_TRUE_UP_DEBOUNCE_MS = 1200;
 const CHAT_VIRTUALIZATION_OVERSCAN_PX = 520;
 const CHAT_VIRTUALIZATION_MIN_BLOCK_COUNT = 18;
-const CHAT_ENABLE_VIRTUALIZATION = process.env.NEXT_PUBLIC_CHAT_VIRTUALIZATION !== "0";
+const CHAT_ENABLE_VIRTUALIZATION = process.env.NEXT_PUBLIC_CHAT_VIRTUALIZATION === "1";
 const CHAT_PROFILE_ENABLED = process.env.NEXT_PUBLIC_CHAT_PROFILE === "1";
 const CHAT_PROFILE_COMMIT_BUDGET_MS = 16;
 const CHAT_PROFILE_ACTION_BAR_BUDGET_MS = 50;
@@ -3218,7 +3218,11 @@ export const GlobalChatPanel = ({
     return nextBlocks;
   }, [groupedMessages, hasOlderMessages, sortedMessages.length]);
 
-  const shouldVirtualizeBlocks = CHAT_ENABLE_VIRTUALIZATION && renderBlocks.length >= CHAT_VIRTUALIZATION_MIN_BLOCK_COUNT;
+  const shouldVirtualizeBlocks = (
+    CHAT_ENABLE_VIRTUALIZATION &&
+    !isMobileViewport &&
+    renderBlocks.length >= CHAT_VIRTUALIZATION_MIN_BLOCK_COUNT
+  );
 
   const syncVirtualViewportState = useCallback((scroller: HTMLDivElement) => {
     const nextTop = scroller.scrollTop;
