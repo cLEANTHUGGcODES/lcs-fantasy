@@ -39,6 +39,7 @@ const PLAYER_ANALYTICS_LOOKBACK_DAYS = 365;
 const PLAYER_ANALYTICS_CACHE_TTL_MS = 60_000;
 const TOP_CHAMPION_LIMIT = 3;
 const DRAFT_PARTICIPANT_AVATAR_CACHE_TTL_MS = 10 * 60_000;
+const DRAFT_SUMMARY_CACHE_TTL_MS = 2_000;
 
 type SnapshotPayloadWithGames = {
   games: ParsedGame[];
@@ -68,6 +69,14 @@ type CachedPlayerAnalytics = {
 };
 
 const draftPlayerAnalyticsCache = new Map<string, CachedPlayerAnalytics>();
+const draftSummaryByCacheKey = new Map<
+  string,
+  {
+    value: DraftSummary[];
+    expiresAtMs: number;
+  }
+>();
+const inFlightDraftSummaryByCacheKey = new Map<string, Promise<DraftSummary[]>>();
 
 const normalizeForKey = (value: string | null | undefined): string =>
   value?.trim().toLowerCase() ?? "";
@@ -584,6 +593,41 @@ const mapRegisteredUser = (user: User): RegisteredUser => ({
   teamName: getUserTeamName(user),
 });
 
+const cloneDraftSummaries = (summaries: DraftSummary[]): DraftSummary[] =>
+  summaries.map((entry) => ({ ...entry }));
+
+const readDraftSummaryCache = (cacheKey: string): DraftSummary[] | null => {
+  const cached = draftSummaryByCacheKey.get(cacheKey);
+  if (!cached || cached.expiresAtMs <= Date.now()) {
+    return null;
+  }
+  return cloneDraftSummaries(cached.value);
+};
+
+const writeDraftSummaryCache = ({
+  cacheKey,
+  value,
+}: {
+  cacheKey: string;
+  value: DraftSummary[];
+}): void => {
+  draftSummaryByCacheKey.set(cacheKey, {
+    value: cloneDraftSummaries(value),
+    expiresAtMs: Date.now() + DRAFT_SUMMARY_CACHE_TTL_MS,
+  });
+
+  if (draftSummaryByCacheKey.size <= 64) {
+    return;
+  }
+
+  const cutoff = Date.now();
+  for (const [key, cached] of draftSummaryByCacheKey.entries()) {
+    if (cached.expiresAtMs <= cutoff) {
+      draftSummaryByCacheKey.delete(key);
+    }
+  }
+};
+
 const resolveParticipantAvatarUrls = async (
   userIds: string[],
 ): Promise<Map<string, string | null>> => {
@@ -692,19 +736,42 @@ const fetchPickCounts = async (draftIds?: number[]): Promise<Map<number, number>
 };
 
 export const listDraftSummaries = async (): Promise<DraftSummary[]> => {
-  const [draftRows, participantCounts, pickCounts] = await Promise.all([
-    fetchDraftRows(),
-    fetchParticipantCounts(),
-    fetchPickCounts(),
-  ]);
+  const cacheKey = "all";
+  const cached = readDraftSummaryCache(cacheKey);
+  if (cached) {
+    return cached;
+  }
 
-  return draftRows.map((row) =>
-    toDraftSummary(
-      row,
-      participantCounts.get(row.id) ?? 0,
-      pickCounts.get(row.id) ?? 0,
-    )
-  );
+  const inFlight = inFlightDraftSummaryByCacheKey.get(cacheKey);
+  if (inFlight) {
+    return inFlight;
+  }
+
+  const summariesPromise = (async (): Promise<DraftSummary[]> => {
+    const [draftRows, participantCounts, pickCounts] = await Promise.all([
+      fetchDraftRows(),
+      fetchParticipantCounts(),
+      fetchPickCounts(),
+    ]);
+
+    const summaries = draftRows.map((row) =>
+      toDraftSummary(
+        row,
+        participantCounts.get(row.id) ?? 0,
+        pickCounts.get(row.id) ?? 0,
+      )
+    );
+    writeDraftSummaryCache({
+      cacheKey,
+      value: summaries,
+    });
+    return summaries;
+  })().finally(() => {
+    inFlightDraftSummaryByCacheKey.delete(cacheKey);
+  });
+
+  inFlightDraftSummaryByCacheKey.set(cacheKey, summariesPromise);
+  return summariesPromise;
 };
 
 const draftStatusOrder: Record<DraftStatus, number> = {
@@ -721,57 +788,84 @@ export const listDraftSummariesForUser = async ({
   userId: string;
   includeCompleted?: boolean;
 }): Promise<DraftSummary[]> => {
-  const supabase = getSupabaseServerClient();
-  const { data, error } = await supabase
-    .from(PARTICIPANTS_TABLE)
-    .select("draft_id")
-    .eq("user_id", userId);
-
-  if (error) {
-    throw new Error(`Unable to load user draft memberships: ${error.message}`);
+  const cacheKey = `user:${userId}:${includeCompleted ? "with-completed" : "active-only"}`;
+  const cached = readDraftSummaryCache(cacheKey);
+  if (cached) {
+    return cached;
   }
 
-  const draftIds = [...new Set(
-    ((data ?? []) as ParticipantDraftIdRow[])
-      .map((entry) => entry.draft_id)
-      .filter((entry) => Number.isFinite(entry) && entry > 0),
-  )];
-
-  if (draftIds.length === 0) {
-    return [];
+  const inFlight = inFlightDraftSummaryByCacheKey.get(cacheKey);
+  if (inFlight) {
+    return inFlight;
   }
 
-  const [draftRows, participantCounts, pickCounts] = await Promise.all([
-    fetchDraftRows(draftIds),
-    fetchParticipantCounts(draftIds),
-    fetchPickCounts(draftIds),
-  ]);
+  const summariesPromise = (async (): Promise<DraftSummary[]> => {
+    const supabase = getSupabaseServerClient();
+    const { data, error } = await supabase
+      .from(PARTICIPANTS_TABLE)
+      .select("draft_id")
+      .eq("user_id", userId);
 
-  const summaries = draftRows.map((row) =>
-    toDraftSummary(
-      row,
-      participantCounts.get(row.id) ?? 0,
-      pickCounts.get(row.id) ?? 0,
-    )
-  );
-
-  const filtered = includeCompleted
-    ? summaries
-    : summaries.filter((entry) => entry.status !== "completed");
-
-  return filtered.sort((a, b) => {
-    const statusDiff = draftStatusOrder[a.status] - draftStatusOrder[b.status];
-    if (statusDiff !== 0) {
-      return statusDiff;
+    if (error) {
+      throw new Error(`Unable to load user draft memberships: ${error.message}`);
     }
 
-    const scheduledDiff = new Date(a.scheduledAt).getTime() - new Date(b.scheduledAt).getTime();
-    if (scheduledDiff !== 0) {
-      return scheduledDiff;
+    const draftIds = [...new Set(
+      ((data ?? []) as ParticipantDraftIdRow[])
+        .map((entry) => entry.draft_id)
+        .filter((entry) => Number.isFinite(entry) && entry > 0),
+    )];
+
+    if (draftIds.length === 0) {
+      writeDraftSummaryCache({
+        cacheKey,
+        value: [],
+      });
+      return [];
     }
 
-    return b.id - a.id;
+    const [draftRows, participantCounts, pickCounts] = await Promise.all([
+      fetchDraftRows(draftIds),
+      fetchParticipantCounts(draftIds),
+      fetchPickCounts(draftIds),
+    ]);
+
+    const summaries = draftRows.map((row) =>
+      toDraftSummary(
+        row,
+        participantCounts.get(row.id) ?? 0,
+        pickCounts.get(row.id) ?? 0,
+      )
+    );
+
+    const filtered = includeCompleted
+      ? summaries
+      : summaries.filter((entry) => entry.status !== "completed");
+    const sorted = filtered.sort((a, b) => {
+      const statusDiff = draftStatusOrder[a.status] - draftStatusOrder[b.status];
+      if (statusDiff !== 0) {
+        return statusDiff;
+      }
+
+      const scheduledDiff = new Date(a.scheduledAt).getTime() - new Date(b.scheduledAt).getTime();
+      if (scheduledDiff !== 0) {
+        return scheduledDiff;
+      }
+
+      return b.id - a.id;
+    });
+
+    writeDraftSummaryCache({
+      cacheKey,
+      value: sorted,
+    });
+    return sorted;
+  })().finally(() => {
+    inFlightDraftSummaryByCacheKey.delete(cacheKey);
   });
+
+  inFlightDraftSummaryByCacheKey.set(cacheKey, summariesPromise);
+  return summariesPromise;
 };
 
 const loadParticipants = async (draftId: number): Promise<DraftParticipant[]> => {

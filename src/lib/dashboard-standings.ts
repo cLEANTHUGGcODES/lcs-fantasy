@@ -558,25 +558,14 @@ const resolvePlayerTotal = ({
 };
 
 const resolveWeeklyFantasyPointsByUser = ({
-  weekNumber,
-  weekOneStartKey,
-  games,
+  weeklyGames,
   participantProfiles,
   picksByUserId,
 }: {
-  weekNumber: number;
-  weekOneStartKey: string;
-  games: ParsedGame[];
+  weeklyGames: ParsedGame[];
   participantProfiles: HeadToHeadParticipantProfile[];
   picksByUserId: Map<string, DraftPickRow[]>;
 }): WeeklyFantasyPointsResult => {
-  const { startsOn, endsOn } = getWeekBounds(weekOneStartKey, weekNumber);
-
-  const weeklyGames = games.filter((game) => {
-    const gameDateKey = extractGameDateKey(game);
-    return gameDateKey ? gameDateKey >= startsOn && gameDateKey <= endsOn : false;
-  });
-
   const weeklyPlayerTotals = aggregatePlayerTotals(weeklyGames);
   const { byName, byNameAndTeam } = buildPlayerTotalsLookups(weeklyPlayerTotals);
   const pointsByUser = new Map<string, number>();
@@ -595,6 +584,41 @@ const resolveWeeklyFantasyPointsByUser = ({
     hasGames: weeklyGames.length > 0,
     pointsByUser,
   };
+};
+
+const buildWeeklyGamesIndex = ({
+  games,
+  weekOneStartKey,
+}: {
+  games: ParsedGame[];
+  weekOneStartKey: string;
+}): Map<number, ParsedGame[]> => {
+  const weekOneDayIndex = dateKeyDayIndex(weekOneStartKey);
+  const gamesByWeekNumber = new Map<number, ParsedGame[]>();
+
+  for (const game of games) {
+    const gameDateKey = extractGameDateKey(game);
+    if (!gameDateKey) {
+      continue;
+    }
+    const gameDayIndex = dateKeyDayIndex(gameDateKey);
+    const dayOffsetFromWeekOne = gameDayIndex - weekOneDayIndex;
+    if (dayOffsetFromWeekOne < 0) {
+      continue;
+    }
+
+    const dayWithinCycle = dayOffsetFromWeekOne % 7;
+    if (dayWithinCycle < 0 || dayWithinCycle > 5) {
+      continue;
+    }
+
+    const weekNumber = Math.floor(dayOffsetFromWeekOne / 7) + 1;
+    const bucket = gamesByWeekNumber.get(weekNumber) ?? [];
+    bucket.push(game);
+    gamesByWeekNumber.set(weekNumber, bucket);
+  }
+
+  return gamesByWeekNumber;
 };
 
 const buildHeadToHeadSummary = ({
@@ -666,15 +690,18 @@ const buildHeadToHeadSummary = ({
     finalizedWeekCount,
     1,
   );
+  const weeklyGamesByWeekNumber = buildWeeklyGamesIndex({
+    games,
+    weekOneStartKey,
+  });
 
   const weeklyPointsByWeek = new Map<number, WeeklyFantasyPointsResult>();
   for (let weekNumber = 1; weekNumber <= maxWeekNumberToScore; weekNumber += 1) {
+    const weeklyGames = weeklyGamesByWeekNumber.get(weekNumber) ?? [];
     weeklyPointsByWeek.set(
       weekNumber,
       resolveWeeklyFantasyPointsByUser({
-        weekNumber,
-        weekOneStartKey,
-        games,
+        weeklyGames,
         participantProfiles,
         picksByUserId,
       }),
