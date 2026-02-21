@@ -8,7 +8,7 @@ import { Spinner } from "@heroui/spinner";
 import { Tooltip } from "@heroui/tooltip";
 import { ChevronDown, ChevronLeft, Copy, ExternalLink, ImagePlus, MessageCircle, MoreHorizontal, Reply, Send, X } from "lucide-react";
 import Image from "next/image";
-import { ChangeEvent, ClipboardEvent, ReactNode, memo, useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { ChangeEvent, ClipboardEvent, Profiler, ProfilerOnRenderCallback, ReactNode, memo, useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import {
   MAX_CHAT_IMAGE_BYTES,
   isSupportedChatImageMimeType,
@@ -92,6 +92,19 @@ type MessageRenderSignatureCacheEntry = {
   signature: string;
 };
 
+type ChatRenderProfileStats = {
+  mounts: number;
+  updates: number;
+  commits: number;
+  commitDurationTotalMs: number;
+  commitDurationMaxMs: number;
+  commitsOverBudget: number;
+  actionBarTransitions: number;
+  actionBarTransitionTotalMs: number;
+  actionBarTransitionMaxMs: number;
+  actionBarTransitionsOverBudget: number;
+};
+
 type ChatRenderBlock =
   | {
       type: "older";
@@ -165,7 +178,11 @@ const CHAT_ACTION_BAR_HIDE_DELAY_MS = 140;
 const CHAT_INCREMENTAL_TRUE_UP_DEBOUNCE_MS = 1200;
 const CHAT_VIRTUALIZATION_OVERSCAN_PX = 520;
 const CHAT_VIRTUALIZATION_MIN_BLOCK_COUNT = 18;
-const CHAT_ENABLE_VIRTUALIZATION = false;
+const CHAT_ENABLE_VIRTUALIZATION = process.env.NEXT_PUBLIC_CHAT_VIRTUALIZATION !== "0";
+const CHAT_PROFILE_ENABLED = process.env.NEXT_PUBLIC_CHAT_PROFILE === "1";
+const CHAT_PROFILE_COMMIT_BUDGET_MS = 16;
+const CHAT_PROFILE_ACTION_BAR_BUDGET_MS = 50;
+const CHAT_PROFILE_LOG_INTERVAL_MS = 45000;
 const CHAT_PARSED_MESSAGE_CACHE_LIMIT = 2000;
 
 type UploadableImageMimeType = "image/jpeg" | "image/png" | "image/webp";
@@ -1558,6 +1575,22 @@ export const GlobalChatPanel = ({
   const incrementalTrueUpTimeoutRef = useRef<number | null>(null);
   const scrollSyncFrameRef = useRef<number | null>(null);
   const blockMeasuredHeightsRef = useRef<Record<string, number>>({});
+  const chatRenderProfileRef = useRef<ChatRenderProfileStats>({
+    mounts: 0,
+    updates: 0,
+    commits: 0,
+    commitDurationTotalMs: 0,
+    commitDurationMaxMs: 0,
+    commitsOverBudget: 0,
+    actionBarTransitions: 0,
+    actionBarTransitionTotalMs: 0,
+    actionBarTransitionMaxMs: 0,
+    actionBarTransitionsOverBudget: 0,
+  });
+  const pendingActionBarProfileRef = useRef<{
+    targetMessageId: number | null;
+    startedAt: number;
+  } | null>(null);
   const isPanelOpen = isEmbedded ? true : (isOpenProp ?? uncontrolledIsOpen);
   const sortedMessages = chatStore.messages;
   const hasOlderMessages = chatStore.hasOlderMessages;
@@ -1791,6 +1824,54 @@ export const GlobalChatPanel = ({
     [syncComposerHeight],
   );
 
+  const getChatRenderProfileSnapshot = useCallback(() => {
+    const stats = chatRenderProfileRef.current;
+    return {
+      actionBarTransitionAvgMs: stats.actionBarTransitions > 0
+        ? stats.actionBarTransitionTotalMs / stats.actionBarTransitions
+        : 0,
+      actionBarTransitionMaxMs: stats.actionBarTransitionMaxMs,
+      actionBarTransitions: stats.actionBarTransitions,
+      actionBarTransitionsOver50Ms: stats.actionBarTransitionsOverBudget,
+      commitAvgMs: stats.commits > 0 ? stats.commitDurationTotalMs / stats.commits : 0,
+      commitMaxMs: stats.commitDurationMaxMs,
+      commits: stats.commits,
+      commitsOver16Ms: stats.commitsOverBudget,
+      mounts: stats.mounts,
+      updates: stats.updates,
+    };
+  }, []);
+
+  const onChatProfilerRender = useCallback<ProfilerOnRenderCallback>((_id, phase, actualDuration) => {
+    if (!CHAT_PROFILE_ENABLED) {
+      return;
+    }
+
+    const nextDuration = Number.isFinite(actualDuration) ? Math.max(0, actualDuration) : 0;
+    const stats = chatRenderProfileRef.current;
+    stats.commits += 1;
+    stats.commitDurationTotalMs += nextDuration;
+    stats.commitDurationMaxMs = Math.max(stats.commitDurationMaxMs, nextDuration);
+    if (nextDuration >= CHAT_PROFILE_COMMIT_BUDGET_MS) {
+      stats.commitsOverBudget += 1;
+    }
+    if (phase === "mount") {
+      stats.mounts += 1;
+      return;
+    }
+    stats.updates += 1;
+  }, []);
+
+  const startActionBarTransitionProfile = useCallback((targetMessageId: number | null) => {
+    if (!CHAT_PROFILE_ENABLED) {
+      return;
+    }
+    pendingActionBarProfileRef.current = {
+      targetMessageId,
+      startedAt: performance.now(),
+    };
+  }, []);
+
   const cancelActionBarHide = useCallback(() => {
     if (actionBarHideTimeoutRef.current !== null) {
       window.clearTimeout(actionBarHideTimeoutRef.current);
@@ -1800,21 +1881,81 @@ export const GlobalChatPanel = ({
 
   const showActionBarForMessage = useCallback((messageId: number) => {
     cancelActionBarHide();
-    setHoveredActionBarMessageId(messageId);
+    setHoveredActionBarMessageId((current) => {
+      if (current !== messageId) {
+        startActionBarTransitionProfile(messageId);
+      }
+      return messageId;
+    });
     setHiddenActionBarMessageId((current) => (
       current !== null && current !== messageId ? null : current
     ));
-  }, [cancelActionBarHide]);
+  }, [cancelActionBarHide, startActionBarTransitionProfile]);
 
   const queueHideActionBarForMessage = useCallback((messageId: number) => {
     cancelActionBarHide();
     actionBarHideTimeoutRef.current = window.setTimeout(() => {
       actionBarHideTimeoutRef.current = null;
-      setHoveredActionBarMessageId((current) => (
-        current === messageId ? null : current
-      ));
+      setHoveredActionBarMessageId((current) => {
+        if (current !== messageId) {
+          return current;
+        }
+        startActionBarTransitionProfile(null);
+        return null;
+      });
     }, CHAT_ACTION_BAR_HIDE_DELAY_MS);
-  }, [cancelActionBarHide]);
+  }, [cancelActionBarHide, startActionBarTransitionProfile]);
+
+  useEffect(() => {
+    if (!CHAT_PROFILE_ENABLED) {
+      return;
+    }
+    const pendingProfile = pendingActionBarProfileRef.current;
+    if (!pendingProfile || pendingProfile.targetMessageId !== hoveredActionBarMessageId) {
+      return;
+    }
+
+    const elapsedMs = Math.max(0, performance.now() - pendingProfile.startedAt);
+    pendingActionBarProfileRef.current = null;
+
+    const stats = chatRenderProfileRef.current;
+    stats.actionBarTransitions += 1;
+    stats.actionBarTransitionTotalMs += elapsedMs;
+    stats.actionBarTransitionMaxMs = Math.max(stats.actionBarTransitionMaxMs, elapsedMs);
+    if (elapsedMs >= CHAT_PROFILE_ACTION_BAR_BUDGET_MS) {
+      stats.actionBarTransitionsOverBudget += 1;
+    }
+  }, [hoveredActionBarMessageId]);
+
+  useEffect(() => {
+    if (!CHAT_PROFILE_ENABLED) {
+      return;
+    }
+
+    const chatProfileWindow = window as Window & {
+      __chatProfileSnapshot?: () => ReturnType<typeof getChatRenderProfileSnapshot>;
+    };
+    chatProfileWindow.__chatProfileSnapshot = () => {
+      const snapshot = getChatRenderProfileSnapshot();
+      console.info("[chat-profile:snapshot]", snapshot);
+      return snapshot;
+    };
+
+    const intervalId = window.setInterval(() => {
+      const snapshot = getChatRenderProfileSnapshot();
+      if (snapshot.commits <= 0 && snapshot.actionBarTransitions <= 0) {
+        return;
+      }
+      console.info("[chat-profile:periodic]", snapshot);
+    }, CHAT_PROFILE_LOG_INTERVAL_MS);
+
+    return () => {
+      window.clearInterval(intervalId);
+      if (chatProfileWindow.__chatProfileSnapshot) {
+        delete chatProfileWindow.__chatProfileSnapshot;
+      }
+    };
+  }, [getChatRenderProfileSnapshot]);
 
   const incrementClientMetric = useCallback(
     (name: "realtimeDisconnects" | "fallbackSyncs" | "duplicateDrops", amount = 1) => {
@@ -3014,6 +3155,37 @@ export const GlobalChatPanel = ({
     }
     return next;
   }, [groupedMessages]);
+  const hoveredActionBarGroupKey = useMemo(() => {
+    if (hoveredActionBarMessageId === null) {
+      return null;
+    }
+    return groupKeyByMessageId.get(hoveredActionBarMessageId) ?? null;
+  }, [groupKeyByMessageId, hoveredActionBarMessageId]);
+  const hiddenActionBarGroupKey = useMemo(() => {
+    if (hiddenActionBarMessageId === null) {
+      return null;
+    }
+    return groupKeyByMessageId.get(hiddenActionBarMessageId) ?? null;
+  }, [groupKeyByMessageId, hiddenActionBarMessageId]);
+  const pendingReactionSignatureByGroupKey = useMemo(() => {
+    const next = new Map<string, string>();
+    for (const group of groupedMessages) {
+      let pendingReactionSignature = "";
+      for (const messageId of group.messageIds) {
+        const pendingSignature = pendingReactionSignatureByMessageId.get(messageId);
+        if (!pendingSignature) {
+          continue;
+        }
+        pendingReactionSignature = pendingReactionSignature
+          ? `${pendingReactionSignature}|${messageId}:${pendingSignature}`
+          : `${messageId}:${pendingSignature}`;
+      }
+      if (pendingReactionSignature) {
+        next.set(group.groupKey, pendingReactionSignature);
+      }
+    }
+    return next;
+  }, [groupedMessages, pendingReactionSignatureByMessageId]);
 
   const renderBlocks = useMemo<ChatRenderBlock[]>(() => {
     const nextBlocks: ChatRenderBlock[] = [];
@@ -3162,51 +3334,6 @@ export const GlobalChatPanel = ({
     );
   }, [blockLayouts, shouldVirtualizeBlocks, virtualScrollTop, virtualViewportHeight]);
 
-  const groupRenderStateByKey = useMemo(() => {
-    const byKey = new Map<string, {
-      hiddenActionBarMessageId: number | null;
-      hoveredActionBarMessageId: number | null;
-      pendingReactionSignature: string;
-    }>();
-    const hoveredGroupKey = hoveredActionBarMessageId !== null
-      ? (groupKeyByMessageId.get(hoveredActionBarMessageId) ?? null)
-      : null;
-    const hiddenGroupKey = hiddenActionBarMessageId !== null
-      ? (groupKeyByMessageId.get(hiddenActionBarMessageId) ?? null)
-      : null;
-
-    for (const group of groupedMessages) {
-      const hoveredForGroup = hoveredGroupKey === group.groupKey
-        ? hoveredActionBarMessageId
-        : null;
-      const hiddenForGroup = hiddenGroupKey === group.groupKey
-        ? hiddenActionBarMessageId
-        : null;
-      const pendingReactionSignatureParts: string[] = [];
-      for (const messageId of group.messageIds) {
-        const pendingSignature = pendingReactionSignatureByMessageId.get(messageId);
-        if (!pendingSignature) {
-          continue;
-        }
-        pendingReactionSignatureParts.push(`${messageId}:${pendingSignature}`);
-      }
-      const pendingReactionSignature = pendingReactionSignatureParts.join("|");
-
-      byKey.set(group.groupKey, {
-        hiddenActionBarMessageId: hiddenForGroup,
-        hoveredActionBarMessageId: hoveredForGroup,
-        pendingReactionSignature,
-      });
-    }
-    return byKey;
-  }, [
-    groupKeyByMessageId,
-    groupedMessages,
-    hiddenActionBarMessageId,
-    hoveredActionBarMessageId,
-    pendingReactionSignatureByMessageId,
-  ]);
-
   const renderBlockContent = useCallback((block: ChatRenderBlock) => {
     if (block.type === "older") {
       return (
@@ -3230,21 +3357,28 @@ export const GlobalChatPanel = ({
       return <p className="text-sm text-slate-300">No messages yet. Start the banter.</p>;
     }
 
-    const uiState = groupRenderStateByKey.get(block.group.groupKey);
+    const groupKey = block.group.groupKey;
+    const hoveredForGroup = hoveredActionBarGroupKey === groupKey
+      ? hoveredActionBarMessageId
+      : null;
+    const hiddenForGroup = hiddenActionBarGroupKey === groupKey
+      ? hiddenActionBarMessageId
+      : null;
+    const pendingReactionSignature = pendingReactionSignatureByGroupKey.get(groupKey) ?? "";
     return (
       <ChatMessageGroupBlock
-        key={block.group.groupKey}
+        key={groupKey}
         currentUserId={currentUserId}
         group={block.group}
         handleCopyMessage={handleCopyMessage}
         handleMoreMessageAction={handleMoreMessageAction}
         handleReplyToMessage={handleReplyToMessage}
-        hiddenActionBarMessageId={uiState?.hiddenActionBarMessageId ?? null}
-        hoveredActionBarMessageId={uiState?.hoveredActionBarMessageId ?? null}
+        hiddenActionBarMessageId={hiddenForGroup}
+        hoveredActionBarMessageId={hoveredForGroup}
         isEmbedded={isEmbedded}
         openImageLightbox={openImageLightbox}
         pendingReactionByMessageId={pendingReactionByMessageId}
-        pendingReactionSignature={uiState?.pendingReactionSignature ?? ""}
+        pendingReactionSignature={pendingReactionSignature}
         previousGroupDayKey={block.previousGroupDayKey}
         queueHideActionBarForMessage={queueHideActionBarForMessage}
         showActionBarForMessage={showActionBarForMessage}
@@ -3253,23 +3387,28 @@ export const GlobalChatPanel = ({
     );
   }, [
     currentUserId,
-    groupRenderStateByKey,
+    hiddenActionBarGroupKey,
+    hiddenActionBarMessageId,
     handleCopyMessage,
     handleMoreMessageAction,
     handleReplyToMessage,
+    hoveredActionBarGroupKey,
+    hoveredActionBarMessageId,
     isEmbedded,
     loadOlderMessages,
     loadingOlder,
     openImageLightbox,
     pendingReactionByMessageId,
+    pendingReactionSignatureByGroupKey,
     queueHideActionBarForMessage,
     showActionBarForMessage,
     toggleMessageReaction,
   ]);
 
   const renderedMessageList = useMemo(
-    () => (
-      <ScrollShadow
+    () => {
+      const messageList = (
+        <ScrollShadow
         ref={messageListRef}
         className={`chat-scrollbar flex-1 min-h-0 overflow-x-hidden overscroll-contain touch-pan-y ${
           isEmbedded
@@ -3321,10 +3460,22 @@ export const GlobalChatPanel = ({
           )}
         </div>
       </ScrollShadow>
-    ),
+      );
+
+      if (!CHAT_PROFILE_ENABLED) {
+        return messageList;
+      }
+
+      return (
+        <Profiler id={isEmbedded ? "chat-embedded" : "chat-floating"} onRender={onChatProfilerRender}>
+          {messageList}
+        </Profiler>
+      );
+    },
     [
       isEmbedded,
       onMeasuredBlockHeight,
+      onChatProfilerRender,
       renderBlocks,
       renderBlockContent,
       scheduleVirtualViewportStateSync,
@@ -3516,6 +3667,7 @@ export const GlobalChatPanel = ({
       incrementalTrueUpTimeoutRef.current = null;
     }
     cancelActionBarHide();
+    pendingActionBarProfileRef.current = null;
     setPanelOpen(false);
     setShowJumpToLatest(false);
     setReplyContext(null);
