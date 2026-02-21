@@ -7146,7 +7146,7 @@ export const DraftRoom = ({
                 {autopickPreviewLine}
               </p>
             ) : null}
-            {showMobileBottomConfirmLine ? (
+            {hasPendingManualConfirm && pendingManualDraftPlayer ? (
               <p className="mb-2 text-[11px] text-default-500">
                 Confirming {pendingManualDraftPlayer.playerName} ({formatRoleLabel(pendingManualDraftPlayer.playerRole)})
                 {pendingManualSlotImpact ? ` • Fills ${pendingManualSlotImpact.fills}` : ""}
