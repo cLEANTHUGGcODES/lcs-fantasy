@@ -462,6 +462,8 @@ const DRAFT_ROOM_DESKTOP_CHAT_COLLAPSE_KEY = "draft-room-desktop-chat-collapsed-
 const MAIN_TOP_BG_YOUTUBE_VIDEO_ID = "xBCBOoHyeSU";
 const MAIN_TOP_BG_YOUTUBE_EMBED_SRC = `https://www.youtube.com/embed/${MAIN_TOP_BG_YOUTUBE_VIDEO_ID}?autoplay=1&mute=1&controls=0&loop=1&playlist=${MAIN_TOP_BG_YOUTUBE_VIDEO_ID}&modestbranding=1&rel=0&playsinline=1&iv_load_policy=3&disablekb=1`;
 const DRAFT_ROOM_CURSOR_IMAGE_SRC = "/img/cursor.png";
+const DRAFT_ROOM_CURSOR_OFFSET_X_PX = 9;
+const DRAFT_ROOM_CURSOR_OFFSET_Y_PX = 8;
 const MOUSE_TRAIL_IMAGE_SRC = "/img/mousetrail.png";
 const DRAFT_ROOM_CHAT_PANEL_SELECTOR = "[data-draft-chat-panel='true']";
 const MOUSE_TRAIL_MAX_SPRITES = 14;
@@ -1404,7 +1406,7 @@ const DraftRoomPointerEffects = memo(({
       if (!pendingPoint || !cursorElement) {
         return;
       }
-      cursorElement.style.transform = `translate3d(${pendingPoint.x - 13}px, ${pendingPoint.y - 8}px, 0)`;
+      cursorElement.style.transform = `translate3d(${pendingPoint.x - DRAFT_ROOM_CURSOR_OFFSET_X_PX}px, ${pendingPoint.y - DRAFT_ROOM_CURSOR_OFFSET_Y_PX}px, 0)`;
     });
   }, []);
 
