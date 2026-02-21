@@ -27,10 +27,30 @@ const readSupabaseUrl = (): string => {
   );
 };
 
+let cachedSupabaseAuthEnv:
+  | {
+      supabaseUrl: string;
+      publicApiKey: string;
+    }
+  | null = null;
+let cachedSupabaseAuthEnvKey: string | null = null;
+
 export const getSupabaseAuthEnv = (): {
   supabaseUrl: string;
   publicApiKey: string;
-} => ({
-  supabaseUrl: readSupabaseUrl(),
-  publicApiKey: readPublicApiKey(),
-});
+} => {
+  const supabaseUrl = readSupabaseUrl();
+  const publicApiKey = readPublicApiKey();
+  const envKey = `${supabaseUrl}::${publicApiKey}`;
+
+  if (cachedSupabaseAuthEnv && cachedSupabaseAuthEnvKey === envKey) {
+    return cachedSupabaseAuthEnv;
+  }
+
+  cachedSupabaseAuthEnv = {
+    supabaseUrl,
+    publicApiKey,
+  };
+  cachedSupabaseAuthEnvKey = envKey;
+  return cachedSupabaseAuthEnv;
+};
