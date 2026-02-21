@@ -4001,9 +4001,6 @@ export const DraftRoom = ({
     if (!canQueueActions || pickQueue.length === 0) {
       return;
     }
-    if (typeof window !== "undefined" && !window.confirm("Clear all players from your queue?")) {
-      return;
-    }
     setPickQueue([]);
   }, [canQueueActions, pickQueue.length]);
 
