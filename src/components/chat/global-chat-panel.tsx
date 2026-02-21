@@ -77,6 +77,21 @@ type ChatMessageGroup = {
   estimatedHeight: number;
 };
 
+type MessageDayMetaCacheEntry = {
+  createdAt: string;
+  todayKey: string;
+  dayKey: string;
+  dayLabel: string;
+};
+
+type MessageRenderSignatureCacheEntry = {
+  createdAt: string;
+  message: string;
+  imageUrl: string | null;
+  reactionsRef: GlobalChatReaction[];
+  signature: string;
+};
+
 type ChatRenderBlock =
   | {
       type: "older";
@@ -151,8 +166,14 @@ const CHAT_INCREMENTAL_TRUE_UP_DEBOUNCE_MS = 1200;
 const CHAT_VIRTUALIZATION_OVERSCAN_PX = 520;
 const CHAT_VIRTUALIZATION_MIN_BLOCK_COUNT = 18;
 const CHAT_ENABLE_VIRTUALIZATION = false;
+const CHAT_PARSED_MESSAGE_CACHE_LIMIT = 2000;
 
 type UploadableImageMimeType = "image/jpeg" | "image/png" | "image/webp";
+
+const normalizedReactionsCache = new WeakMap<GlobalChatReaction[], GlobalChatReaction[]>();
+const orderedReactionsForDisplayCache = new WeakMap<GlobalChatReaction[], GlobalChatReaction[]>();
+const reactionSignatureCache = new WeakMap<GlobalChatReaction[], string>();
+const parsedMessageByRawMessageCache = new Map<string, ParsedChatMessage>();
 
 const isNearBottom = (element: HTMLDivElement): boolean => {
   const distanceFromBottom = element.scrollHeight - element.scrollTop - element.clientHeight;
@@ -174,6 +195,10 @@ const normalizeMessageReactions = (
 ): GlobalChatReaction[] => {
   if (!Array.isArray(value) || value.length === 0) {
     return [];
+  }
+  const cachedReactions = normalizedReactionsCache.get(value);
+  if (cachedReactions) {
+    return cachedReactions;
   }
 
   const usersByEmoji = new Map<string, Map<string, string>>();
@@ -199,13 +224,15 @@ const normalizeMessageReactions = (
     }
   }
 
-  return [...usersByEmoji.entries()].map(([emoji, users]) => ({
+  const normalizedReactions = [...usersByEmoji.entries()].map(([emoji, users]) => ({
     emoji,
     users: [...users.entries()].map(([userId, label]) => ({
       userId,
       label,
     })),
   }));
+  normalizedReactionsCache.set(value, normalizedReactions);
+  return normalizedReactions;
 };
 
 const withNormalizedMessageReactions = (entry: GlobalChatMessage): GlobalChatMessage => ({
@@ -213,8 +240,16 @@ const withNormalizedMessageReactions = (entry: GlobalChatMessage): GlobalChatMes
   reactions: normalizeMessageReactions(entry.reactions),
 });
 
-const reactionSignature = (reactions: GlobalChatReaction[] | null | undefined): string =>
-  normalizeMessageReactions(reactions)
+const reactionSignature = (reactions: GlobalChatReaction[] | null | undefined): string => {
+  const normalizedReactions = normalizeMessageReactions(reactions);
+  if (normalizedReactions.length === 0) {
+    return "";
+  }
+  const cachedSignature = reactionSignatureCache.get(normalizedReactions);
+  if (typeof cachedSignature === "string") {
+    return cachedSignature;
+  }
+  const signature = normalizedReactions
     .map((reaction) => {
       const users = [...reaction.users]
         .map((user) => `${user.userId}:${user.label}`)
@@ -224,6 +259,9 @@ const reactionSignature = (reactions: GlobalChatReaction[] | null | undefined): 
     })
     .sort()
     .join("|");
+  reactionSignatureCache.set(normalizedReactions, signature);
+  return signature;
+};
 
 const quickReactionOrder = (emoji: string): number =>
   CHAT_QUICK_REACTIONS.indexOf(emoji as (typeof CHAT_QUICK_REACTIONS)[number]);
@@ -231,6 +269,10 @@ const quickReactionOrder = (emoji: string): number =>
 const orderReactionsForDisplay = (reactions: GlobalChatReaction[]): GlobalChatReaction[] => {
   if (reactions.length === 0) {
     return [];
+  }
+  const cachedOrder = orderedReactionsForDisplayCache.get(reactions);
+  if (cachedOrder) {
+    return cachedOrder;
   }
 
   const quick: GlobalChatReaction[] = [];
@@ -245,7 +287,9 @@ const orderReactionsForDisplay = (reactions: GlobalChatReaction[]): GlobalChatRe
 
   quick.sort((left, right) => quickReactionOrder(left.emoji) - quickReactionOrder(right.emoji));
   other.sort((left, right) => left.emoji.localeCompare(right.emoji));
-  return [...quick, ...other];
+  const orderedReactions = [...quick, ...other];
+  orderedReactionsForDisplayCache.set(reactions, orderedReactions);
+  return orderedReactions;
 };
 
 const hasReactionFromUser = (
@@ -790,34 +834,49 @@ const encodeMessageWithReplyContext = ({
 
 const parseMessageWithReplyContext = (message: string): ParsedChatMessage => {
   const rawMessage = typeof message === "string" ? message : "";
+  const cachedParsedMessage = parsedMessageByRawMessageCache.get(rawMessage);
+  if (cachedParsedMessage) {
+    return cachedParsedMessage;
+  }
+
   const match = rawMessage.match(CHAT_REPLY_TOKEN_PATTERN);
+  let parsedMessage: ParsedChatMessage;
   if (!match) {
-    return {
+    parsedMessage = {
       body: rawMessage,
       replyContext: null,
     };
+  } else {
+    const messageId = Number.parseInt(match[1] ?? "", 10);
+    if (!Number.isFinite(messageId) || messageId <= 0) {
+      parsedMessage = {
+        body: rawMessage,
+        replyContext: null,
+      };
+    } else {
+      const decodedSender = sanitizeReplySenderLabel(safeDecodeUriComponent(match[2] ?? ""));
+      const decodedSnippet = sanitizeReplySnippet(safeDecodeUriComponent(match[3] ?? ""));
+      const body = rawMessage.slice(match[0].length);
+
+      parsedMessage = {
+        body,
+        replyContext: {
+          messageId,
+          senderLabel: decodedSender,
+          snippet: decodedSnippet,
+        },
+      };
+    }
   }
 
-  const messageId = Number.parseInt(match[1] ?? "", 10);
-  if (!Number.isFinite(messageId) || messageId <= 0) {
-    return {
-      body: rawMessage,
-      replyContext: null,
-    };
+  if (parsedMessageByRawMessageCache.size >= CHAT_PARSED_MESSAGE_CACHE_LIMIT) {
+    const oldestEntry = parsedMessageByRawMessageCache.keys().next();
+    if (!oldestEntry.done && typeof oldestEntry.value === "string") {
+      parsedMessageByRawMessageCache.delete(oldestEntry.value);
+    }
   }
-
-  const decodedSender = sanitizeReplySenderLabel(safeDecodeUriComponent(match[2] ?? ""));
-  const decodedSnippet = sanitizeReplySnippet(safeDecodeUriComponent(match[3] ?? ""));
-  const body = rawMessage.slice(match[0].length);
-
-  return {
-    body,
-    replyContext: {
-      messageId,
-      senderLabel: decodedSender,
-      snippet: decodedSnippet,
-    },
-  };
+  parsedMessageByRawMessageCache.set(rawMessage, parsedMessage);
+  return parsedMessage;
 };
 
 const replySnippetFromMessage = ({
@@ -902,7 +961,7 @@ const estimateMessageHeightForVirtualization = ({
   const textHeight = textLineCount * lineHeight;
   const replyHeight = parsedEntryMessage.replyContext ? 48 : 0;
   const imageHeight = entry.imageUrl ? 180 : 0;
-  const reactionHeight = normalizeMessageReactions(entry.reactions).length > 0 ? 24 : 0;
+  const reactionHeight = entry.reactions.length > 0 ? 24 : 0;
   const bubblePaddingHeight = entry.imageUrl ? 12 : isEmbedded ? 18 : 24;
   const metaHeight = 14;
   return bubblePaddingHeight + textHeight + replyHeight + imageHeight + reactionHeight + metaHeight;
@@ -1087,7 +1146,7 @@ const ChatMessageGroupBlock = memo(({
           const showAvatar = isFirstInGroup;
           const entryMessageId = toMessageId(entry.id);
           const isPersistedMessage = entryMessageId > 0;
-          const entryReactions = orderReactionsForDisplay(normalizeMessageReactions(entry.reactions));
+          const entryReactions = orderReactionsForDisplay(entry.reactions);
           const entryReactionByEmoji = new Map(entryReactions.map((reaction) => [reaction.emoji, reaction]));
           const isActionBarHoverTarget = hoveredActionBarMessageId === entryMessageId;
           const isActionBarVisible = (
@@ -1481,6 +1540,8 @@ export const GlobalChatPanel = ({
   const reactionMessageSyncInFlightRef = useRef(false);
   const reactionMessageSyncQueueRef = useRef<Set<number>>(new Set());
   const messagesRef = useRef<GlobalChatMessage[]>([]);
+  const messageDayMetaByIdRef = useRef<Map<number, MessageDayMetaCacheEntry>>(new Map());
+  const messageRenderSignatureByIdRef = useRef<Map<number, MessageRenderSignatureCacheEntry>>(new Map());
   const pendingReactionByKeyRef = useRef<Record<string, boolean>>({});
   const optimisticReactionRollbackByKeyRef = useRef<Record<string, GlobalChatReaction["users"] | null>>({});
   const actionBarHideTimeoutRef = useRef<number | null>(null);
@@ -1511,12 +1572,57 @@ export const GlobalChatPanel = ({
     return 0;
   }, [sortedMessages]);
   const currentUserReactionLabel = useMemo(() => {
-    const ownMessage = [...sortedMessages].reverse().find((entry) => entry.userId === currentUserId);
-    if (!ownMessage) {
-      return "You";
+    for (let index = sortedMessages.length - 1; index >= 0; index -= 1) {
+      const entry = sortedMessages[index];
+      if (entry.userId === currentUserId) {
+        return formatOptimisticReactionLabel(entry.senderLabel);
+      }
     }
-    return formatOptimisticReactionLabel(ownMessage.senderLabel);
+    return "You";
   }, [currentUserId, sortedMessages]);
+  const getMessageDayMeta = useCallback((entry: GlobalChatMessage, todayKey: string): MessageDayMetaCacheEntry => {
+    const messageId = toMessageId(entry.id);
+    const cachedMeta = messageDayMetaByIdRef.current.get(messageId);
+    if (
+      cachedMeta &&
+      cachedMeta.createdAt === entry.createdAt &&
+      cachedMeta.todayKey === todayKey
+    ) {
+      return cachedMeta;
+    }
+
+    const nextMeta: MessageDayMetaCacheEntry = {
+      createdAt: entry.createdAt,
+      todayKey,
+      dayKey: formatDayKey(entry.createdAt),
+      dayLabel: formatDayLabel(entry.createdAt),
+    };
+    messageDayMetaByIdRef.current.set(messageId, nextMeta);
+    return nextMeta;
+  }, []);
+  const getMessageRenderSignature = useCallback((entry: GlobalChatMessage): string => {
+    const messageId = toMessageId(entry.id);
+    const cachedSignature = messageRenderSignatureByIdRef.current.get(messageId);
+    if (
+      cachedSignature &&
+      cachedSignature.createdAt === entry.createdAt &&
+      cachedSignature.message === entry.message &&
+      cachedSignature.imageUrl === entry.imageUrl &&
+      cachedSignature.reactionsRef === entry.reactions
+    ) {
+      return cachedSignature.signature;
+    }
+
+    const signature = `${messageId}:${entry.createdAt}:${entry.message}:${entry.imageUrl ?? ""}:${reactionSignature(entry.reactions)}`;
+    messageRenderSignatureByIdRef.current.set(messageId, {
+      createdAt: entry.createdAt,
+      message: entry.message,
+      imageUrl: entry.imageUrl,
+      reactionsRef: entry.reactions,
+      signature,
+    });
+    return signature;
+  }, []);
   const messageInputMaxLength = useMemo(
     () => maxComposerLengthForReply(replyContext),
     [replyContext],
@@ -1560,46 +1666,61 @@ export const GlobalChatPanel = ({
     });
   }, []);
   const groupedMessages = useMemo<ChatMessageGroup[]>(() => {
-    const groups = sortedMessages.reduce<
-      Array<{
-        userId: string;
-        senderLabel: string;
-        senderAvatarUrl: string | null;
-        senderAvatarBorderColor: string | null;
-        dayKey: string;
-        dayLabel: string;
-        isCurrentUser: boolean;
-        messages: GlobalChatMessage[];
-      }>
-    >((nextGroups, entry) => {
-      const dayKey = formatDayKey(entry.createdAt);
-      const previous = nextGroups[nextGroups.length - 1];
-      if (previous && previous.userId === entry.userId && previous.dayKey === dayKey) {
+    const groups: Array<{
+      userId: string;
+      senderLabel: string;
+      senderAvatarUrl: string | null;
+      senderAvatarBorderColor: string | null;
+      dayKey: string;
+      dayLabel: string;
+      isCurrentUser: boolean;
+      messages: GlobalChatMessage[];
+    }> = [];
+    const activeMessageIds = new Set<number>();
+    const now = new Date();
+    const todayKey = `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}`;
+
+    for (const entry of sortedMessages) {
+      const messageId = toMessageId(entry.id);
+      activeMessageIds.add(messageId);
+      const dayMeta = getMessageDayMeta(entry, todayKey);
+      const previous = groups[groups.length - 1];
+      if (previous && previous.userId === entry.userId && previous.dayKey === dayMeta.dayKey) {
         previous.messages.push(entry);
-        return nextGroups;
+        continue;
       }
 
-      nextGroups.push({
+      groups.push({
         userId: entry.userId,
         senderLabel: entry.senderLabel,
         senderAvatarUrl: entry.senderAvatarUrl,
         senderAvatarBorderColor: entry.senderAvatarBorderColor,
-        dayKey,
-        dayLabel: formatDayLabel(entry.createdAt),
+        dayKey: dayMeta.dayKey,
+        dayLabel: dayMeta.dayLabel,
         isCurrentUser: entry.userId === currentUserId,
         messages: [entry],
       });
-      return nextGroups;
-    }, []);
+    }
+
+    const dayMetaCache = messageDayMetaByIdRef.current;
+    for (const cachedMessageId of dayMetaCache.keys()) {
+      if (!activeMessageIds.has(cachedMessageId)) {
+        dayMetaCache.delete(cachedMessageId);
+      }
+    }
+    const renderSignatureCache = messageRenderSignatureByIdRef.current;
+    for (const cachedMessageId of renderSignatureCache.keys()) {
+      if (!activeMessageIds.has(cachedMessageId)) {
+        renderSignatureCache.delete(cachedMessageId);
+      }
+    }
 
     return groups.map((group, index) => {
       const messageIds = group.messages.map((entry) => toMessageId(entry.id));
       const firstMessageId = messageIds[0] ?? 0;
       const lastMessageId = messageIds[messageIds.length - 1] ?? 0;
       const renderSignature = group.messages
-        .map((entry) => (
-          `${toMessageId(entry.id)}:${entry.createdAt}:${entry.message}:${entry.imageUrl ?? ""}:${reactionSignature(entry.reactions)}`
-        ))
+        .map(getMessageRenderSignature)
         .join("|");
       const previousGroupDayKey = groups[index - 1]?.dayKey ?? null;
 
@@ -1615,7 +1736,7 @@ export const GlobalChatPanel = ({
         }),
       };
     });
-  }, [currentUserId, isEmbedded, sortedMessages]);
+  }, [currentUserId, getMessageDayMeta, getMessageRenderSignature, isEmbedded, sortedMessages]);
 
   const syncComposerHeight = useCallback((target: HTMLTextAreaElement) => {
     const minHeightPx = isEmbedded ? 30 : CHAT_COMPOSER_MIN_HEIGHT_PX;
@@ -1891,21 +2012,23 @@ export const GlobalChatPanel = ({
       const normalizedReactions = normalizeMessageReactions(reactions);
       const nextReactionSignature = reactionSignature(normalizedReactions);
       updateChatMessages((currentMessages) => {
-        let changed = false;
-        const nextMessages = currentMessages.map((entry) => {
-          if (toMessageId(entry.id) !== normalizedMessageId) {
-            return entry;
-          }
-          if (reactionSignature(entry.reactions) === nextReactionSignature) {
-            return entry;
-          }
-          changed = true;
-          return {
-            ...entry,
-            reactions: normalizedReactions,
-          };
-        });
-        return changed ? nextMessages : currentMessages;
+        const targetIndex = currentMessages.findIndex(
+          (entry) => toMessageId(entry.id) === normalizedMessageId,
+        );
+        if (targetIndex < 0) {
+          return currentMessages;
+        }
+        const targetMessage = currentMessages[targetIndex];
+        if (reactionSignature(targetMessage.reactions) === nextReactionSignature) {
+          return currentMessages;
+        }
+
+        const nextMessages = [...currentMessages];
+        nextMessages[targetIndex] = {
+          ...targetMessage,
+          reactions: normalizedReactions,
+        };
+        return nextMessages;
       });
     },
     [updateChatMessages],
@@ -1928,26 +2051,31 @@ export const GlobalChatPanel = ({
       }
 
       updateChatMessages((currentMessages) => {
-        let changed = false;
-        const nextMessages = currentMessages.map((entry) => {
-          if (toMessageId(entry.id) !== normalizedMessageId) {
-            return entry;
-          }
-          const nextReactions = upsertReactionUsersForEmoji({
-            reactions: entry.reactions,
-            emoji: normalizedEmoji,
-            users,
-          });
-          if (reactionSignature(entry.reactions) === reactionSignature(nextReactions)) {
-            return entry;
-          }
-          changed = true;
-          return {
-            ...entry,
-            reactions: nextReactions,
-          };
+        const targetIndex = currentMessages.findIndex(
+          (entry) => toMessageId(entry.id) === normalizedMessageId,
+        );
+        if (targetIndex < 0) {
+          return currentMessages;
+        }
+
+        const targetMessage = currentMessages[targetIndex];
+        const nextReactions = upsertReactionUsersForEmoji({
+          reactions: targetMessage.reactions,
+          emoji: normalizedEmoji,
+          users,
         });
-        return changed ? nextMessages : currentMessages;
+        const currentReactionSignature = reactionSignature(targetMessage.reactions);
+        const nextReactionSignature = reactionSignature(nextReactions);
+        if (currentReactionSignature === nextReactionSignature) {
+          return currentMessages;
+        }
+
+        const nextMessages = [...currentMessages];
+        nextMessages[targetIndex] = {
+          ...targetMessage,
+          reactions: nextReactions,
+        };
+        return nextMessages;
       });
     },
     [updateChatMessages],
@@ -1990,23 +2118,26 @@ export const GlobalChatPanel = ({
     }
 
     updateChatMessages((currentMessages) => {
-      let changed = false;
-      const nextMessages = currentMessages.map((entry) => {
+      let nextMessages: GlobalChatMessage[] | null = null;
+      for (let index = 0; index < currentMessages.length; index += 1) {
+        const entry = currentMessages[index];
         const messageId = toMessageId(entry.id);
         const nextReactions = reactionsByMessageId.get(messageId);
         if (!nextReactions) {
-          return entry;
+          continue;
         }
         if (reactionSignature(entry.reactions) === signaturesByMessageId.get(messageId)) {
-          return entry;
+          continue;
         }
-        changed = true;
-        return {
+        if (!nextMessages) {
+          nextMessages = [...currentMessages];
+        }
+        nextMessages[index] = {
           ...entry,
           reactions: nextReactions,
         };
-      });
-      return changed ? nextMessages : currentMessages;
+      }
+      return nextMessages ?? currentMessages;
     });
   }, [updateChatMessages]);
 
@@ -2860,6 +2991,29 @@ export const GlobalChatPanel = ({
     }
     return next;
   }, [pendingReactionByKey]);
+  const pendingReactionSignatureByMessageId = useMemo(() => {
+    const next = new Map<number, string>();
+    for (const [messageId, pendingSet] of pendingReactionByMessageId.entries()) {
+      if (!pendingSet || pendingSet.size === 0) {
+        continue;
+      }
+      const signature = [...pendingSet].sort().join(",");
+      if (!signature) {
+        continue;
+      }
+      next.set(messageId, signature);
+    }
+    return next;
+  }, [pendingReactionByMessageId]);
+  const groupKeyByMessageId = useMemo(() => {
+    const next = new Map<number, string>();
+    for (const group of groupedMessages) {
+      for (const messageId of group.messageIds) {
+        next.set(messageId, group.groupKey);
+      }
+    }
+    return next;
+  }, [groupedMessages]);
 
   const renderBlocks = useMemo<ChatRenderBlock[]>(() => {
     const nextBlocks: ChatRenderBlock[] = [];
@@ -3014,28 +3168,29 @@ export const GlobalChatPanel = ({
       hoveredActionBarMessageId: number | null;
       pendingReactionSignature: string;
     }>();
+    const hoveredGroupKey = hoveredActionBarMessageId !== null
+      ? (groupKeyByMessageId.get(hoveredActionBarMessageId) ?? null)
+      : null;
+    const hiddenGroupKey = hiddenActionBarMessageId !== null
+      ? (groupKeyByMessageId.get(hiddenActionBarMessageId) ?? null)
+      : null;
 
     for (const group of groupedMessages) {
-      const hoveredForGroup = (
-        hoveredActionBarMessageId !== null && group.messageIds.includes(hoveredActionBarMessageId)
-          ? hoveredActionBarMessageId
-          : null
-      );
-      const hiddenForGroup = (
-        hiddenActionBarMessageId !== null && group.messageIds.includes(hiddenActionBarMessageId)
-          ? hiddenActionBarMessageId
-          : null
-      );
-      const pendingReactionSignature = group.messageIds
-        .map((messageId) => {
-          const pendingSet = pendingReactionByMessageId.get(messageId);
-          if (!pendingSet || pendingSet.size === 0) {
-            return "";
-          }
-          return `${messageId}:${[...pendingSet].sort().join(",")}`;
-        })
-        .filter(Boolean)
-        .join("|");
+      const hoveredForGroup = hoveredGroupKey === group.groupKey
+        ? hoveredActionBarMessageId
+        : null;
+      const hiddenForGroup = hiddenGroupKey === group.groupKey
+        ? hiddenActionBarMessageId
+        : null;
+      const pendingReactionSignatureParts: string[] = [];
+      for (const messageId of group.messageIds) {
+        const pendingSignature = pendingReactionSignatureByMessageId.get(messageId);
+        if (!pendingSignature) {
+          continue;
+        }
+        pendingReactionSignatureParts.push(`${messageId}:${pendingSignature}`);
+      }
+      const pendingReactionSignature = pendingReactionSignatureParts.join("|");
 
       byKey.set(group.groupKey, {
         hiddenActionBarMessageId: hiddenForGroup,
@@ -3045,10 +3200,11 @@ export const GlobalChatPanel = ({
     }
     return byKey;
   }, [
+    groupKeyByMessageId,
     groupedMessages,
     hiddenActionBarMessageId,
     hoveredActionBarMessageId,
-    pendingReactionByMessageId,
+    pendingReactionSignatureByMessageId,
   ]);
 
   const renderBlockContent = useCallback((block: ChatRenderBlock) => {
@@ -3205,9 +3361,14 @@ export const GlobalChatPanel = ({
     }
 
     const optimisticMessageId = -Math.max(1, Math.floor(Date.now() + Math.random() * 100000));
-    const previousOwnMessage = [...messagesRef.current]
-      .reverse()
-      .find((entry) => entry.userId === currentUserId && toMessageId(entry.id) > 0);
+    let previousOwnMessage: GlobalChatMessage | null = null;
+    for (let index = messagesRef.current.length - 1; index >= 0; index -= 1) {
+      const entry = messagesRef.current[index];
+      if (entry.userId === currentUserId && toMessageId(entry.id) > 0) {
+        previousOwnMessage = entry;
+        break;
+      }
+    }
     const optimisticMessage = withNormalizedMessageReactions({
       id: optimisticMessageId,
       userId: currentUserId,
