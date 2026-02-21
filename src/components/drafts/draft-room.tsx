@@ -25,6 +25,7 @@ import {
   Pause,
   Play,
   Info,
+  ListOrdered,
   Eye,
   Plus,
   Search,
@@ -4536,6 +4537,11 @@ export const DraftRoom = ({
     settings.autoPickFromQueue && queuedEligiblePlayers.length > 0
       ? `Autopick will take #1: ${queuedEligiblePlayers[0].playerName}`
       : null;
+  const isMobileBottomActionBarVisible =
+    isLiveState &&
+    isMobileViewport &&
+    !selectedPlayer &&
+    !isMobileQueueSheetOpen;
 
   if (loading) {
     return (
@@ -4585,7 +4591,14 @@ export const DraftRoom = ({
         enabled={!isMobileViewport}
         prefersReducedMotion={Boolean(prefersReducedMotion)}
       />
-      <div className="pointer-events-none fixed bottom-3 right-3 z-50 flex w-[min(22rem,calc(100vw-1.5rem))] flex-col gap-2">
+      <div
+        className="pointer-events-none fixed right-3 z-50 flex w-[min(22rem,calc(100vw-1.5rem))] flex-col gap-2"
+        style={{
+          bottom: isMobileBottomActionBarVisible
+            ? "calc(env(safe-area-inset-bottom) + 8.25rem)"
+            : "max(0.75rem, env(safe-area-inset-bottom))",
+        }}
+      >
         <AnimatePresence initial={false}>
           {toastNotices.map((toast) => (
             <motion.div
@@ -4677,25 +4690,6 @@ export const DraftRoom = ({
               </div>
             </Tooltip>
             <div className="flex items-center gap-2">
-              <Tooltip content={isMobileChatOpen ? "Hide chat room" : "Open chat room"} showArrow>
-                <div className="relative">
-                  <Button
-                    isIconOnly
-                    aria-label={isMobileChatOpen ? "Hide chat room" : "Open chat room"}
-                    color={isMobileChatOpen ? "primary" : "default"}
-                    size="sm"
-                    variant="flat"
-                    onPress={() => setIsMobileChatOpen((prev) => !prev)}
-                  >
-                    <MessageCircle className="h-4 w-4" />
-                  </Button>
-                  {!isMobileChatOpen && mobileChatUnreadCount > 0 ? (
-                    <span className="pointer-events-none absolute -right-1 -top-1 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-danger px-1 text-[10px] font-bold leading-none text-white">
-                      {mobileChatUnreadCount > 99 ? "99+" : mobileChatUnreadCount}
-                    </span>
-                  ) : null}
-                </div>
-              </Tooltip>
               <Tooltip content={showStatusDetails ? "Hide status details" : "Show status details"} showArrow>
                 <Button
                   isIconOnly
@@ -7116,7 +7110,7 @@ export const DraftRoom = ({
       </>
       ) : null}
 
-      {isLiveState && isCurrentUserParticipant && isMobileViewport && !selectedPlayer && !isMobileQueueSheetOpen ? (
+      {isLiveState && isMobileViewport && !selectedPlayer && !isMobileQueueSheetOpen ? (
         <div className="fixed inset-x-3 z-40" style={{ bottom: "max(0.75rem, env(safe-area-inset-bottom))" }}>
           <div className="rounded-large border border-primary-300/35 bg-content1/95 p-2 shadow-lg backdrop-blur">
             {canCurrentUserPick && autopickPreviewLine ? (
@@ -7136,9 +7130,9 @@ export const DraftRoom = ({
                 {pendingManualSlotImpact ? ` • Fills ${pendingManualSlotImpact.fills}` : ""}
               </p>
             ) : null}
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto_auto]">
+            <div className="space-y-2">
               {hasPendingManualConfirm ? (
-                <>
+                <div className="grid grid-cols-2 gap-2">
                   <Button
                     className={isLowTimerWarning ? "animate-pulse" : ""}
                     color="primary"
@@ -7158,44 +7152,83 @@ export const DraftRoom = ({
                   <Button variant="flat" onPress={() => setPendingManualDraftPlayerName(null)}>
                     Cancel
                   </Button>
-                  <Button variant="light" onPress={() => setMobileLiveTab("team")}>
-                    My Team
-                  </Button>
-                </>
+                </div>
               ) : canCurrentUserPick ? (
-                <>
+                <Button
+                  className={isLowTimerWarning ? "animate-pulse" : ""}
+                  color="primary"
+                  isDisabled={!draftActionPlayerName || !canDraftActions}
+                  isLoading={pickPending}
+                  onPress={() => requestManualDraft()}
+                >
+                  {draftActionPlayerName ? `Draft now: ${draftActionPlayerName}` : "Select a player"}
+                </Button>
+              ) : null}
+
+              <div className="flex items-center justify-center gap-2">
+                <Tooltip content="Browse players" showArrow>
                   <Button
-                    className={isLowTimerWarning ? "animate-pulse" : ""}
-                    color="primary"
-                    isDisabled={!draftActionPlayerName || !canDraftActions}
-                    isLoading={pickPending}
-                    onPress={() => requestManualDraft()}
-                  >
-                    {draftActionPlayerName ? `Draft now: ${draftActionPlayerName}` : "Select a player"}
-                  </Button>
-                  <Button variant="flat" onPress={() => setMobileLiveTab("queue")}>
-                    Queue ({queuedPlayers.length})
-                  </Button>
-                  <Button variant="light" onPress={() => setMobileLiveTab("team")}>
-                    My Team
-                  </Button>
-                </>
-              ) : (
-                <>
-                  <Button
-                    color="primary"
+                    isIconOnly
+                    aria-label="Browse players"
+                    color={mobileLiveTab === "players" ? "primary" : "default"}
+                    size="sm"
+                    variant={mobileLiveTab === "players" ? "solid" : "flat"}
                     onPress={() => setMobileLiveTab("players")}
                   >
-                    Browse players
+                    <Search className="h-4 w-4" />
                   </Button>
-                  <Button variant="flat" onPress={() => setMobileLiveTab("queue")}>
-                    Queue ({queuedPlayers.length})
+                </Tooltip>
+                <Tooltip content={`Queue (${queuedPlayers.length})`} showArrow>
+                  <div className="relative">
+                    <Button
+                      isIconOnly
+                      aria-label="Open queue"
+                      color={mobileLiveTab === "queue" ? "primary" : "default"}
+                      size="sm"
+                      variant={mobileLiveTab === "queue" ? "solid" : "flat"}
+                      onPress={() => setMobileLiveTab("queue")}
+                    >
+                      <ListOrdered className="h-4 w-4" />
+                    </Button>
+                    {queuedPlayers.length > 0 ? (
+                      <span className="pointer-events-none absolute -right-1 -top-1 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-danger px-1 text-[10px] font-bold leading-none text-white">
+                        {queuedPlayers.length > 99 ? "99+" : queuedPlayers.length}
+                      </span>
+                    ) : null}
+                  </div>
+                </Tooltip>
+                <Tooltip content={`My Team (${userPicks.length})`} showArrow>
+                  <Button
+                    isIconOnly
+                    aria-label="Open my team"
+                    color={mobileLiveTab === "team" ? "primary" : "default"}
+                    size="sm"
+                    variant={mobileLiveTab === "team" ? "solid" : "flat"}
+                    onPress={() => setMobileLiveTab("team")}
+                  >
+                    <UserCheck className="h-4 w-4" />
                   </Button>
-                  <Button variant="light" onPress={() => setMobileLiveTab("team")}>
-                    My Team
-                  </Button>
-                </>
-              )}
+                </Tooltip>
+                <Tooltip content={isMobileChatOpen ? "Hide chat room" : "Open chat room"} showArrow>
+                  <div className="relative">
+                    <Button
+                      isIconOnly
+                      aria-label={isMobileChatOpen ? "Hide chat room" : "Open chat room"}
+                      color={isMobileChatOpen ? "primary" : "default"}
+                      size="sm"
+                      variant={isMobileChatOpen ? "solid" : "flat"}
+                      onPress={() => setIsMobileChatOpen((prev) => !prev)}
+                    >
+                      <MessageCircle className="h-4 w-4" />
+                    </Button>
+                    {!isMobileChatOpen && mobileChatUnreadCount > 0 ? (
+                      <span className="pointer-events-none absolute -right-1 -top-1 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-danger px-1 text-[10px] font-bold leading-none text-white">
+                        {mobileChatUnreadCount > 99 ? "99+" : mobileChatUnreadCount}
+                      </span>
+                    ) : null}
+                  </div>
+                </Tooltip>
+              </div>
             </div>
             {isRealtimeReadOnly ? (
               <p className="mt-1 text-[11px] text-warning-300">
