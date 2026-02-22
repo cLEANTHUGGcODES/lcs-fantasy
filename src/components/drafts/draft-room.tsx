@@ -503,6 +503,7 @@ const TOP_PICK_STRIP_OFFSETS = [-4, -3, -2, -1, 0, 1, 2, 3, 4] as const;
 const TOP_PICK_STRIP_LAYOUT_DURATION = 0.34;
 const TOP_PICK_STRIP_FADE_DURATION = 0.24;
 const TOP_PICK_STRIP_HIGHLIGHT_MS = 900;
+const DRAFT_ROOM_FAST_TICK_WINDOW_MS = 16000;
 
 const isTimeoutAutopickPick = (pick: DraftDetail["picks"][number] | null): boolean =>
   Boolean(pick && pick.pickedByLabel === TIMEOUT_AUTOPICK_LABEL);
@@ -736,8 +737,30 @@ const areStringArraysEqual = (left: string[], right: string[]): boolean => {
 const DESKTOP_PLAYER_TABLE_ROW_HEIGHT_PX = 44;
 const DESKTOP_PLAYER_TABLE_OVERSCAN_ROWS = 10;
 const DESKTOP_PLAYER_TABLE_VIRTUALIZE_THRESHOLD = 70;
+const MOBILE_PLAYER_CARD_WINDOW_THRESHOLD = 48;
+const MOBILE_PLAYER_CARD_INITIAL_WINDOW = 36;
+const MOBILE_PLAYER_CARD_WINDOW_STEP = 24;
+const MOBILE_PLAYER_CARD_WINDOW_ROOT_MARGIN = "220px 0px";
 
 type AvailablePlayer = DraftDetail["availablePlayers"][number];
+
+type TopPickStripSlot = {
+  key: string;
+  label: string;
+  offset: number;
+  slot: {
+    overallPick: number;
+    roundNumber: number;
+    participantDisplayName: string;
+    participantTeamName: string | null;
+    participantAvatarUrl: string | null;
+    pickedPlayerName: string | null;
+    pickedPlayerTeam: string | null;
+    pickedPlayerRole: string | null;
+    pickedPlayerImageUrl: string | null;
+    pickedTeamIconUrl: string | null;
+  } | null;
+};
 
 const DesktopAvailablePlayersTable = memo(({
   players,
@@ -1062,129 +1085,183 @@ const MobileAvailablePlayersCards = memo(({
   onAddPlayerToQueue: (playerName: string) => void;
   onRequestManualDraft: (playerName: string) => void;
   onOpenPlayerDetails: (playerName: string) => void;
-}) => (
-  <div className="space-y-2">
-    {players.map((player) => {
-      const isQueued = queuedPlayerNameSet.has(player.playerName);
-      const isSelected = selectedPlayerName === player.playerName;
-      return (
-        <div
-          key={player.id}
-          aria-label={`Select ${player.playerName}`}
-          className={`w-full rounded-large border border-default-200/35 bg-content2/30 px-3 py-3 text-left transition ${
-            isSelected
-              ? "ring-1 ring-primary-300/65"
-              : isQueued
-              ? "ring-1 ring-primary-300/35"
-              : ""
-          }`}
-          role="button"
-          tabIndex={0}
-          onClick={(event) => onPlayerTapOrClick(player.playerName, event)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" || event.key === " ") {
-              event.preventDefault();
-              onOpenPlayerDetails(player.playerName);
-            }
-          }}
-        >
-          <div className="flex items-start justify-between gap-2">
-            <div className="flex min-w-0 items-center gap-2">
-              {player.teamIconUrl ? (
-                <Popover placement="top" showArrow>
-                  <PopoverTrigger>
-                    <button
-                      aria-label={`Show team for ${player.playerName}`}
-                      className="shrink-0 rounded-small focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-300/70"
-                      type="button"
-                      onClick={(event) => event.stopPropagation()}
-                      onPointerDown={(event) => event.stopPropagation()}
-                    >
-                      <CroppedTeamLogo
-                        alt={`${player.playerName} team logo`}
-                        frameClassName="h-5 w-7"
-                        height={20}
-                        imageClassName="h-5"
-                        src={player.teamIconUrl}
-                        width={48}
-                      />
-                    </button>
-                  </PopoverTrigger>
-                  <PopoverContent>
-                    <p className="px-1 py-0.5 text-xs">{player.playerTeam ?? "Unknown team"}</p>
-                  </PopoverContent>
-                </Popover>
-              ) : null}
-              <p className="truncate text-sm font-semibold">{player.playerName}</p>
-            </div>
-            <div className="flex items-center gap-1.5">
-              {player.analytics?.overallRank ? (
-                <Chip
-                  className="border border-sky-300/45 bg-sky-400/20 text-sky-100"
-                  size="sm"
-                  variant="flat"
-                >
-                  OVR #{player.analytics.overallRank}
+}) => {
+  const loadMoreRef = useRef<HTMLDivElement | null>(null);
+  const windowingEnabled = players.length >= MOBILE_PLAYER_CARD_WINDOW_THRESHOLD;
+  const [visibleCount, setVisibleCount] = useState(() => (
+    windowingEnabled
+      ? Math.min(players.length, MOBILE_PLAYER_CARD_INITIAL_WINDOW)
+      : players.length
+  ));
+
+  useEffect(() => {
+    if (
+      !windowingEnabled ||
+      visibleCount >= players.length ||
+      typeof IntersectionObserver === "undefined"
+    ) {
+      return;
+    }
+
+    const sentinel = loadMoreRef.current;
+    if (!sentinel) {
+      return;
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (!entries.some((entry) => entry.isIntersecting)) {
+          return;
+        }
+        setVisibleCount((current) => (
+          current >= players.length
+            ? current
+            : Math.min(players.length, current + MOBILE_PLAYER_CARD_WINDOW_STEP)
+        ));
+      },
+      {
+        root: null,
+        rootMargin: MOBILE_PLAYER_CARD_WINDOW_ROOT_MARGIN,
+        threshold: 0,
+      },
+    );
+    observer.observe(sentinel);
+    return () => {
+      observer.disconnect();
+    };
+  }, [players.length, visibleCount, windowingEnabled]);
+
+  const visiblePlayers = windowingEnabled ? players.slice(0, visibleCount) : players;
+
+  return (
+    <div className="space-y-2">
+      {visiblePlayers.map((player) => {
+        const isQueued = queuedPlayerNameSet.has(player.playerName);
+        const isSelected = selectedPlayerName === player.playerName;
+        return (
+          <div
+            key={player.id}
+            aria-label={`Select ${player.playerName}`}
+            className={`w-full rounded-large border border-default-200/35 bg-content2/30 px-3 py-3 text-left transition ${
+              isSelected
+                ? "ring-1 ring-primary-300/65"
+                : isQueued
+                ? "ring-1 ring-primary-300/35"
+                : ""
+            }`}
+            role="button"
+            tabIndex={0}
+            onClick={(event) => onPlayerTapOrClick(player.playerName, event)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                onOpenPlayerDetails(player.playerName);
+              }
+            }}
+          >
+            <div className="flex items-start justify-between gap-2">
+              <div className="flex min-w-0 items-center gap-2">
+                {player.teamIconUrl ? (
+                  <Popover placement="top" showArrow>
+                    <PopoverTrigger>
+                      <button
+                        aria-label={`Show team for ${player.playerName}`}
+                        className="shrink-0 rounded-small focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-300/70"
+                        type="button"
+                        onClick={(event) => event.stopPropagation()}
+                        onPointerDown={(event) => event.stopPropagation()}
+                      >
+                        <CroppedTeamLogo
+                          alt={`${player.playerName} team logo`}
+                          frameClassName="h-5 w-7"
+                          height={20}
+                          imageClassName="h-5"
+                          src={player.teamIconUrl}
+                          width={48}
+                        />
+                      </button>
+                    </PopoverTrigger>
+                    <PopoverContent>
+                      <p className="px-1 py-0.5 text-xs">{player.playerTeam ?? "Unknown team"}</p>
+                    </PopoverContent>
+                  </Popover>
+                ) : null}
+                <p className="truncate text-sm font-semibold">{player.playerName}</p>
+              </div>
+              <div className="flex items-center gap-1.5">
+                {player.analytics?.overallRank ? (
+                  <Chip
+                    className="border border-sky-300/45 bg-sky-400/20 text-sky-100"
+                    size="sm"
+                    variant="flat"
+                  >
+                    OVR #{player.analytics.overallRank}
+                  </Chip>
+                ) : null}
+                {player.analytics?.positionRank ? (
+                  <Chip
+                    className="border border-amber-300/45 bg-amber-400/20 text-amber-100"
+                    size="sm"
+                    variant="flat"
+                  >
+                    POS #{player.analytics.positionRank}
+                  </Chip>
+                ) : null}
+                <Chip className={roleChipClassName(player.playerRole)} size="sm" variant="flat">
+                  {formatRoleLabel(player.playerRole)}
                 </Chip>
-              ) : null}
-              {player.analytics?.positionRank ? (
-                <Chip
-                  className="border border-amber-300/45 bg-amber-400/20 text-amber-100"
-                  size="sm"
-                  variant="flat"
-                >
-                  POS #{player.analytics.positionRank}
-                </Chip>
-              ) : null}
-              <Chip className={roleChipClassName(player.playerRole)} size="sm" variant="flat">
-                {formatRoleLabel(player.playerRole)}
-              </Chip>
+              </div>
             </div>
-          </div>
-          <p className="mt-1.5 text-[11px] text-default-500">
-            Avg pts/g:{" "}
-            {typeof player.analytics?.averageFantasyPoints === "number"
-              ? player.analytics.averageFantasyPoints.toFixed(2)
-              : "N/A"}
-          </p>
-          <div className="mt-2 flex items-center gap-2">
-            <Button
-              isIconOnly
-              aria-label={isQueued ? "Queued" : "Queue player"}
-              color={isQueued ? "primary" : "default"}
-              isDisabled={isQueued || !canQueueActions}
-              size="sm"
-              variant={isQueued ? "flat" : "light"}
-              onPress={() => onAddPlayerToQueue(player.playerName)}
-            >
-              <Plus className="h-4 w-4" />
-            </Button>
-            {canCurrentUserPick ? (
-              <Button
-                color="primary"
-                isDisabled={!canDraftActions}
-                size="sm"
-                variant="flat"
-                onPress={() => onRequestManualDraft(player.playerName)}
-              >
-                Draft
-              </Button>
-            ) : (
+            <p className="mt-1.5 text-[11px] text-default-500">
+              Avg pts/g:{" "}
+              {typeof player.analytics?.averageFantasyPoints === "number"
+                ? player.analytics.averageFantasyPoints.toFixed(2)
+                : "N/A"}
+            </p>
+            <div className="mt-2 flex items-center gap-2">
               <Button
                 isIconOnly
+                aria-label={isQueued ? "Queued" : "Queue player"}
+                color={isQueued ? "primary" : "default"}
+                isDisabled={isQueued || !canQueueActions}
                 size="sm"
-                variant="light"
-                onPress={() => onOpenPlayerDetails(player.playerName)}
+                variant={isQueued ? "flat" : "light"}
+                onPress={() => onAddPlayerToQueue(player.playerName)}
               >
-                <Eye className="h-4 w-4" />
+                <Plus className="h-4 w-4" />
               </Button>
-            )}
+              {canCurrentUserPick ? (
+                <Button
+                  color="primary"
+                  isDisabled={!canDraftActions}
+                  size="sm"
+                  variant="flat"
+                  onPress={() => onRequestManualDraft(player.playerName)}
+                >
+                  Draft
+                </Button>
+              ) : (
+                <Button
+                  isIconOnly
+                  size="sm"
+                  variant="light"
+                  onPress={() => onOpenPlayerDetails(player.playerName)}
+                >
+                  <Eye className="h-4 w-4" />
+                </Button>
+              )}
+            </div>
           </div>
+        );
+      })}
+      {windowingEnabled && visibleCount < players.length ? (
+        <div ref={loadMoreRef} className="py-2 text-center text-[11px] text-default-500">
+          Loading more players...
         </div>
-      );
-    })}
-  </div>
-));
+      ) : null}
+    </div>
+  );
+});
 MobileAvailablePlayersCards.displayName = "MobileAvailablePlayersCards";
 
 const DraftClockBadge = ({
@@ -1368,6 +1445,9 @@ const DraftRoomPointerEffects = memo(({
   const trailPendingPointRef = useRef<{ x: number; y: number } | null>(null);
   const trailSpawnRafRef = useRef<number | null>(null);
   const trailRemovalTimeoutIdsRef = useRef<number[]>([]);
+  const trailFlushRafRef = useRef<number | null>(null);
+  const pendingTrailSpritesRef = useRef<MouseTrailSprite[]>([]);
+  const pendingTrailRemovalIdsRef = useRef<Set<number>>(new Set());
 
   const setCursorVisibility = useCallback((next: boolean) => {
     if (cursorVisibleRef.current === next) {
@@ -1382,6 +1462,8 @@ const DraftRoomPointerEffects = memo(({
       window.clearTimeout(timeoutId);
     }
     trailRemovalTimeoutIdsRef.current = [];
+    pendingTrailSpritesRef.current = [];
+    pendingTrailRemovalIdsRef.current.clear();
   }, []);
 
   const clearEffectRafs = useCallback(() => {
@@ -1393,6 +1475,39 @@ const DraftRoomPointerEffects = memo(({
       window.cancelAnimationFrame(trailSpawnRafRef.current);
       trailSpawnRafRef.current = null;
     }
+    if (trailFlushRafRef.current !== null) {
+      window.cancelAnimationFrame(trailFlushRafRef.current);
+      trailFlushRafRef.current = null;
+    }
+  }, []);
+
+  const scheduleTrailStateFlush = useCallback(() => {
+    if (trailFlushRafRef.current !== null) {
+      return;
+    }
+    trailFlushRafRef.current = window.requestAnimationFrame(() => {
+      trailFlushRafRef.current = null;
+      const additions = pendingTrailSpritesRef.current;
+      const removals = pendingTrailRemovalIdsRef.current;
+      if (additions.length < 1 && removals.size < 1) {
+        return;
+      }
+      pendingTrailSpritesRef.current = [];
+      pendingTrailRemovalIdsRef.current = new Set();
+      setTrailSprites((previous) => {
+        let next = previous;
+        if (removals.size > 0) {
+          next = next.filter((entry) => !removals.has(entry.id));
+        }
+        if (additions.length > 0) {
+          next = [...next, ...additions];
+          if (next.length > MOUSE_TRAIL_MAX_SPRITES) {
+            next = next.slice(next.length - MOUSE_TRAIL_MAX_SPRITES);
+          }
+        }
+        return next;
+      });
+    });
   }, []);
 
   const scheduleCursorPaint = useCallback(() => {
@@ -1432,9 +1547,8 @@ const DraftRoomPointerEffects = memo(({
         trailRemovalTimeoutIdsRef.current = trailRemovalTimeoutIdsRef.current.filter(
           (entry) => entry !== timeoutId,
         );
-        setTrailSprites((previous) =>
-          previous.filter((entry) => entry.id !== spriteId),
-        );
+        pendingTrailRemovalIdsRef.current.add(spriteId);
+        scheduleTrailStateFlush();
       }, MOUSE_TRAIL_LIFETIME_MS);
       trailRemovalTimeoutIdsRef.current.push(timeoutId);
     };
@@ -1455,9 +1569,8 @@ const DraftRoomPointerEffects = memo(({
         startRotation,
         endRotation,
       };
-      setTrailSprites((previous) =>
-        [...previous.slice(-(MOUSE_TRAIL_MAX_SPRITES - 1)), sprite],
-      );
+      pendingTrailSpritesRef.current.push(sprite);
+      scheduleTrailStateFlush();
       queueTrailRemoval(id);
     };
 
@@ -1558,6 +1671,8 @@ const DraftRoomPointerEffects = memo(({
       trailLastSpawnRef.current = null;
       trailNextSpawnAtRef.current = 0;
       cursorVisibleRef.current = false;
+      setTrailSprites([]);
+      setCursorVisibility(false);
     };
   }, [
     clearEffectRafs,
@@ -1565,6 +1680,7 @@ const DraftRoomPointerEffects = memo(({
     containerRef,
     enabled,
     prefersReducedMotion,
+    scheduleTrailStateFlush,
     scheduleCursorPaint,
     setCursorVisibility,
   ]);
@@ -1673,6 +1789,248 @@ const DraftRoomPointerEffects = memo(({
 });
 DraftRoomPointerEffects.displayName = "DraftRoomPointerEffects";
 
+const DraftTopPickStripTiles = memo(({
+  items,
+  draftStatus,
+  currentPickDeadlineAt,
+  pickSeconds,
+  serverOffsetMs,
+  topStripHighlightPick,
+  prefersReducedMotion,
+}: {
+  items: TopPickStripSlot[];
+  draftStatus: DraftStatus | null;
+  currentPickDeadlineAt: string | null;
+  pickSeconds: number;
+  serverOffsetMs: number;
+  topStripHighlightPick: number | null;
+  prefersReducedMotion: boolean;
+}) => (
+  <AnimatePresence initial={false}>
+    {items.map((item) => {
+      const isNowTile = item.offset === 0;
+      const isPastTile = item.offset < 0;
+      const isRecentlyLockedPick =
+        item.slot?.overallPick === topStripHighlightPick && Boolean(item.slot?.pickedPlayerName);
+      const showNowClock =
+        isNowTile &&
+        draftStatus === "live" &&
+        !item.slot?.pickedPlayerName &&
+        Boolean(currentPickDeadlineAt);
+      const mobileStripLabel = isNowTile
+        ? "NOW"
+        : isPastTile
+        ? `${Math.abs(item.offset)} ${Math.abs(item.offset) === 1 ? "PICK" : "PICKS"} AGO`
+        : item.offset === 1
+        ? "NEXT PICK"
+        : `IN ${item.offset} PICKS`;
+      const roleBackgroundIconUrl = item.slot?.pickedPlayerRole
+        ? roleIconUrl(item.slot.pickedPlayerRole)
+        : null;
+      const onClockParticipantAvatarUrl =
+        isNowTile && !item.slot?.pickedPlayerName ? item.slot?.participantAvatarUrl ?? null : null;
+      const onClockAvatarBackgroundStyle: CSSProperties | undefined =
+        isNowTile && !item.slot?.pickedPlayerName && onClockParticipantAvatarUrl
+          ? {
+              backgroundImage:
+                `linear-gradient(rgba(8, 12, 22, 0.9), rgba(8, 12, 22, 0.9)), ` +
+                `url("${onClockParticipantAvatarUrl}")`,
+              backgroundSize: "100% 100%",
+              backgroundPosition: "center",
+              backgroundRepeat: "no-repeat",
+            }
+          : undefined;
+      const onClockTeamLabel =
+        item.slot?.participantTeamName?.trim() || item.slot?.participantDisplayName || "Pending";
+      const onClockParticipantShortLabel = formatShortPlayerName(
+        item.slot?.participantDisplayName,
+      );
+      const onClockPickMetaLabel =
+        item.slot
+          ? `Pick ${item.slot.overallPick} • Rd ${item.slot.roundNumber}`
+          : "Pick -- • Rd --";
+      const rightPortraitImageUrl =
+        item.slot?.pickedPlayerImageUrl ?? (showNowClock ? null : onClockParticipantAvatarUrl);
+      const teamLabel = item.slot?.participantDisplayName ?? "Pending";
+      const shortPlayerLabel = item.slot?.pickedPlayerName
+        ? formatShortPlayerName(item.slot.pickedPlayerName)
+        : item.offset === 0
+        ? "On the clock"
+        : item.offset < 0
+        ? "Pending"
+        : "Upcoming";
+      return (
+        <motion.div
+          key={item.key}
+          layout
+          animate={
+            prefersReducedMotion
+              ? { opacity: 1, filter: "brightness(1)" }
+              : isRecentlyLockedPick
+              ? { opacity: 1, filter: ["brightness(1)", "brightness(1.08)", "brightness(1)"] }
+              : { opacity: 1, filter: "brightness(1)" }
+          }
+          exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, scale: 0.98, filter: "brightness(1)" }}
+          initial={prefersReducedMotion ? { opacity: 1 } : { opacity: 0, scale: 0.98, filter: "brightness(1)" }}
+          transition={
+            prefersReducedMotion
+              ? { duration: 0.01 }
+              : {
+                  duration: TOP_PICK_STRIP_FADE_DURATION,
+                  ease: [0.22, 1, 0.36, 1],
+                  layout: { duration: TOP_PICK_STRIP_LAYOUT_DURATION, ease: [0.22, 1, 0.36, 1] },
+                }
+          }
+          className={`relative shrink-0 rounded-large border will-change-transform ${
+            isNowTile ? "overflow-visible" : "overflow-hidden"
+          } ${
+            isNowTile
+              ? "h-[7rem] min-w-0 basis-0 flex-[1.35] p-2.5 md:h-[6.8rem] md:flex-[1.25] md:p-3"
+              : "h-[5.25rem] min-w-0 basis-0 flex-1 p-1.5 md:h-[5rem] md:flex-[0.5] md:p-2"
+          } ${
+            item.slot?.pickedPlayerName
+              ? roleTileClassName(item.slot.pickedPlayerRole)
+              : isNowTile
+              ? item.slot
+                ? "border-primary-300/70 bg-primary-500/14 shadow-[0_0_0_1px_rgba(147,197,253,0.35)]"
+                : "border-default-200/35 bg-content2/24"
+              : isPastTile
+              ? "border-default-200/30 bg-content2/18"
+              : "border-default-200/25 bg-content2/14"
+          } ${
+            isNowTile
+              ? "ring-1 ring-primary-300/75 shadow-[0_0_0_1px_rgba(147,197,253,0.4),0_0_18px_rgba(59,130,246,0.24)]"
+              : ""
+          } ${
+            isRecentlyLockedPick
+              ? "shadow-[0_0_0_1px_rgba(110,231,183,0.45),0_0_20px_rgba(16,185,129,0.28)]"
+              : ""
+          }`}
+          style={onClockAvatarBackgroundStyle}
+        >
+          {isNowTile ? (
+            <p className="pointer-events-none absolute -top-2.5 left-1/2 z-40 min-w-[7rem] -translate-x-1/2 whitespace-nowrap rounded-full border border-primary-200/65 bg-content1/96 px-3 py-1 text-center text-[10px] font-black uppercase tracking-[0.1em] text-white md:min-w-[7.5rem] md:text-[11px]">
+              On the clock
+            </p>
+          ) : null}
+          {isNowTile ? (
+            <p
+              className="pointer-events-none absolute left-2 top-4 z-35 max-w-[4.75rem] overflow-hidden text-ellipsis whitespace-nowrap text-[10px] font-semibold tracking-[0.04em] text-white/92 drop-shadow-[0_1px_1px_rgba(0,0,0,0.75)] md:top-2"
+            >
+              {onClockParticipantShortLabel}
+            </p>
+          ) : null}
+          {isNowTile ? (
+            <p className="pointer-events-none absolute -bottom-3 left-1/2 z-40 max-w-[7rem] -translate-x-1/2 overflow-hidden text-ellipsis whitespace-nowrap rounded-full border border-primary-200/65 bg-content1/96 px-3 py-1 text-center text-[10px] font-black uppercase tracking-[0.1em] text-white md:max-w-[7.5rem] md:text-[11px]">
+              {onClockTeamLabel}
+            </p>
+          ) : null}
+          <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-black/28 via-black/16 to-black/30" />
+          {isNowTile ? (
+            <p className="pointer-events-none absolute bottom-3 left-2 z-35 text-[10px] font-semibold text-white/92 drop-shadow-[0_1px_1px_rgba(0,0,0,0.75)]">
+              {onClockPickMetaLabel}
+            </p>
+          ) : null}
+          {showNowClock ? (
+            <>
+              <div className="pointer-events-none absolute inset-x-2 top-1/2 z-30 -translate-y-1/2">
+                <div className="flex origin-center scale-[0.85] items-center justify-center md:scale-[1.0625]">
+                  <DraftClockBadge
+                    deadlineIso={currentPickDeadlineAt}
+                    draftStatus={draftStatus}
+                    pickSeconds={pickSeconds}
+                    serverOffsetMs={serverOffsetMs}
+                    centerFallbackLabel={initialsForLabel(onClockTeamLabel)}
+                    centerImageAlt={`${item.slot?.participantDisplayName ?? "On clock"} avatar`}
+                    centerImageUrl={onClockParticipantAvatarUrl}
+                    preferCenterFallbackLabel
+                  />
+                </div>
+              </div>
+              <DraftCountdownLabel
+                className="pointer-events-none absolute bottom-3 right-2 z-35 mono-points text-[15px] font-black leading-none tabular-nums text-white drop-shadow-[0_1px_1px_rgba(0,0,0,0.75)] md:text-[17px]"
+                deadlineIso={currentPickDeadlineAt}
+                serverOffsetMs={serverOffsetMs}
+              />
+            </>
+          ) : null}
+          {item.slot && (rightPortraitImageUrl || item.slot.pickedTeamIconUrl || roleBackgroundIconUrl) ? (
+            <div className="pointer-events-none absolute inset-y-1.5 right-1.5 z-20 flex flex-col items-end justify-between">
+              {rightPortraitImageUrl ? (
+                <Image
+                  alt={
+                    item.slot.pickedPlayerName
+                      ? `${item.slot.pickedPlayerName} portrait`
+                      : `${item.slot.participantDisplayName} avatar`
+                  }
+                  className={`rounded-full border border-white/35 object-cover shadow-[0_2px_8px_rgba(0,0,0,0.45)] ${
+                    isNowTile ? "h-9 w-9 md:h-10 md:w-10" : "h-7 w-7 md:h-8 md:w-8"
+                  }`}
+                  height={40}
+                  src={rightPortraitImageUrl}
+                  width={40}
+                />
+              ) : item.slot.pickedTeamIconUrl ? (
+                <Image
+                  alt={`${item.slot.pickedPlayerName ?? "Picked player"} team logo`}
+                  className={`translate-x-1.5 -translate-y-1 object-contain opacity-90 drop-shadow-[0_1px_2px_rgba(0,0,0,0.55)] ${
+                    isNowTile ? "h-7 w-11 md:h-8 md:w-12" : "h-6 w-9 md:h-7 md:w-10"
+                  }`}
+                  height={32}
+                  src={item.slot.pickedTeamIconUrl}
+                  width={48}
+                />
+              ) : (
+                <span className="h-8 w-8" />
+              )}
+              {roleBackgroundIconUrl ? (
+                <Image
+                  alt={`${formatRoleLabel(item.slot.pickedPlayerRole)} role icon`}
+                  className={`-translate-x-1.5 object-contain opacity-95 drop-shadow-[0_1px_2px_rgba(0,0,0,0.55)] ${
+                    isNowTile ? "h-5 w-5 md:h-6 md:w-6" : "h-4 w-4 md:h-5 md:w-5"
+                  }`}
+                  height={24}
+                  src={roleBackgroundIconUrl}
+                  width={24}
+                />
+              ) : null}
+            </div>
+          ) : null}
+          {showNowClock ? null : (
+            <div className="relative z-10">
+              {!isNowTile ? (
+                <p
+                  className={`truncate whitespace-nowrap text-[8px] font-semibold uppercase tracking-wide drop-shadow-[0_1px_1px_rgba(0,0,0,0.65)] ${
+                    isNowTile ? "text-white/72" : "text-white/55"
+                  }`}
+                >
+                  <span className="md:hidden">{mobileStripLabel}</span>
+                  <span className="hidden md:inline">{item.label}</span>
+                </p>
+              ) : null}
+              {!isNowTile ? (
+                <p className="mt-0.5 truncate font-semibold text-[11px] text-white/92 drop-shadow-[0_1px_1px_rgba(0,0,0,0.7)] md:text-xs">
+                  {teamLabel}
+                </p>
+              ) : null}
+              {!isNowTile ? (
+                <p
+                  className={`mt-0.5 truncate text-[10px] drop-shadow-[0_1px_1px_rgba(0,0,0,0.65)] ${
+                    item.slot?.pickedPlayerName ? "text-white/86" : "text-white/62"
+                  }`}
+                >
+                  {shortPlayerLabel}
+                </p>
+              ) : null}
+            </div>
+          )}
+        </motion.div>
+      );
+    })}
+  </AnimatePresence>
+));
+DraftTopPickStripTiles.displayName = "DraftTopPickStripTiles";
+
 export const DraftRoom = ({
   draftId,
   currentUserId,
@@ -1705,7 +2063,6 @@ export const DraftRoom = ({
   const [settings, setSettings] = useState<DraftRoomSettings>(DEFAULT_DRAFT_ROOM_SETTINGS);
   const [connectionStatus, setConnectionStatus] = useState("connecting");
   const [toastNotices, setToastNotices] = useState<ToastNotice[]>([]);
-  const [, setSystemFeedEvents] = useState<DraftSystemFeedEvent[]>([]);
   const [clientNowMs, setClientNowMs] = useState(() => Date.now());
   const [serverOffsetMs, setServerOffsetMs] = useState(0);
   const [isMobileViewport, setIsMobileViewport] = useState(false);
@@ -1729,6 +2086,7 @@ export const DraftRoom = ({
   const prefersReducedMotion = useReducedMotion();
   const latestToastIdRef = useRef(0);
   const latestSystemFeedEventIdRef = useRef(0);
+  const systemFeedEventsRef = useRef<DraftSystemFeedEvent[]>([]);
   const previousConnectionStatusRef = useRef<string | null>(null);
   const previousDraftSnapshotRef = useRef<{
     status: DraftStatus | null;
@@ -1844,9 +2202,10 @@ export const DraftRoom = ({
     const id = latestSystemFeedEventIdRef.current + 1;
     latestSystemFeedEventIdRef.current = id;
     const createdAtMs = Date.now();
-    setSystemFeedEvents((previous) =>
-      [...previous, { id, label, overallPick, createdAtMs }].slice(-60),
-    );
+    systemFeedEventsRef.current = [
+      ...systemFeedEventsRef.current,
+      { id, label, overallPick, createdAtMs },
+    ].slice(-60);
   }, []);
 
   const flushClientMetrics = useCallback(async () => {
@@ -2754,28 +3113,58 @@ export const DraftRoom = ({
   }, []);
 
   useEffect(() => {
-    const isCurrentUserClocked =
-      draftStatus === "live" && draft?.nextPick?.participantUserId === currentUserId;
-    const shouldTick =
-      isCurrentUserClocked ||
-      connectionStatus !== "SUBSCRIBED" ||
-      Boolean(timeoutOutcomeMessage);
-    if (!shouldTick) {
+    let intervalId: number | null = null;
+    let delayedStartId: number | null = null;
+    const startFastTick = () => {
       setClientNowMs(Date.now());
-      return;
+      if (intervalId !== null) {
+        return;
+      }
+      intervalId = window.setInterval(() => {
+        setClientNowMs(Date.now());
+      }, 1000);
+    };
+
+    if (connectionStatus !== "SUBSCRIBED" || Boolean(timeoutOutcomeMessage)) {
+      startFastTick();
+    } else {
+      const isCurrentUserClocked =
+        draftStatus === "live" && draft?.nextPick?.participantUserId === currentUserId;
+      if (isCurrentUserClocked && draft?.currentPickDeadlineAt) {
+        const deadlineMs = new Date(draft.currentPickDeadlineAt).getTime();
+        if (!Number.isFinite(deadlineMs)) {
+          setClientNowMs(Date.now());
+        } else {
+          const remainingMs = deadlineMs - (Date.now() + serverOffsetMs);
+          if (remainingMs <= DRAFT_ROOM_FAST_TICK_WINDOW_MS) {
+            startFastTick();
+          } else {
+            delayedStartId = window.setTimeout(() => {
+              delayedStartId = null;
+              startFastTick();
+            }, Math.max(0, remainingMs - DRAFT_ROOM_FAST_TICK_WINDOW_MS));
+          }
+        }
+      } else {
+        setClientNowMs(Date.now());
+      }
     }
-    // Keep one-second ticks while the local user is on the clock and during reconnect states.
-    const intervalMs = 1000;
-    const id = window.setInterval(() => {
-      setClientNowMs(Date.now());
-    }, intervalMs);
-    return () => window.clearInterval(id);
+
+    return () => {
+      if (delayedStartId !== null) {
+        window.clearTimeout(delayedStartId);
+      }
+      if (intervalId !== null) {
+        window.clearInterval(intervalId);
+      }
+    };
   }, [
     connectionStatus,
     currentUserId,
     draft?.currentPickDeadlineAt,
     draft?.nextPick?.participantUserId,
     draftStatus,
+    serverOffsetMs,
     timeoutOutcomeMessage,
   ]);
 
@@ -3320,23 +3709,7 @@ export const DraftRoom = ({
       return `Next +${offset - 1}`;
     };
     if (!draft || participantsByPosition.length < 1 || draft.totalPickCount < 1) {
-          return [] as Array<{
-            key: string;
-            label: string;
-            offset: number;
-            slot: {
-              overallPick: number;
-              roundNumber: number;
-              participantDisplayName: string;
-              participantTeamName: string | null;
-              participantAvatarUrl: string | null;
-              pickedPlayerName: string | null;
-              pickedPlayerTeam: string | null;
-              pickedPlayerRole: string | null;
-              pickedPlayerImageUrl: string | null;
-              pickedTeamIconUrl: string | null;
-        } | null;
-      }>;
+      return [] as TopPickStripSlot[];
     }
 
     const currentOverallPick =
@@ -3372,23 +3745,7 @@ export const DraftRoom = ({
       return offsets;
     })();
     const participantCount = participantsByPosition.length;
-    const slots: Array<{
-      key: string;
-      label: string;
-      offset: number;
-      slot: {
-        overallPick: number;
-        roundNumber: number;
-        participantDisplayName: string;
-        participantTeamName: string | null;
-        participantAvatarUrl: string | null;
-        pickedPlayerName: string | null;
-        pickedPlayerTeam: string | null;
-        pickedPlayerRole: string | null;
-        pickedPlayerImageUrl: string | null;
-        pickedTeamIconUrl: string | null;
-      } | null;
-    }> = [];
+    const slots: TopPickStripSlot[] = [];
 
     for (const offset of stripOffsets) {
       const overallPick = currentOverallPick + offset;
@@ -4201,22 +4558,23 @@ export const DraftRoom = ({
     };
   }, [canDraftActions, hasPendingManualConfirm, isMobileViewport, pendingManualDraftPlayerName, submitPick]);
 
+  const autopickDraftStatus = draft?.status ?? null;
+  const autopickCurrentPickDeadlineAt = draft?.currentPickDeadlineAt ?? null;
+  const autopickCurrentPickNumber = draft?.nextPick?.overallPick ?? null;
+
   useEffect(() => {
     if (
-      !draft ||
       !settings.autoPickFromQueue ||
       !canDraftActions ||
-      draft.status !== "live" ||
-      !draft.currentPickDeadlineAt
+      autopickDraftStatus !== "live" ||
+      !autopickCurrentPickDeadlineAt ||
+      !autopickCurrentPickNumber
     ) {
       return;
     }
 
-    const deadlineMs = new Date(draft.currentPickDeadlineAt).getTime();
-    const pickNumber = draft.nextPick?.overallPick ?? null;
-    if (!pickNumber) {
-      return;
-    }
+    const deadlineMs = new Date(autopickCurrentPickDeadlineAt).getTime();
+    const pickNumber = autopickCurrentPickNumber;
 
     let timeoutId: number | null = null;
 
@@ -4272,8 +4630,10 @@ export const DraftRoom = ({
       }
     };
   }, [
+    autopickCurrentPickDeadlineAt,
+    autopickCurrentPickNumber,
+    autopickDraftStatus,
     canDraftActions,
-    draft,
     nextQueuedEligiblePlayerName,
     pickPending,
     queueFirstFallbackPlayerName,
@@ -4598,7 +4958,7 @@ export const DraftRoom = ({
     >
       <DraftRoomPointerEffects
         containerRef={draftRoomSectionRef}
-        enabled={!isMobileViewport}
+        enabled={!isMobileViewport && !isRealtimeReadOnly}
         prefersReducedMotion={Boolean(prefersReducedMotion)}
       />
       <div
@@ -4933,228 +5293,15 @@ export const DraftRoom = ({
               orientation="horizontal"
             >
               <motion.div layout className="flex w-full items-end gap-1.5 md:gap-2">
-              <AnimatePresence initial={false}>
-                {topPickStripSlots.map((item) => {
-                  const isNowTile = item.offset === 0;
-                  const isPastTile = item.offset < 0;
-                  const isRecentlyLockedPick =
-                    item.slot?.overallPick === topStripHighlightPick && Boolean(item.slot?.pickedPlayerName);
-                  const showNowClock =
-                    isNowTile &&
-                    draft.status === "live" &&
-                    !item.slot?.pickedPlayerName &&
-                    Boolean(draft.currentPickDeadlineAt);
-                  const mobileStripLabel = isNowTile
-                    ? "NOW"
-                    : isPastTile
-                    ? `${Math.abs(item.offset)} ${Math.abs(item.offset) === 1 ? "PICK" : "PICKS"} AGO`
-                    : item.offset === 1
-                    ? "NEXT PICK"
-                    : `IN ${item.offset} PICKS`;
-                  const roleBackgroundIconUrl = item.slot?.pickedPlayerRole
-                    ? roleIconUrl(item.slot.pickedPlayerRole)
-                    : null;
-                  const onClockParticipantAvatarUrl =
-                    isNowTile && !item.slot?.pickedPlayerName ? item.slot?.participantAvatarUrl ?? null : null;
-                  const onClockAvatarBackgroundStyle: CSSProperties | undefined =
-                    isNowTile && !item.slot?.pickedPlayerName && onClockParticipantAvatarUrl
-                      ? {
-                          backgroundImage:
-                            `linear-gradient(rgba(8, 12, 22, 0.9), rgba(8, 12, 22, 0.9)), ` +
-                            `url("${onClockParticipantAvatarUrl}")`,
-                          backgroundSize: "100% 100%",
-                          backgroundPosition: "center",
-                          backgroundRepeat: "no-repeat",
-                        }
-                      : undefined;
-                  const onClockTeamLabel =
-                    item.slot?.participantTeamName?.trim() || item.slot?.participantDisplayName || "Pending";
-                  const onClockParticipantShortLabel = formatShortPlayerName(
-                    item.slot?.participantDisplayName,
-                  );
-                  const onClockPickMetaLabel =
-                    item.slot
-                      ? `Pick ${item.slot.overallPick} • Rd ${item.slot.roundNumber}`
-                      : "Pick -- • Rd --";
-                  const rightPortraitImageUrl =
-                    item.slot?.pickedPlayerImageUrl ?? (showNowClock ? null : onClockParticipantAvatarUrl);
-                  const teamLabel = item.slot?.participantDisplayName ?? "Pending";
-                  const shortPlayerLabel = item.slot?.pickedPlayerName
-                    ? formatShortPlayerName(item.slot.pickedPlayerName)
-                    : item.offset === 0
-                    ? "On the clock"
-                    : item.offset < 0
-                    ? "Pending"
-                    : "Upcoming";
-                  return (
-                    <motion.div
-                      key={item.key}
-                      layout
-                      animate={
-                        prefersReducedMotion
-                          ? { opacity: 1, filter: "brightness(1)" }
-                          : isRecentlyLockedPick
-                          ? { opacity: 1, filter: ["brightness(1)", "brightness(1.08)", "brightness(1)"] }
-                          : { opacity: 1, filter: "brightness(1)" }
-                      }
-                      exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, scale: 0.98, filter: "brightness(1)" }}
-                      initial={prefersReducedMotion ? { opacity: 1 } : { opacity: 0, scale: 0.98, filter: "brightness(1)" }}
-                      transition={
-                        prefersReducedMotion
-                          ? { duration: 0.01 }
-                          : {
-                              duration: TOP_PICK_STRIP_FADE_DURATION,
-                              ease: [0.22, 1, 0.36, 1],
-                              layout: { duration: TOP_PICK_STRIP_LAYOUT_DURATION, ease: [0.22, 1, 0.36, 1] },
-                            }
-                      }
-                      className={`relative shrink-0 rounded-large border will-change-transform ${
-                        isNowTile ? "overflow-visible" : "overflow-hidden"
-                      } ${
-                        isNowTile
-                          ? "h-[7rem] min-w-0 basis-0 flex-[1.35] p-2.5 md:h-[6.8rem] md:flex-[1.25] md:p-3"
-                          : "h-[5.25rem] min-w-0 basis-0 flex-1 p-1.5 md:h-[5rem] md:flex-[0.5] md:p-2"
-                      } ${
-                        item.slot?.pickedPlayerName
-                          ? roleTileClassName(item.slot.pickedPlayerRole)
-                          : isNowTile
-                          ? item.slot
-                            ? "border-primary-300/70 bg-primary-500/14 shadow-[0_0_0_1px_rgba(147,197,253,0.35)]"
-                            : "border-default-200/35 bg-content2/24"
-                          : isPastTile
-                          ? "border-default-200/30 bg-content2/18"
-                          : "border-default-200/25 bg-content2/14"
-                      } ${
-                        isNowTile
-                          ? "ring-1 ring-primary-300/75 shadow-[0_0_0_1px_rgba(147,197,253,0.4),0_0_18px_rgba(59,130,246,0.24)]"
-                          : ""
-                      } ${
-                        isRecentlyLockedPick
-                          ? "shadow-[0_0_0_1px_rgba(110,231,183,0.45),0_0_20px_rgba(16,185,129,0.28)]"
-                          : ""
-                      }`}
-                      style={onClockAvatarBackgroundStyle}
-                    >
-                      {isNowTile ? (
-                        <p className="pointer-events-none absolute -top-2.5 left-1/2 z-40 min-w-[7rem] -translate-x-1/2 whitespace-nowrap rounded-full border border-primary-200/65 bg-content1/96 px-3 py-1 text-center text-[10px] font-black uppercase tracking-[0.1em] text-white md:min-w-[7.5rem] md:text-[11px]">
-                          On the clock
-                        </p>
-                      ) : null}
-                      {isNowTile ? (
-                        <p
-                          className="pointer-events-none absolute left-2 top-4 z-35 max-w-[4.75rem] overflow-hidden text-ellipsis whitespace-nowrap text-[10px] font-semibold tracking-[0.04em] text-white/92 drop-shadow-[0_1px_1px_rgba(0,0,0,0.75)] md:top-2"
-                        >
-                          {onClockParticipantShortLabel}
-                        </p>
-                      ) : null}
-                      {isNowTile ? (
-                        <p className="pointer-events-none absolute -bottom-3 left-1/2 z-40 max-w-[7rem] -translate-x-1/2 overflow-hidden text-ellipsis whitespace-nowrap rounded-full border border-primary-200/65 bg-content1/96 px-3 py-1 text-center text-[10px] font-black uppercase tracking-[0.1em] text-white md:max-w-[7.5rem] md:text-[11px]">
-                          {onClockTeamLabel}
-                        </p>
-                      ) : null}
-                      <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-black/28 via-black/16 to-black/30" />
-                      {isNowTile ? (
-                        <p className="pointer-events-none absolute bottom-3 left-2 z-35 text-[10px] font-semibold text-white/92 drop-shadow-[0_1px_1px_rgba(0,0,0,0.75)]">
-                          {onClockPickMetaLabel}
-                        </p>
-                      ) : null}
-                      {showNowClock ? (
-                        <>
-                          <div className="pointer-events-none absolute inset-x-2 top-1/2 z-30 -translate-y-1/2">
-                            <div className="flex origin-center scale-[0.85] items-center justify-center">
-                              <DraftClockBadge
-                                deadlineIso={draft.currentPickDeadlineAt}
-                                draftStatus={draft.status}
-                                pickSeconds={draft.pickSeconds}
-                                serverOffsetMs={serverOffsetMs}
-                                centerFallbackLabel={initialsForLabel(onClockTeamLabel)}
-                                centerImageAlt={`${item.slot?.participantDisplayName ?? "On clock"} avatar`}
-                                centerImageUrl={onClockParticipantAvatarUrl}
-                                preferCenterFallbackLabel
-                              />
-                            </div>
-                          </div>
-                          <DraftCountdownLabel
-                            className="pointer-events-none absolute bottom-3 right-2 z-35 mono-points text-[15px] font-black leading-none tabular-nums text-white drop-shadow-[0_1px_1px_rgba(0,0,0,0.75)] md:text-[17px]"
-                            deadlineIso={draft.currentPickDeadlineAt}
-                            serverOffsetMs={serverOffsetMs}
-                          />
-                        </>
-                      ) : null}
-                      {item.slot && (rightPortraitImageUrl || item.slot.pickedTeamIconUrl || roleBackgroundIconUrl) ? (
-                        <div className="pointer-events-none absolute inset-y-1.5 right-1.5 z-20 flex flex-col items-end justify-between">
-                          {rightPortraitImageUrl ? (
-                            <Image
-                              alt={
-                                item.slot.pickedPlayerName
-                                  ? `${item.slot.pickedPlayerName} portrait`
-                                  : `${item.slot.participantDisplayName} avatar`
-                              }
-                              className={`rounded-full border border-white/35 object-cover shadow-[0_2px_8px_rgba(0,0,0,0.45)] ${
-                                isNowTile ? "h-9 w-9 md:h-10 md:w-10" : "h-7 w-7 md:h-8 md:w-8"
-                              }`}
-                              height={40}
-                              src={rightPortraitImageUrl}
-                              width={40}
-                            />
-                          ) : item.slot.pickedTeamIconUrl ? (
-                            <Image
-                              alt={`${item.slot.pickedPlayerName ?? "Picked player"} team logo`}
-                              className={`translate-x-1.5 -translate-y-1 object-contain opacity-90 drop-shadow-[0_1px_2px_rgba(0,0,0,0.55)] ${
-                                isNowTile ? "h-7 w-11 md:h-8 md:w-12" : "h-6 w-9 md:h-7 md:w-10"
-                              }`}
-                              height={32}
-                              src={item.slot.pickedTeamIconUrl}
-                              width={48}
-                            />
-                          ) : (
-                            <span className="h-8 w-8" />
-                          )}
-                          {roleBackgroundIconUrl ? (
-                            <Image
-                              alt={`${formatRoleLabel(item.slot.pickedPlayerRole)} role icon`}
-                              className={`-translate-x-1.5 object-contain opacity-95 drop-shadow-[0_1px_2px_rgba(0,0,0,0.55)] ${
-                                isNowTile ? "h-5 w-5 md:h-6 md:w-6" : "h-4 w-4 md:h-5 md:w-5"
-                              }`}
-                              height={24}
-                              src={roleBackgroundIconUrl}
-                              width={24}
-                            />
-                          ) : null}
-                        </div>
-                      ) : null}
-                      {showNowClock ? null : (
-                        <div className="relative z-10">
-                          {!isNowTile ? (
-                            <p
-                              className={`truncate whitespace-nowrap text-[8px] font-semibold uppercase tracking-wide drop-shadow-[0_1px_1px_rgba(0,0,0,0.65)] ${
-                                isNowTile ? "text-white/72" : "text-white/55"
-                              }`}
-                            >
-                              <span className="md:hidden">{mobileStripLabel}</span>
-                              <span className="hidden md:inline">{item.label}</span>
-                            </p>
-                          ) : null}
-                          {!isNowTile ? (
-                            <p className="mt-0.5 truncate font-semibold text-[11px] text-white/92 drop-shadow-[0_1px_1px_rgba(0,0,0,0.7)] md:text-xs">
-                              {teamLabel}
-                            </p>
-                          ) : null}
-                          {!isNowTile ? (
-                            <p
-                              className={`mt-0.5 truncate text-[10px] drop-shadow-[0_1px_1px_rgba(0,0,0,0.65)] ${
-                                item.slot?.pickedPlayerName ? "text-white/86" : "text-white/62"
-                              }`}
-                            >
-                              {shortPlayerLabel}
-                            </p>
-                          ) : null}
-                        </div>
-                      )}
-                    </motion.div>
-                  );
-                })}
-              </AnimatePresence>
+                <DraftTopPickStripTiles
+                  currentPickDeadlineAt={draft.currentPickDeadlineAt}
+                  draftStatus={draft.status}
+                  items={topPickStripSlots}
+                  pickSeconds={draft.pickSeconds}
+                  prefersReducedMotion={Boolean(prefersReducedMotion)}
+                  serverOffsetMs={serverOffsetMs}
+                  topStripHighlightPick={topStripHighlightPick}
+                />
               </motion.div>
             </ScrollShadow>
           </div>
@@ -6178,7 +6325,6 @@ export const DraftRoom = ({
             <Tabs
               aria-label="Live draft mobile tabs"
               color="primary"
-              destroyInactiveTabPanel
               selectedKey={mobileLiveTab}
               size="sm"
               variant="underlined"
@@ -6938,20 +7084,21 @@ export const DraftRoom = ({
                   />
                 </Button>
               </CardHeader>
-              {isDesktopChatCollapsed ? (
-                <CardBody className="flex min-h-0 items-center justify-center pt-0">
-                  <p className="text-xs text-default-500">Chat is hidden.</p>
-                </CardBody>
-              ) : (
-                <CardBody className="h-full min-h-0 px-1.5 pt-0 pb-0">
+              <CardBody className="relative h-full min-h-0 px-1.5 pt-0 pb-0">
+                <div className={isDesktopChatCollapsed ? "hidden h-full" : "h-full"}>
                   <GlobalChatPanel
                     className="h-full"
                     currentUserId={currentUserId}
                     hideOnMobile
                     mode="embedded"
                   />
-                </CardBody>
-              )}
+                </div>
+                {isDesktopChatCollapsed ? (
+                  <div className="pointer-events-none absolute inset-0 grid place-items-center">
+                    <p className="text-xs text-default-500">Chat is hidden.</p>
+                  </div>
+                ) : null}
+              </CardBody>
             </Card>
           </div>
           ) : null}
