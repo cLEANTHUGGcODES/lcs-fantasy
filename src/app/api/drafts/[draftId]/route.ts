@@ -1,6 +1,7 @@
 import { requireAuthUser } from "@/lib/draft-auth";
 import { isGlobalAdminUser } from "@/lib/admin-access";
 import { processDueDrafts } from "@/lib/draft-automation";
+import { claimDueProcessingSlot } from "@/lib/draft-due-processing-throttle";
 import { recordDraftObservabilityEvents } from "@/lib/draft-observability";
 import { getDraftDetail } from "@/lib/draft-data";
 import { RouteServerTimer } from "@/lib/server-timing";
@@ -21,6 +22,8 @@ const parseProcessDueFlag = (value: string | null): boolean => {
   const normalized = value.trim().toLowerCase();
   return normalized === "1" || normalized === "true" || normalized === "yes";
 };
+
+const DRAFT_DETAIL_PROCESS_DUE_THROTTLE_MS = 2500;
 
 export async function GET(
   request: Request,
@@ -48,7 +51,13 @@ export async function GET(
       async () => parseDraftId((await params).draftId),
     );
     metricDraftId = draftId;
-    if (shouldProcessDue) {
+    if (
+      shouldProcessDue &&
+      claimDueProcessingSlot({
+        key: `detail:${draftId}`,
+        windowMs: DRAFT_DETAIL_PROCESS_DUE_THROTTLE_MS,
+      })
+    ) {
       await timer.measure("process_due", () => processDueDrafts({ draftId }));
     }
     const draft = await timer.measure("load_draft_detail", () =>

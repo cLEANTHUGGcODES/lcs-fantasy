@@ -2063,7 +2063,8 @@ export const DraftRoom = ({
   const [settings, setSettings] = useState<DraftRoomSettings>(DEFAULT_DRAFT_ROOM_SETTINGS);
   const [connectionStatus, setConnectionStatus] = useState("connecting");
   const [toastNotices, setToastNotices] = useState<ToastNotice[]>([]);
-  const [clientNowMs, setClientNowMs] = useState(() => Date.now());
+  const [stalenessNowMs, setStalenessNowMs] = useState(() => Date.now());
+  const [pickNowMs, setPickNowMs] = useState(() => Date.now());
   const [serverOffsetMs, setServerOffsetMs] = useState(0);
   const [isMobileViewport, setIsMobileViewport] = useState(false);
   const [showExpandedPanels, setShowExpandedPanels] = useState(false);
@@ -3113,19 +3114,31 @@ export const DraftRoom = ({
   }, []);
 
   useEffect(() => {
+    if (connectionStatus === "SUBSCRIBED") {
+      setStalenessNowMs(Date.now());
+      return;
+    }
+    setStalenessNowMs(Date.now());
+    const id = window.setInterval(() => {
+      setStalenessNowMs(Date.now());
+    }, 2000);
+    return () => window.clearInterval(id);
+  }, [connectionStatus]);
+
+  useEffect(() => {
     let intervalId: number | null = null;
     let delayedStartId: number | null = null;
     const startFastTick = () => {
-      setClientNowMs(Date.now());
+      setPickNowMs(Date.now());
       if (intervalId !== null) {
         return;
       }
       intervalId = window.setInterval(() => {
-        setClientNowMs(Date.now());
+        setPickNowMs(Date.now());
       }, 1000);
     };
 
-    if (connectionStatus !== "SUBSCRIBED" || Boolean(timeoutOutcomeMessage)) {
+    if (timeoutOutcomeMessage) {
       startFastTick();
     } else {
       const isCurrentUserClocked =
@@ -3133,7 +3146,7 @@ export const DraftRoom = ({
       if (isCurrentUserClocked && draft?.currentPickDeadlineAt) {
         const deadlineMs = new Date(draft.currentPickDeadlineAt).getTime();
         if (!Number.isFinite(deadlineMs)) {
-          setClientNowMs(Date.now());
+          setPickNowMs(Date.now());
         } else {
           const remainingMs = deadlineMs - (Date.now() + serverOffsetMs);
           if (remainingMs <= DRAFT_ROOM_FAST_TICK_WINDOW_MS) {
@@ -3146,7 +3159,7 @@ export const DraftRoom = ({
           }
         }
       } else {
-        setClientNowMs(Date.now());
+        setPickNowMs(Date.now());
       }
     }
 
@@ -3159,7 +3172,6 @@ export const DraftRoom = ({
       }
     };
   }, [
-    connectionStatus,
     currentUserId,
     draft?.currentPickDeadlineAt,
     draft?.nextPick?.participantUserId,
@@ -3360,7 +3372,7 @@ export const DraftRoom = ({
     Boolean(draft?.nextPick) &&
     onClockUserId === currentUserId;
   const canEditPickQueue = isCurrentUserParticipant && draft?.status !== "completed";
-  const secondsSinceLastSync = Math.max(0, Math.floor((clientNowMs - lastDraftSyncMs) / 1000));
+  const secondsSinceLastSync = Math.max(0, Math.floor((stalenessNowMs - lastDraftSyncMs) / 1000));
   const realtimePollIntervalMs =
     draft?.status === "live" ? 3000 : draft?.status === "scheduled" ? 5000 : 10000;
   const realtimeReadOnlyStaleSeconds = Math.max(
@@ -3692,8 +3704,8 @@ export const DraftRoom = ({
     if (!Number.isFinite(deadlineMs)) {
       return null;
     }
-    return deadlineMs - (clientNowMs + serverOffsetMs);
-  }, [clientNowMs, draft?.currentPickDeadlineAt, serverOffsetMs]);
+    return deadlineMs - (pickNowMs + serverOffsetMs);
+  }, [pickNowMs, draft?.currentPickDeadlineAt, serverOffsetMs]);
   const topPickStripSlots = useMemo(() => {
     const labelForOffset = (offset: number): string => {
       if (offset === 0) {
