@@ -164,7 +164,8 @@ const CHAT_PAGE_FETCH_LIMIT = 80;
 const CHAT_FALLBACK_POLL_INTERVAL_MS = 10000;
 const CHAT_WAKE_SYNC_DEBOUNCE_MS = 400;
 const CHAT_METRICS_FLUSH_INTERVAL_MS = 60000;
-const CHAT_AUTO_SCROLL_THRESHOLD_PX = 96;
+const CHAT_STICK_TO_BOTTOM_ATTACH_PX = 20;
+const CHAT_STICK_TO_BOTTOM_RELEASE_PX = 44;
 const CHAT_COMPOSER_MIN_HEIGHT_PX = 36;
 const CHAT_COMPOSER_MAX_HEIGHT_PX = 96;
 const CHAT_UPLOAD_IMAGE_MAX_DIMENSION_PX = 1600;
@@ -183,15 +184,8 @@ const MAX_GLOBAL_CHAT_FETCH_LIMIT = 200;
 const CHAT_ACTION_BAR_HIDE_DELAY_MS = 140;
 const CHAT_INCREMENTAL_TRUE_UP_DEBOUNCE_MS = 1200;
 const CHAT_VIRTUALIZATION_OVERSCAN_PX = 520;
-const CHAT_VIRTUALIZATION_DESKTOP_MIN_BLOCK_COUNT = 18;
-const CHAT_VIRTUALIZATION_MOBILE_MIN_BLOCK_COUNT = 28;
-const CHAT_VIRTUALIZATION_ENV_VALUE = process.env.NEXT_PUBLIC_CHAT_VIRTUALIZATION
-  ?.trim()
-  .toLowerCase() ?? "";
-const CHAT_ENABLE_VIRTUALIZATION =
-  CHAT_VIRTUALIZATION_ENV_VALUE.length > 0
-    ? !(CHAT_VIRTUALIZATION_ENV_VALUE === "0" || CHAT_VIRTUALIZATION_ENV_VALUE === "false" || CHAT_VIRTUALIZATION_ENV_VALUE === "off")
-    : true;
+const CHAT_VIRTUALIZATION_MIN_BLOCK_COUNT = 32;
+const CHAT_ENABLE_VIRTUALIZATION = process.env.NEXT_PUBLIC_CHAT_VIRTUALIZATION === "1";
 const CHAT_PROFILE_ENABLED = process.env.NEXT_PUBLIC_CHAT_PROFILE === "1";
 const CHAT_PROFILE_COMMIT_BUDGET_MS = 16;
 const CHAT_PROFILE_ACTION_BAR_BUDGET_MS = 50;
@@ -205,10 +199,8 @@ const orderedReactionsForDisplayCache = new WeakMap<GlobalChatReaction[], Global
 const reactionSignatureCache = new WeakMap<GlobalChatReaction[], string>();
 const parsedMessageByRawMessageCache = new Map<string, ParsedChatMessage>();
 
-const isNearBottom = (element: HTMLDivElement): boolean => {
-  const distanceFromBottom = element.scrollHeight - element.scrollTop - element.clientHeight;
-  return distanceFromBottom <= CHAT_AUTO_SCROLL_THRESHOLD_PX;
-};
+const distanceFromBottomPx = (element: HTMLDivElement): number =>
+  element.scrollHeight - element.scrollTop - element.clientHeight;
 
 const toMessageId = (value: unknown): number => {
   const normalized = typeof value === "number"
@@ -1590,6 +1582,7 @@ export const GlobalChatPanel = ({
   const scrollProfileLastAtRef = useRef<number | null>(null);
   const scrollProfileLastTopRef = useRef<number | null>(null);
   const blockMeasuredHeightsRef = useRef<Record<string, number>>({});
+  const virtualBlockLayoutByKeyRef = useRef<Record<string, { top: number; height: number }>>({});
   const chatRenderProfileRef = useRef<ChatRenderProfileStats>({
     mounts: 0,
     updates: 0,
@@ -1616,15 +1609,23 @@ export const GlobalChatPanel = ({
   const sortedMessages = chatStore.messages;
   const hasOlderMessages = chatStore.hasOlderMessages;
   const oldestCursorId = chatStore.oldestCursorId;
-  const latestPersistedMessageId = useMemo(() => {
+  const latestPersistedMessageMeta = useMemo(() => {
     for (let index = sortedMessages.length - 1; index >= 0; index -= 1) {
-      const messageId = toMessageId(sortedMessages[index]?.id ?? 0);
+      const entry = sortedMessages[index];
+      const messageId = toMessageId(entry?.id ?? 0);
       if (messageId > 0) {
-        return messageId;
+        return {
+          messageId,
+          userId: entry?.userId ?? null,
+        };
       }
     }
-    return 0;
+    return {
+      messageId: 0,
+      userId: null as string | null,
+    };
   }, [sortedMessages]);
+  const latestPersistedMessageId = latestPersistedMessageMeta.messageId;
   const currentUserReactionLabel = useMemo(() => {
     for (let index = sortedMessages.length - 1; index >= 0; index -= 1) {
       const entry = sortedMessages[index];
@@ -1818,6 +1819,22 @@ export const GlobalChatPanel = ({
     input.setSelectionRange(cursor, cursor);
     syncComposerHeight(input);
   }, [syncComposerHeight]);
+
+  const shouldAutoStickToBottom = useCallback(() => {
+    const scroller = messageListRef.current;
+    if (!scroller) {
+      return shouldStickToBottomRef.current;
+    }
+    const distanceFromBottom = distanceFromBottomPx(scroller);
+    const shouldStick = shouldStickToBottomRef.current
+      ? distanceFromBottom <= CHAT_STICK_TO_BOTTOM_RELEASE_PX
+      : distanceFromBottom <= CHAT_STICK_TO_BOTTOM_ATTACH_PX;
+    shouldStickToBottomRef.current = shouldStick;
+    if (shouldStick) {
+      setShowJumpToLatest((current) => (current ? false : current));
+    }
+    return shouldStick;
+  }, []);
 
   const scrollMessagesToBottom = useCallback((behavior: ScrollBehavior = "auto") => {
     const scroller = messageListRef.current;
@@ -2608,22 +2625,33 @@ export const GlobalChatPanel = ({
   }, [isPanelOpen, scrollMessagesToBottom]);
 
   useEffect(() => {
-    if (!isPanelOpen || !shouldStickToBottomRef.current) {
+    if (!isPanelOpen || !shouldAutoStickToBottom()) {
       return;
     }
 
     scrollMessagesToBottom();
-  }, [isPanelOpen, scrollMessagesToBottom, sortedMessages]);
+  }, [
+    isPanelOpen,
+    latestPersistedMessageId,
+    scrollMessagesToBottom,
+    shouldAutoStickToBottom,
+    sortedMessages.length,
+  ]);
 
   useEffect(() => {
-    if (!isPanelOpen || shouldStickToBottomRef.current || sortedMessages.length === 0) {
+    if (!isPanelOpen || shouldAutoStickToBottom() || latestPersistedMessageId < 1) {
       return;
     }
-    const latestMessage = sortedMessages[sortedMessages.length - 1];
-    if (latestMessage?.userId !== currentUserId) {
+    if (latestPersistedMessageMeta.userId !== currentUserId) {
       setShowJumpToLatest(true);
     }
-  }, [currentUserId, isPanelOpen, sortedMessages]);
+  }, [
+    currentUserId,
+    isPanelOpen,
+    latestPersistedMessageId,
+    latestPersistedMessageMeta.userId,
+    shouldAutoStickToBottom,
+  ]);
 
   useEffect(() => {
     if (!isPanelOpen) {
@@ -2675,7 +2703,7 @@ export const GlobalChatPanel = ({
 
     let frame: number | null = null;
     const pinIfNeeded = () => {
-      if (!shouldStickToBottomRef.current) {
+      if (!shouldAutoStickToBottom()) {
         return;
       }
       if (frame !== null) {
@@ -2698,7 +2726,7 @@ export const GlobalChatPanel = ({
         window.cancelAnimationFrame(frame);
       }
     };
-  }, [isPanelOpen, scrollMessagesToBottom]);
+  }, [isPanelOpen, scrollMessagesToBottom, shouldAutoStickToBottom]);
 
   useEffect(() => {
     if (!isMobileViewport) {
@@ -2716,7 +2744,7 @@ export const GlobalChatPanel = ({
 
     const settleAfterViewportShift = () => {
       applyViewportHeight();
-      if (!isPanelOpen || !shouldStickToBottomRef.current) {
+      if (!isPanelOpen || !shouldAutoStickToBottom()) {
         return;
       }
       window.requestAnimationFrame(() => {
@@ -2733,13 +2761,11 @@ export const GlobalChatPanel = ({
 
     settleAfterViewportShift();
     visualViewport?.addEventListener("resize", settleAfterViewportShift);
-    visualViewport?.addEventListener("scroll", settleAfterViewportShift);
     window.addEventListener("resize", settleAfterViewportShift);
     window.addEventListener("orientationchange", settleAfterViewportShift);
 
     return () => {
       visualViewport?.removeEventListener("resize", settleAfterViewportShift);
-      visualViewport?.removeEventListener("scroll", settleAfterViewportShift);
       window.removeEventListener("resize", settleAfterViewportShift);
       window.removeEventListener("orientationchange", settleAfterViewportShift);
       if (viewportSettleTimeoutRef.current !== null) {
@@ -2748,7 +2774,7 @@ export const GlobalChatPanel = ({
       }
       root.style.removeProperty("--chat-vvh");
     };
-  }, [isMobileViewport, isPanelOpen, scrollMessagesToBottom]);
+  }, [isMobileViewport, isPanelOpen, scrollMessagesToBottom, shouldAutoStickToBottom]);
 
   useEffect(() => {
     if (!isPanelOpen || !isMobileViewport) {
@@ -3248,12 +3274,10 @@ export const GlobalChatPanel = ({
     return nextBlocks;
   }, [groupedMessages, hasOlderMessages, sortedMessages.length]);
 
-  const virtualizationBlockThreshold = isMobileViewport
-    ? CHAT_VIRTUALIZATION_MOBILE_MIN_BLOCK_COUNT
-    : CHAT_VIRTUALIZATION_DESKTOP_MIN_BLOCK_COUNT;
   const shouldVirtualizeBlocks = (
     CHAT_ENABLE_VIRTUALIZATION &&
-    renderBlocks.length >= virtualizationBlockThreshold
+    !isMobileViewport &&
+    renderBlocks.length >= CHAT_VIRTUALIZATION_MIN_BLOCK_COUNT
   );
 
   const syncVirtualViewportState = useCallback((scroller: HTMLDivElement) => {
@@ -3285,9 +3309,28 @@ export const GlobalChatPanel = ({
     if (currentHeight && Math.abs(currentHeight - nextHeight) <= 1) {
       return;
     }
+
+    const previousLayout = virtualBlockLayoutByKeyRef.current[blockKey];
+    const previousHeight = currentHeight ?? previousLayout?.height ?? null;
     blockMeasuredHeightsRef.current[blockKey] = nextHeight;
+
+    if (!shouldVirtualizeBlocks) {
+      setVirtualMeasureVersion((current) => current + 1);
+      return;
+    }
+
+    if (!shouldStickToBottomRef.current && previousLayout && previousHeight && previousHeight > 0) {
+      const heightDelta = nextHeight - previousHeight;
+      if (Math.abs(heightDelta) > 1) {
+        const scroller = messageListRef.current;
+        if (scroller && previousLayout.top < scroller.scrollTop) {
+          scroller.scrollTop += heightDelta;
+        }
+      }
+    }
+
     setVirtualMeasureVersion((current) => current + 1);
-  }, []);
+  }, [shouldVirtualizeBlocks]);
 
   useEffect(() => {
     if (!isPanelOpen) {
@@ -3343,6 +3386,21 @@ export const GlobalChatPanel = ({
       return layout;
     });
   }, [loadingOlder, renderBlocks, shouldVirtualizeBlocks, virtualMeasureVersion]);
+
+  useEffect(() => {
+    if (!shouldVirtualizeBlocks) {
+      virtualBlockLayoutByKeyRef.current = {};
+      return;
+    }
+    const nextLayouts: Record<string, { top: number; height: number }> = {};
+    for (const layout of blockLayouts) {
+      nextLayouts[layout.key] = {
+        top: layout.top,
+        height: layout.height,
+      };
+    }
+    virtualBlockLayoutByKeyRef.current = nextLayouts;
+  }, [blockLayouts, shouldVirtualizeBlocks]);
 
   const totalBlockHeight = shouldVirtualizeBlocks
     ? (blockLayouts[blockLayouts.length - 1]?.bottom ?? 0)
@@ -3476,11 +3534,7 @@ export const GlobalChatPanel = ({
             scrollProfileLastAtRef.current = now;
             scrollProfileLastTopRef.current = scroller.scrollTop;
           }
-          const nearBottom = isNearBottom(scroller);
-          shouldStickToBottomRef.current = nearBottom;
-          if (nearBottom) {
-            setShowJumpToLatest(false);
-          }
+          shouldAutoStickToBottom();
           if (shouldVirtualizeBlocks) {
             scheduleVirtualViewportStateSync(scroller);
           }
@@ -3536,6 +3590,7 @@ export const GlobalChatPanel = ({
       renderBlocks,
       renderBlockContent,
       scheduleVirtualViewportStateSync,
+      shouldAutoStickToBottom,
       shouldVirtualizeBlocks,
       totalBlockHeight,
       visibleBlockLayouts,
@@ -4007,7 +4062,7 @@ export const GlobalChatPanel = ({
                         queueComposerHeightSync(event.currentTarget);
                       }}
                       onFocus={() => {
-                        if (!shouldStickToBottomRef.current) {
+                        if (!shouldAutoStickToBottom()) {
                           return;
                         }
                         window.requestAnimationFrame(() => {
