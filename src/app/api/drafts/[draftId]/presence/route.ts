@@ -28,6 +28,8 @@ export async function POST(
   let metricUserId: string | null = null;
   let metricDraftId: number | null = null;
   let metricStatusCode = 200;
+  let processDueRequested = false;
+  let processDueExecuted = false;
   const jsonWithTiming = (payload: unknown, status: number) =>
     Response.json(payload, {
       status,
@@ -91,12 +93,14 @@ export async function POST(
       );
     }
 
+    processDueRequested = true;
     if (
       claimDueProcessingSlot({
         key: `presence:${draftId}`,
         windowMs: PRESENCE_PROCESS_DUE_THROTTLE_MS,
       })
     ) {
+      processDueExecuted = true;
       await timer.measure("process_due", () => processDueDrafts({ draftId }));
     }
 
@@ -125,6 +129,11 @@ export async function POST(
             metadata: {
               statusCode: metricStatusCode,
               draftId: metricDraftId,
+              processDue: {
+                requested: processDueRequested,
+                executed: processDueExecuted,
+                skipped: processDueRequested && !processDueExecuted,
+              },
               stepsMs: Object.fromEntries(
                 timer
                   .getEntries()

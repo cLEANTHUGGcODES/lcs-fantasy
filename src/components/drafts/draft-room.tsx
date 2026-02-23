@@ -652,46 +652,53 @@ const buildClockRingGradient = (
 const sourceLinkForPage = (page: string): string =>
   `https://lol.fandom.com/wiki/${page.replace(/\s+/g, "_")}`;
 
+type PreparedAvailablePlayer = {
+  player: DraftDetail["availablePlayers"][number];
+  normalizedRole: string;
+  searchName: string;
+  searchTeam: string;
+  searchRoleLabel: string;
+  sortName: string;
+  sortTeam: string;
+  sortRole: string;
+  overallRank: number;
+  positionRank: number;
+};
+
 const sortAvailablePlayers = (
-  players: DraftDetail["availablePlayers"],
+  players: PreparedAvailablePlayer[],
   sortKey: PlayerSortKey,
-) => {
+): DraftDetail["availablePlayers"] => {
   const next = [...players];
   next.sort((left, right) => {
     if (sortKey === "pos") {
-      const leftRole = normalizeForSort(left.playerRole);
-      const rightRole = normalizeForSort(right.playerRole);
-      const leftRank = left.analytics?.positionRank ?? Number.POSITIVE_INFINITY;
-      const rightRank = right.analytics?.positionRank ?? Number.POSITIVE_INFINITY;
       return (
-        leftRole.localeCompare(rightRole) ||
-        leftRank - rightRank ||
-        normalizeForSort(left.playerName).localeCompare(normalizeForSort(right.playerName))
+        left.sortRole.localeCompare(right.sortRole) ||
+        left.positionRank - right.positionRank ||
+        left.sortName.localeCompare(right.sortName)
       );
     }
     if (sortKey === "rank") {
-      const leftRank = left.analytics?.overallRank ?? Number.POSITIVE_INFINITY;
-      const rightRank = right.analytics?.overallRank ?? Number.POSITIVE_INFINITY;
       return (
-        leftRank - rightRank ||
-        normalizeForSort(left.playerName).localeCompare(normalizeForSort(right.playerName))
+        left.overallRank - right.overallRank ||
+        left.sortName.localeCompare(right.sortName)
       );
     }
     if (sortKey === "team") {
       return (
-        normalizeForSort(left.playerTeam).localeCompare(normalizeForSort(right.playerTeam)) ||
-        normalizeForSort(left.playerName).localeCompare(normalizeForSort(right.playerName))
+        left.sortTeam.localeCompare(right.sortTeam) ||
+        left.sortName.localeCompare(right.sortName)
       );
     }
     if (sortKey === "role") {
       return (
-        normalizeForSort(left.playerRole).localeCompare(normalizeForSort(right.playerRole)) ||
-        normalizeForSort(left.playerName).localeCompare(normalizeForSort(right.playerName))
+        left.sortRole.localeCompare(right.sortRole) ||
+        left.sortName.localeCompare(right.sortName)
       );
     }
-    return normalizeForSort(left.playerName).localeCompare(normalizeForSort(right.playerName));
+    return left.sortName.localeCompare(right.sortName);
   });
-  return next;
+  return next.map((entry) => entry.player);
 };
 
 const compareAutopickCandidates = (
@@ -3300,20 +3307,36 @@ export const DraftRoom = ({
     () => new Map((draft?.participantPresence ?? []).map((entry) => [entry.userId, entry])),
     [draft],
   );
+  const preparedAvailablePlayers = useMemo<PreparedAvailablePlayer[]>(() => (
+    (draft?.availablePlayers ?? []).map((player) => {
+      const normalizedRole = normalizeRole(player.playerRole);
+      return {
+        player,
+        normalizedRole,
+        searchName: player.playerName.toLowerCase(),
+        searchTeam: (player.playerTeam ?? "").toLowerCase(),
+        searchRoleLabel: formatRoleLabel(player.playerRole).toLowerCase(),
+        sortName: normalizeForSort(player.playerName),
+        sortTeam: normalizeForSort(player.playerTeam),
+        sortRole: normalizeForSort(normalizedRole),
+        overallRank: player.analytics?.overallRank ?? Number.POSITIVE_INFINITY,
+        positionRank: player.analytics?.positionRank ?? Number.POSITIVE_INFINITY,
+      };
+    })
+  ), [draft?.availablePlayers]);
   const roleCounts = useMemo(() => {
     const counts = new Map<string, number>();
-    for (const player of draft?.availablePlayers ?? []) {
-      const normalizedRole = normalizeRole(player.playerRole);
-      counts.set(normalizedRole, (counts.get(normalizedRole) ?? 0) + 1);
+    for (const player of preparedAvailablePlayers) {
+      counts.set(player.normalizedRole, (counts.get(player.normalizedRole) ?? 0) + 1);
     }
     return counts;
-  }, [draft?.availablePlayers]);
+  }, [preparedAvailablePlayers]);
   const roleFilters = useMemo(
     () => [
       {
         value: "ALL",
         label: "All",
-        count: draft?.availablePlayers.length ?? 0,
+        count: preparedAvailablePlayers.length,
         isScarce: false,
       },
       ...PRIMARY_ROLE_FILTERS.map((role) => {
@@ -3336,16 +3359,13 @@ export const DraftRoom = ({
           ]
         : []),
     ],
-    [draft?.availablePlayers.length, roleCounts],
+    [preparedAvailablePlayers.length, roleCounts],
   );
-  const filteredAvailablePlayers = useMemo(() => {
+  const filteredAvailablePlayers = useMemo<PreparedAvailablePlayer[]>(() => {
     const normalizedSearch = deferredSearchTerm.trim().toLowerCase();
 
-    return (draft?.availablePlayers ?? []).filter((player) => {
-      const matchesRole =
-        roleFilter === "ALL" ? true : normalizeRole(player.playerRole) === roleFilter;
-
-      if (!matchesRole) {
+    return preparedAvailablePlayers.filter((player) => {
+      if (roleFilter !== "ALL" && player.normalizedRole !== roleFilter) {
         return false;
       }
 
@@ -3353,14 +3373,13 @@ export const DraftRoom = ({
         return true;
       }
 
-      const roleLabel = formatRoleLabel(player.playerRole).toLowerCase();
       return (
-        player.playerName.toLowerCase().includes(normalizedSearch) ||
-        (player.playerTeam ?? "").toLowerCase().includes(normalizedSearch) ||
-        roleLabel.includes(normalizedSearch)
+        player.searchName.includes(normalizedSearch) ||
+        player.searchTeam.includes(normalizedSearch) ||
+        player.searchRoleLabel.includes(normalizedSearch)
       );
     });
-  }, [deferredSearchTerm, draft?.availablePlayers, roleFilter]);
+  }, [deferredSearchTerm, preparedAvailablePlayers, roleFilter]);
   const sortedAvailablePlayers = useMemo(
     () => sortAvailablePlayers(filteredAvailablePlayers, playerSort),
     [filteredAvailablePlayers, playerSort],

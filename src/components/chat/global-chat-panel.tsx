@@ -103,6 +103,12 @@ type ChatRenderProfileStats = {
   actionBarTransitionTotalMs: number;
   actionBarTransitionMaxMs: number;
   actionBarTransitionsOverBudget: number;
+  scrollEvents: number;
+  scrollDistancePx: number;
+  scrollFrameSamples: number;
+  scrollFrameTotalMs: number;
+  scrollFrameMaxMs: number;
+  scrollFramesOver20Ms: number;
 };
 
 type ChatRenderBlock =
@@ -1581,6 +1587,8 @@ export const GlobalChatPanel = ({
   const metricsFlushInFlightRef = useRef(false);
   const incrementalTrueUpTimeoutRef = useRef<number | null>(null);
   const scrollSyncFrameRef = useRef<number | null>(null);
+  const scrollProfileLastAtRef = useRef<number | null>(null);
+  const scrollProfileLastTopRef = useRef<number | null>(null);
   const blockMeasuredHeightsRef = useRef<Record<string, number>>({});
   const chatRenderProfileRef = useRef<ChatRenderProfileStats>({
     mounts: 0,
@@ -1593,6 +1601,12 @@ export const GlobalChatPanel = ({
     actionBarTransitionTotalMs: 0,
     actionBarTransitionMaxMs: 0,
     actionBarTransitionsOverBudget: 0,
+    scrollEvents: 0,
+    scrollDistancePx: 0,
+    scrollFrameSamples: 0,
+    scrollFrameTotalMs: 0,
+    scrollFrameMaxMs: 0,
+    scrollFramesOver20Ms: 0,
   });
   const pendingActionBarProfileRef = useRef<{
     targetMessageId: number | null;
@@ -1833,6 +1847,9 @@ export const GlobalChatPanel = ({
 
   const getChatRenderProfileSnapshot = useCallback(() => {
     const stats = chatRenderProfileRef.current;
+    const scrollFrameAvgMs = stats.scrollFrameSamples > 0
+      ? stats.scrollFrameTotalMs / stats.scrollFrameSamples
+      : 0;
     return {
       actionBarTransitionAvgMs: stats.actionBarTransitions > 0
         ? stats.actionBarTransitionTotalMs / stats.actionBarTransitions
@@ -1845,6 +1862,12 @@ export const GlobalChatPanel = ({
       commits: stats.commits,
       commitsOver16Ms: stats.commitsOverBudget,
       mounts: stats.mounts,
+      scrollDistancePx: Math.round(stats.scrollDistancePx),
+      scrollEventCount: stats.scrollEvents,
+      scrollEstimatedFps: scrollFrameAvgMs > 0 ? 1000 / scrollFrameAvgMs : 0,
+      scrollFrameAvgMs,
+      scrollFrameMaxMs: stats.scrollFrameMaxMs,
+      scrollFramesOver20Ms: stats.scrollFramesOver20Ms,
       updates: stats.updates,
     };
   }, []);
@@ -3432,6 +3455,27 @@ export const GlobalChatPanel = ({
         style={{ WebkitOverflowScrolling: "touch" }}
         onScroll={(event) => {
           const scroller = event.currentTarget;
+          if (CHAT_PROFILE_ENABLED) {
+            const now = performance.now();
+            const stats = chatRenderProfileRef.current;
+            stats.scrollEvents += 1;
+            const lastTop = scrollProfileLastTopRef.current;
+            if (typeof lastTop === "number") {
+              stats.scrollDistancePx += Math.abs(scroller.scrollTop - lastTop);
+            }
+            const lastAt = scrollProfileLastAtRef.current;
+            if (typeof lastAt === "number") {
+              const deltaMs = Math.min(120, Math.max(0, now - lastAt));
+              stats.scrollFrameSamples += 1;
+              stats.scrollFrameTotalMs += deltaMs;
+              stats.scrollFrameMaxMs = Math.max(stats.scrollFrameMaxMs, deltaMs);
+              if (deltaMs >= 20) {
+                stats.scrollFramesOver20Ms += 1;
+              }
+            }
+            scrollProfileLastAtRef.current = now;
+            scrollProfileLastTopRef.current = scroller.scrollTop;
+          }
           const nearBottom = isNearBottom(scroller);
           shouldStickToBottomRef.current = nearBottom;
           if (nearBottom) {

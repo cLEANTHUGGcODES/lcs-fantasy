@@ -33,6 +33,8 @@ export async function GET(
   let metricUserId: string | null = null;
   let metricDraftId: number | null = null;
   let metricStatusCode = 200;
+  let processDueRequested = false;
+  let processDueExecuted = false;
   const jsonWithTiming = (payload: unknown, status: number) =>
     Response.json(payload, {
       status,
@@ -46,6 +48,7 @@ export async function GET(
     metricUserId = user.id;
     const requestUrl = new URL(request.url);
     const shouldProcessDue = parseProcessDueFlag(requestUrl.searchParams.get("processDue"));
+    processDueRequested = shouldProcessDue;
     const draftId = await timer.measure(
       "parse_draft_id",
       async () => parseDraftId((await params).draftId),
@@ -58,6 +61,7 @@ export async function GET(
         windowMs: DRAFT_DETAIL_PROCESS_DUE_THROTTLE_MS,
       })
     ) {
+      processDueExecuted = true;
       await timer.measure("process_due", () => processDueDrafts({ draftId }));
     }
     const draft = await timer.measure("load_draft_detail", () =>
@@ -84,6 +88,11 @@ export async function GET(
             metadata: {
               statusCode: metricStatusCode,
               draftId: metricDraftId,
+              processDue: {
+                requested: processDueRequested,
+                executed: processDueExecuted,
+                skipped: processDueRequested && !processDueExecuted,
+              },
               stepsMs: Object.fromEntries(
                 timer
                   .getEntries()
