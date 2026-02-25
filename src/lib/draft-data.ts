@@ -3,12 +3,11 @@ import { isGlobalAdminUser } from "@/lib/admin-access";
 import { getPickSlot, resolveCurrentPickDeadline, resolveNextPick } from "@/lib/draft-engine";
 import { withResolvedDraftPlayerImages } from "@/lib/draft-player-images";
 import { calculateFantasyPoints, DEFAULT_SCORING } from "@/lib/fantasy";
-import { getSupabaseAuthEnv } from "@/lib/supabase-auth-env";
+import { listAdminAuthUsersCached, resolveAdminAvatarProfiles } from "@/lib/supabase-admin-cache";
 import { getLatestSnapshotFromSupabase } from "@/lib/supabase-match-store";
 import { getSupabaseServerClient } from "@/lib/supabase-server";
 import {
   formatUserLabelFromDisplayName,
-  getUserAvatarUrl,
   getUserDisplayName,
   getUserFirstName,
   getUserLastName,
@@ -40,6 +39,7 @@ const PLAYER_ANALYTICS_LOOKBACK_DAYS = 365;
 const PLAYER_ANALYTICS_CACHE_TTL_MS = 60_000;
 const TOP_CHAMPION_LIMIT = 3;
 const DRAFT_PARTICIPANT_AVATAR_CACHE_TTL_MS = 10 * 60_000;
+const DRAFT_SUMMARY_CACHE_TTL_MS = 2_000;
 
 type SnapshotPayloadWithGames = {
   games: ParsedGame[];
@@ -69,13 +69,14 @@ type CachedPlayerAnalytics = {
 };
 
 const draftPlayerAnalyticsCache = new Map<string, CachedPlayerAnalytics>();
-const draftParticipantAvatarCache = new Map<
+const draftSummaryByCacheKey = new Map<
   string,
   {
-    avatarUrl: string | null;
-    cachedAtMs: number;
+    value: DraftSummary[];
+    expiresAtMs: number;
   }
 >();
+const inFlightDraftSummaryByCacheKey = new Map<string, Promise<DraftSummary[]>>();
 
 const normalizeForKey = (value: string | null | undefined): string =>
   value?.trim().toLowerCase() ?? "";
@@ -592,6 +593,41 @@ const mapRegisteredUser = (user: User): RegisteredUser => ({
   teamName: getUserTeamName(user),
 });
 
+const cloneDraftSummaries = (summaries: DraftSummary[]): DraftSummary[] =>
+  summaries.map((entry) => ({ ...entry }));
+
+const readDraftSummaryCache = (cacheKey: string): DraftSummary[] | null => {
+  const cached = draftSummaryByCacheKey.get(cacheKey);
+  if (!cached || cached.expiresAtMs <= Date.now()) {
+    return null;
+  }
+  return cloneDraftSummaries(cached.value);
+};
+
+const writeDraftSummaryCache = ({
+  cacheKey,
+  value,
+}: {
+  cacheKey: string;
+  value: DraftSummary[];
+}): void => {
+  draftSummaryByCacheKey.set(cacheKey, {
+    value: cloneDraftSummaries(value),
+    expiresAtMs: Date.now() + DRAFT_SUMMARY_CACHE_TTL_MS,
+  });
+
+  if (draftSummaryByCacheKey.size <= 64) {
+    return;
+  }
+
+  const cutoff = Date.now();
+  for (const [key, cached] of draftSummaryByCacheKey.entries()) {
+    if (cached.expiresAtMs <= cutoff) {
+      draftSummaryByCacheKey.delete(key);
+    }
+  }
+};
+
 const resolveParticipantAvatarUrls = async (
   userIds: string[],
 ): Promise<Map<string, string | null>> => {
@@ -601,75 +637,19 @@ const resolveParticipantAvatarUrls = async (
     return resolved;
   }
 
-  const nowMs = Date.now();
-  const userIdsToFetch: string[] = [];
-
+  const profilesByUserId = await resolveAdminAvatarProfiles({
+    userIds: uniqueUserIds,
+    ttlMs: DRAFT_PARTICIPANT_AVATAR_CACHE_TTL_MS,
+  });
   for (const userId of uniqueUserIds) {
-    const cached = draftParticipantAvatarCache.get(userId);
-    if (cached && nowMs - cached.cachedAtMs <= DRAFT_PARTICIPANT_AVATAR_CACHE_TTL_MS) {
-      resolved.set(userId, cached.avatarUrl);
-      continue;
-    }
-    userIdsToFetch.push(userId);
+    resolved.set(userId, profilesByUserId.get(userId)?.avatarUrl ?? null);
   }
-
-  if (userIdsToFetch.length < 1) {
-    return resolved;
-  }
-
-  const supabase = getSupabaseServerClient();
-  const { supabaseUrl } = getSupabaseAuthEnv();
-
-  await Promise.all(
-    userIdsToFetch.map(async (userId) => {
-      let avatarUrl: string | null = null;
-      try {
-        const { data, error } = await supabase.auth.admin.getUserById(userId);
-        if (error) {
-          throw new Error(error.message);
-        }
-        avatarUrl = getUserAvatarUrl({
-          user: data.user ?? null,
-          supabaseUrl,
-        });
-      } catch {
-        avatarUrl = null;
-      }
-      draftParticipantAvatarCache.set(userId, {
-        avatarUrl,
-        cachedAtMs: Date.now(),
-      });
-      resolved.set(userId, avatarUrl);
-    }),
-  );
 
   return resolved;
 };
 
 export const listRegisteredUsers = async (): Promise<RegisteredUser[]> => {
-  const supabase = getSupabaseServerClient();
-  const users: User[] = [];
-  let page = 1;
-  const perPage = 200;
-
-  while (true) {
-    const { data, error } = await supabase.auth.admin.listUsers({
-      page,
-      perPage,
-    });
-    if (error) {
-      throw new Error(`Unable to list registered users: ${error.message}`);
-    }
-
-    users.push(...data.users);
-    if (data.users.length < perPage) {
-      break;
-    }
-    page += 1;
-    if (page > 50) {
-      break;
-    }
-  }
+  const users: User[] = await listAdminAuthUsersCached();
 
   return users
     .map(mapRegisteredUser)
@@ -756,19 +736,42 @@ const fetchPickCounts = async (draftIds?: number[]): Promise<Map<number, number>
 };
 
 export const listDraftSummaries = async (): Promise<DraftSummary[]> => {
-  const [draftRows, participantCounts, pickCounts] = await Promise.all([
-    fetchDraftRows(),
-    fetchParticipantCounts(),
-    fetchPickCounts(),
-  ]);
+  const cacheKey = "all";
+  const cached = readDraftSummaryCache(cacheKey);
+  if (cached) {
+    return cached;
+  }
 
-  return draftRows.map((row) =>
-    toDraftSummary(
-      row,
-      participantCounts.get(row.id) ?? 0,
-      pickCounts.get(row.id) ?? 0,
-    )
-  );
+  const inFlight = inFlightDraftSummaryByCacheKey.get(cacheKey);
+  if (inFlight) {
+    return inFlight;
+  }
+
+  const summariesPromise = (async (): Promise<DraftSummary[]> => {
+    const [draftRows, participantCounts, pickCounts] = await Promise.all([
+      fetchDraftRows(),
+      fetchParticipantCounts(),
+      fetchPickCounts(),
+    ]);
+
+    const summaries = draftRows.map((row) =>
+      toDraftSummary(
+        row,
+        participantCounts.get(row.id) ?? 0,
+        pickCounts.get(row.id) ?? 0,
+      )
+    );
+    writeDraftSummaryCache({
+      cacheKey,
+      value: summaries,
+    });
+    return summaries;
+  })().finally(() => {
+    inFlightDraftSummaryByCacheKey.delete(cacheKey);
+  });
+
+  inFlightDraftSummaryByCacheKey.set(cacheKey, summariesPromise);
+  return summariesPromise;
 };
 
 const draftStatusOrder: Record<DraftStatus, number> = {
@@ -785,57 +788,84 @@ export const listDraftSummariesForUser = async ({
   userId: string;
   includeCompleted?: boolean;
 }): Promise<DraftSummary[]> => {
-  const supabase = getSupabaseServerClient();
-  const { data, error } = await supabase
-    .from(PARTICIPANTS_TABLE)
-    .select("draft_id")
-    .eq("user_id", userId);
-
-  if (error) {
-    throw new Error(`Unable to load user draft memberships: ${error.message}`);
+  const cacheKey = `user:${userId}:${includeCompleted ? "with-completed" : "active-only"}`;
+  const cached = readDraftSummaryCache(cacheKey);
+  if (cached) {
+    return cached;
   }
 
-  const draftIds = [...new Set(
-    ((data ?? []) as ParticipantDraftIdRow[])
-      .map((entry) => entry.draft_id)
-      .filter((entry) => Number.isFinite(entry) && entry > 0),
-  )];
-
-  if (draftIds.length === 0) {
-    return [];
+  const inFlight = inFlightDraftSummaryByCacheKey.get(cacheKey);
+  if (inFlight) {
+    return inFlight;
   }
 
-  const [draftRows, participantCounts, pickCounts] = await Promise.all([
-    fetchDraftRows(draftIds),
-    fetchParticipantCounts(draftIds),
-    fetchPickCounts(draftIds),
-  ]);
+  const summariesPromise = (async (): Promise<DraftSummary[]> => {
+    const supabase = getSupabaseServerClient();
+    const { data, error } = await supabase
+      .from(PARTICIPANTS_TABLE)
+      .select("draft_id")
+      .eq("user_id", userId);
 
-  const summaries = draftRows.map((row) =>
-    toDraftSummary(
-      row,
-      participantCounts.get(row.id) ?? 0,
-      pickCounts.get(row.id) ?? 0,
-    )
-  );
-
-  const filtered = includeCompleted
-    ? summaries
-    : summaries.filter((entry) => entry.status !== "completed");
-
-  return filtered.sort((a, b) => {
-    const statusDiff = draftStatusOrder[a.status] - draftStatusOrder[b.status];
-    if (statusDiff !== 0) {
-      return statusDiff;
+    if (error) {
+      throw new Error(`Unable to load user draft memberships: ${error.message}`);
     }
 
-    const scheduledDiff = new Date(a.scheduledAt).getTime() - new Date(b.scheduledAt).getTime();
-    if (scheduledDiff !== 0) {
-      return scheduledDiff;
+    const draftIds = [...new Set(
+      ((data ?? []) as ParticipantDraftIdRow[])
+        .map((entry) => entry.draft_id)
+        .filter((entry) => Number.isFinite(entry) && entry > 0),
+    )];
+
+    if (draftIds.length === 0) {
+      writeDraftSummaryCache({
+        cacheKey,
+        value: [],
+      });
+      return [];
     }
 
-    return b.id - a.id;
+    const [draftRows, participantCounts, pickCounts] = await Promise.all([
+      fetchDraftRows(draftIds),
+      fetchParticipantCounts(draftIds),
+      fetchPickCounts(draftIds),
+    ]);
+
+    const summaries = draftRows.map((row) =>
+      toDraftSummary(
+        row,
+        participantCounts.get(row.id) ?? 0,
+        pickCounts.get(row.id) ?? 0,
+      )
+    );
+
+    const filtered = includeCompleted
+      ? summaries
+      : summaries.filter((entry) => entry.status !== "completed");
+    const sorted = filtered.sort((a, b) => {
+      const statusDiff = draftStatusOrder[a.status] - draftStatusOrder[b.status];
+      if (statusDiff !== 0) {
+        return statusDiff;
+      }
+
+      const scheduledDiff = new Date(a.scheduledAt).getTime() - new Date(b.scheduledAt).getTime();
+      if (scheduledDiff !== 0) {
+        return scheduledDiff;
+      }
+
+      return b.id - a.id;
+    });
+
+    writeDraftSummaryCache({
+      cacheKey,
+      value: sorted,
+    });
+    return sorted;
+  })().finally(() => {
+    inFlightDraftSummaryByCacheKey.delete(cacheKey);
   });
+
+  inFlightDraftSummaryByCacheKey.set(cacheKey, summariesPromise);
+  return summariesPromise;
 };
 
 const loadParticipants = async (draftId: number): Promise<DraftParticipant[]> => {

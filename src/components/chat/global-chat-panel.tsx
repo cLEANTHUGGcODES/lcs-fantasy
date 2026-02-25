@@ -8,7 +8,7 @@ import { Spinner } from "@heroui/spinner";
 import { Tooltip } from "@heroui/tooltip";
 import { ChevronDown, ChevronLeft, Copy, ExternalLink, ImagePlus, MessageCircle, MoreHorizontal, Reply, Send, X } from "lucide-react";
 import Image from "next/image";
-import { ChangeEvent, ClipboardEvent, ReactNode, memo, useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { ChangeEvent, ClipboardEvent, Profiler, ProfilerOnRenderCallback, ReactNode, memo, useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import {
   MAX_CHAT_IMAGE_BYTES,
   isSupportedChatImageMimeType,
@@ -77,6 +77,40 @@ type ChatMessageGroup = {
   estimatedHeight: number;
 };
 
+type MessageDayMetaCacheEntry = {
+  createdAt: string;
+  todayKey: string;
+  dayKey: string;
+  dayLabel: string;
+};
+
+type MessageRenderSignatureCacheEntry = {
+  createdAt: string;
+  message: string;
+  imageUrl: string | null;
+  reactionsRef: GlobalChatReaction[];
+  signature: string;
+};
+
+type ChatRenderProfileStats = {
+  mounts: number;
+  updates: number;
+  commits: number;
+  commitDurationTotalMs: number;
+  commitDurationMaxMs: number;
+  commitsOverBudget: number;
+  actionBarTransitions: number;
+  actionBarTransitionTotalMs: number;
+  actionBarTransitionMaxMs: number;
+  actionBarTransitionsOverBudget: number;
+  scrollEvents: number;
+  scrollDistancePx: number;
+  scrollFrameSamples: number;
+  scrollFrameTotalMs: number;
+  scrollFrameMaxMs: number;
+  scrollFramesOver20Ms: number;
+};
+
 type ChatRenderBlock =
   | {
       type: "older";
@@ -130,7 +164,8 @@ const CHAT_PAGE_FETCH_LIMIT = 80;
 const CHAT_FALLBACK_POLL_INTERVAL_MS = 10000;
 const CHAT_WAKE_SYNC_DEBOUNCE_MS = 400;
 const CHAT_METRICS_FLUSH_INTERVAL_MS = 60000;
-const CHAT_AUTO_SCROLL_THRESHOLD_PX = 96;
+const CHAT_STICK_TO_BOTTOM_ATTACH_PX = 20;
+const CHAT_STICK_TO_BOTTOM_RELEASE_PX = 44;
 const CHAT_COMPOSER_MIN_HEIGHT_PX = 36;
 const CHAT_COMPOSER_MAX_HEIGHT_PX = 96;
 const CHAT_UPLOAD_IMAGE_MAX_DIMENSION_PX = 1600;
@@ -149,15 +184,23 @@ const MAX_GLOBAL_CHAT_FETCH_LIMIT = 200;
 const CHAT_ACTION_BAR_HIDE_DELAY_MS = 140;
 const CHAT_INCREMENTAL_TRUE_UP_DEBOUNCE_MS = 1200;
 const CHAT_VIRTUALIZATION_OVERSCAN_PX = 520;
-const CHAT_VIRTUALIZATION_MIN_BLOCK_COUNT = 18;
-const CHAT_ENABLE_VIRTUALIZATION = false;
+const CHAT_VIRTUALIZATION_MIN_BLOCK_COUNT = 32;
+const CHAT_ENABLE_VIRTUALIZATION = process.env.NEXT_PUBLIC_CHAT_VIRTUALIZATION === "1";
+const CHAT_PROFILE_ENABLED = process.env.NEXT_PUBLIC_CHAT_PROFILE === "1";
+const CHAT_PROFILE_COMMIT_BUDGET_MS = 16;
+const CHAT_PROFILE_ACTION_BAR_BUDGET_MS = 50;
+const CHAT_PROFILE_LOG_INTERVAL_MS = 45000;
+const CHAT_PARSED_MESSAGE_CACHE_LIMIT = 2000;
 
 type UploadableImageMimeType = "image/jpeg" | "image/png" | "image/webp";
 
-const isNearBottom = (element: HTMLDivElement): boolean => {
-  const distanceFromBottom = element.scrollHeight - element.scrollTop - element.clientHeight;
-  return distanceFromBottom <= CHAT_AUTO_SCROLL_THRESHOLD_PX;
-};
+const normalizedReactionsCache = new WeakMap<GlobalChatReaction[], GlobalChatReaction[]>();
+const orderedReactionsForDisplayCache = new WeakMap<GlobalChatReaction[], GlobalChatReaction[]>();
+const reactionSignatureCache = new WeakMap<GlobalChatReaction[], string>();
+const parsedMessageByRawMessageCache = new Map<string, ParsedChatMessage>();
+
+const distanceFromBottomPx = (element: HTMLDivElement): number =>
+  element.scrollHeight - element.scrollTop - element.clientHeight;
 
 const toMessageId = (value: unknown): number => {
   const normalized = typeof value === "number"
@@ -174,6 +217,10 @@ const normalizeMessageReactions = (
 ): GlobalChatReaction[] => {
   if (!Array.isArray(value) || value.length === 0) {
     return [];
+  }
+  const cachedReactions = normalizedReactionsCache.get(value);
+  if (cachedReactions) {
+    return cachedReactions;
   }
 
   const usersByEmoji = new Map<string, Map<string, string>>();
@@ -199,13 +246,15 @@ const normalizeMessageReactions = (
     }
   }
 
-  return [...usersByEmoji.entries()].map(([emoji, users]) => ({
+  const normalizedReactions = [...usersByEmoji.entries()].map(([emoji, users]) => ({
     emoji,
     users: [...users.entries()].map(([userId, label]) => ({
       userId,
       label,
     })),
   }));
+  normalizedReactionsCache.set(value, normalizedReactions);
+  return normalizedReactions;
 };
 
 const withNormalizedMessageReactions = (entry: GlobalChatMessage): GlobalChatMessage => ({
@@ -213,8 +262,16 @@ const withNormalizedMessageReactions = (entry: GlobalChatMessage): GlobalChatMes
   reactions: normalizeMessageReactions(entry.reactions),
 });
 
-const reactionSignature = (reactions: GlobalChatReaction[] | null | undefined): string =>
-  normalizeMessageReactions(reactions)
+const reactionSignature = (reactions: GlobalChatReaction[] | null | undefined): string => {
+  const normalizedReactions = normalizeMessageReactions(reactions);
+  if (normalizedReactions.length === 0) {
+    return "";
+  }
+  const cachedSignature = reactionSignatureCache.get(normalizedReactions);
+  if (typeof cachedSignature === "string") {
+    return cachedSignature;
+  }
+  const signature = normalizedReactions
     .map((reaction) => {
       const users = [...reaction.users]
         .map((user) => `${user.userId}:${user.label}`)
@@ -224,6 +281,9 @@ const reactionSignature = (reactions: GlobalChatReaction[] | null | undefined): 
     })
     .sort()
     .join("|");
+  reactionSignatureCache.set(normalizedReactions, signature);
+  return signature;
+};
 
 const quickReactionOrder = (emoji: string): number =>
   CHAT_QUICK_REACTIONS.indexOf(emoji as (typeof CHAT_QUICK_REACTIONS)[number]);
@@ -231,6 +291,10 @@ const quickReactionOrder = (emoji: string): number =>
 const orderReactionsForDisplay = (reactions: GlobalChatReaction[]): GlobalChatReaction[] => {
   if (reactions.length === 0) {
     return [];
+  }
+  const cachedOrder = orderedReactionsForDisplayCache.get(reactions);
+  if (cachedOrder) {
+    return cachedOrder;
   }
 
   const quick: GlobalChatReaction[] = [];
@@ -245,7 +309,9 @@ const orderReactionsForDisplay = (reactions: GlobalChatReaction[]): GlobalChatRe
 
   quick.sort((left, right) => quickReactionOrder(left.emoji) - quickReactionOrder(right.emoji));
   other.sort((left, right) => left.emoji.localeCompare(right.emoji));
-  return [...quick, ...other];
+  const orderedReactions = [...quick, ...other];
+  orderedReactionsForDisplayCache.set(reactions, orderedReactions);
+  return orderedReactions;
 };
 
 const hasReactionFromUser = (
@@ -790,34 +856,49 @@ const encodeMessageWithReplyContext = ({
 
 const parseMessageWithReplyContext = (message: string): ParsedChatMessage => {
   const rawMessage = typeof message === "string" ? message : "";
+  const cachedParsedMessage = parsedMessageByRawMessageCache.get(rawMessage);
+  if (cachedParsedMessage) {
+    return cachedParsedMessage;
+  }
+
   const match = rawMessage.match(CHAT_REPLY_TOKEN_PATTERN);
+  let parsedMessage: ParsedChatMessage;
   if (!match) {
-    return {
+    parsedMessage = {
       body: rawMessage,
       replyContext: null,
     };
+  } else {
+    const messageId = Number.parseInt(match[1] ?? "", 10);
+    if (!Number.isFinite(messageId) || messageId <= 0) {
+      parsedMessage = {
+        body: rawMessage,
+        replyContext: null,
+      };
+    } else {
+      const decodedSender = sanitizeReplySenderLabel(safeDecodeUriComponent(match[2] ?? ""));
+      const decodedSnippet = sanitizeReplySnippet(safeDecodeUriComponent(match[3] ?? ""));
+      const body = rawMessage.slice(match[0].length);
+
+      parsedMessage = {
+        body,
+        replyContext: {
+          messageId,
+          senderLabel: decodedSender,
+          snippet: decodedSnippet,
+        },
+      };
+    }
   }
 
-  const messageId = Number.parseInt(match[1] ?? "", 10);
-  if (!Number.isFinite(messageId) || messageId <= 0) {
-    return {
-      body: rawMessage,
-      replyContext: null,
-    };
+  if (parsedMessageByRawMessageCache.size >= CHAT_PARSED_MESSAGE_CACHE_LIMIT) {
+    const oldestEntry = parsedMessageByRawMessageCache.keys().next();
+    if (!oldestEntry.done && typeof oldestEntry.value === "string") {
+      parsedMessageByRawMessageCache.delete(oldestEntry.value);
+    }
   }
-
-  const decodedSender = sanitizeReplySenderLabel(safeDecodeUriComponent(match[2] ?? ""));
-  const decodedSnippet = sanitizeReplySnippet(safeDecodeUriComponent(match[3] ?? ""));
-  const body = rawMessage.slice(match[0].length);
-
-  return {
-    body,
-    replyContext: {
-      messageId,
-      senderLabel: decodedSender,
-      snippet: decodedSnippet,
-    },
-  };
+  parsedMessageByRawMessageCache.set(rawMessage, parsedMessage);
+  return parsedMessage;
 };
 
 const replySnippetFromMessage = ({
@@ -902,7 +983,7 @@ const estimateMessageHeightForVirtualization = ({
   const textHeight = textLineCount * lineHeight;
   const replyHeight = parsedEntryMessage.replyContext ? 48 : 0;
   const imageHeight = entry.imageUrl ? 180 : 0;
-  const reactionHeight = normalizeMessageReactions(entry.reactions).length > 0 ? 24 : 0;
+  const reactionHeight = entry.reactions.length > 0 ? 24 : 0;
   const bubblePaddingHeight = entry.imageUrl ? 12 : isEmbedded ? 18 : 24;
   const metaHeight = 14;
   return bubblePaddingHeight + textHeight + replyHeight + imageHeight + reactionHeight + metaHeight;
@@ -1087,7 +1168,7 @@ const ChatMessageGroupBlock = memo(({
           const showAvatar = isFirstInGroup;
           const entryMessageId = toMessageId(entry.id);
           const isPersistedMessage = entryMessageId > 0;
-          const entryReactions = orderReactionsForDisplay(normalizeMessageReactions(entry.reactions));
+          const entryReactions = orderReactionsForDisplay(entry.reactions);
           const entryReactionByEmoji = new Map(entryReactions.map((reaction) => [reaction.emoji, reaction]));
           const isActionBarHoverTarget = hoveredActionBarMessageId === entryMessageId;
           const isActionBarVisible = (
@@ -1481,6 +1562,8 @@ export const GlobalChatPanel = ({
   const reactionMessageSyncInFlightRef = useRef(false);
   const reactionMessageSyncQueueRef = useRef<Set<number>>(new Set());
   const messagesRef = useRef<GlobalChatMessage[]>([]);
+  const messageDayMetaByIdRef = useRef<Map<number, MessageDayMetaCacheEntry>>(new Map());
+  const messageRenderSignatureByIdRef = useRef<Map<number, MessageRenderSignatureCacheEntry>>(new Map());
   const pendingReactionByKeyRef = useRef<Record<string, boolean>>({});
   const optimisticReactionRollbackByKeyRef = useRef<Record<string, GlobalChatReaction["users"] | null>>({});
   const actionBarHideTimeoutRef = useRef<number | null>(null);
@@ -1496,27 +1579,105 @@ export const GlobalChatPanel = ({
   const metricsFlushInFlightRef = useRef(false);
   const incrementalTrueUpTimeoutRef = useRef<number | null>(null);
   const scrollSyncFrameRef = useRef<number | null>(null);
+  const scrollProfileLastAtRef = useRef<number | null>(null);
+  const scrollProfileLastTopRef = useRef<number | null>(null);
   const blockMeasuredHeightsRef = useRef<Record<string, number>>({});
+  const virtualBlockLayoutByKeyRef = useRef<Record<string, { top: number; height: number }>>({});
+  const chatRenderProfileRef = useRef<ChatRenderProfileStats>({
+    mounts: 0,
+    updates: 0,
+    commits: 0,
+    commitDurationTotalMs: 0,
+    commitDurationMaxMs: 0,
+    commitsOverBudget: 0,
+    actionBarTransitions: 0,
+    actionBarTransitionTotalMs: 0,
+    actionBarTransitionMaxMs: 0,
+    actionBarTransitionsOverBudget: 0,
+    scrollEvents: 0,
+    scrollDistancePx: 0,
+    scrollFrameSamples: 0,
+    scrollFrameTotalMs: 0,
+    scrollFrameMaxMs: 0,
+    scrollFramesOver20Ms: 0,
+  });
+  const pendingActionBarProfileRef = useRef<{
+    targetMessageId: number | null;
+    startedAt: number;
+  } | null>(null);
   const isPanelOpen = isEmbedded ? true : (isOpenProp ?? uncontrolledIsOpen);
   const sortedMessages = chatStore.messages;
   const hasOlderMessages = chatStore.hasOlderMessages;
   const oldestCursorId = chatStore.oldestCursorId;
-  const latestPersistedMessageId = useMemo(() => {
+  const latestPersistedMessageMeta = useMemo(() => {
     for (let index = sortedMessages.length - 1; index >= 0; index -= 1) {
-      const messageId = toMessageId(sortedMessages[index]?.id ?? 0);
+      const entry = sortedMessages[index];
+      const messageId = toMessageId(entry?.id ?? 0);
       if (messageId > 0) {
-        return messageId;
+        return {
+          messageId,
+          userId: entry?.userId ?? null,
+        };
       }
     }
-    return 0;
+    return {
+      messageId: 0,
+      userId: null as string | null,
+    };
   }, [sortedMessages]);
+  const latestPersistedMessageId = latestPersistedMessageMeta.messageId;
   const currentUserReactionLabel = useMemo(() => {
-    const ownMessage = [...sortedMessages].reverse().find((entry) => entry.userId === currentUserId);
-    if (!ownMessage) {
-      return "You";
+    for (let index = sortedMessages.length - 1; index >= 0; index -= 1) {
+      const entry = sortedMessages[index];
+      if (entry.userId === currentUserId) {
+        return formatOptimisticReactionLabel(entry.senderLabel);
+      }
     }
-    return formatOptimisticReactionLabel(ownMessage.senderLabel);
+    return "You";
   }, [currentUserId, sortedMessages]);
+  const getMessageDayMeta = useCallback((entry: GlobalChatMessage, todayKey: string): MessageDayMetaCacheEntry => {
+    const messageId = toMessageId(entry.id);
+    const cachedMeta = messageDayMetaByIdRef.current.get(messageId);
+    if (
+      cachedMeta &&
+      cachedMeta.createdAt === entry.createdAt &&
+      cachedMeta.todayKey === todayKey
+    ) {
+      return cachedMeta;
+    }
+
+    const nextMeta: MessageDayMetaCacheEntry = {
+      createdAt: entry.createdAt,
+      todayKey,
+      dayKey: formatDayKey(entry.createdAt),
+      dayLabel: formatDayLabel(entry.createdAt),
+    };
+    messageDayMetaByIdRef.current.set(messageId, nextMeta);
+    return nextMeta;
+  }, []);
+  const getMessageRenderSignature = useCallback((entry: GlobalChatMessage): string => {
+    const messageId = toMessageId(entry.id);
+    const cachedSignature = messageRenderSignatureByIdRef.current.get(messageId);
+    if (
+      cachedSignature &&
+      cachedSignature.createdAt === entry.createdAt &&
+      cachedSignature.message === entry.message &&
+      cachedSignature.imageUrl === entry.imageUrl &&
+      cachedSignature.reactionsRef === entry.reactions
+    ) {
+      return cachedSignature.signature;
+    }
+
+    const signature = `${messageId}:${entry.createdAt}:${entry.message}:${entry.imageUrl ?? ""}:${reactionSignature(entry.reactions)}`;
+    messageRenderSignatureByIdRef.current.set(messageId, {
+      createdAt: entry.createdAt,
+      message: entry.message,
+      imageUrl: entry.imageUrl,
+      reactionsRef: entry.reactions,
+      signature,
+    });
+    return signature;
+  }, []);
   const messageInputMaxLength = useMemo(
     () => maxComposerLengthForReply(replyContext),
     [replyContext],
@@ -1560,46 +1721,61 @@ export const GlobalChatPanel = ({
     });
   }, []);
   const groupedMessages = useMemo<ChatMessageGroup[]>(() => {
-    const groups = sortedMessages.reduce<
-      Array<{
-        userId: string;
-        senderLabel: string;
-        senderAvatarUrl: string | null;
-        senderAvatarBorderColor: string | null;
-        dayKey: string;
-        dayLabel: string;
-        isCurrentUser: boolean;
-        messages: GlobalChatMessage[];
-      }>
-    >((nextGroups, entry) => {
-      const dayKey = formatDayKey(entry.createdAt);
-      const previous = nextGroups[nextGroups.length - 1];
-      if (previous && previous.userId === entry.userId && previous.dayKey === dayKey) {
+    const groups: Array<{
+      userId: string;
+      senderLabel: string;
+      senderAvatarUrl: string | null;
+      senderAvatarBorderColor: string | null;
+      dayKey: string;
+      dayLabel: string;
+      isCurrentUser: boolean;
+      messages: GlobalChatMessage[];
+    }> = [];
+    const activeMessageIds = new Set<number>();
+    const now = new Date();
+    const todayKey = `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}`;
+
+    for (const entry of sortedMessages) {
+      const messageId = toMessageId(entry.id);
+      activeMessageIds.add(messageId);
+      const dayMeta = getMessageDayMeta(entry, todayKey);
+      const previous = groups[groups.length - 1];
+      if (previous && previous.userId === entry.userId && previous.dayKey === dayMeta.dayKey) {
         previous.messages.push(entry);
-        return nextGroups;
+        continue;
       }
 
-      nextGroups.push({
+      groups.push({
         userId: entry.userId,
         senderLabel: entry.senderLabel,
         senderAvatarUrl: entry.senderAvatarUrl,
         senderAvatarBorderColor: entry.senderAvatarBorderColor,
-        dayKey,
-        dayLabel: formatDayLabel(entry.createdAt),
+        dayKey: dayMeta.dayKey,
+        dayLabel: dayMeta.dayLabel,
         isCurrentUser: entry.userId === currentUserId,
         messages: [entry],
       });
-      return nextGroups;
-    }, []);
+    }
+
+    const dayMetaCache = messageDayMetaByIdRef.current;
+    for (const cachedMessageId of dayMetaCache.keys()) {
+      if (!activeMessageIds.has(cachedMessageId)) {
+        dayMetaCache.delete(cachedMessageId);
+      }
+    }
+    const renderSignatureCache = messageRenderSignatureByIdRef.current;
+    for (const cachedMessageId of renderSignatureCache.keys()) {
+      if (!activeMessageIds.has(cachedMessageId)) {
+        renderSignatureCache.delete(cachedMessageId);
+      }
+    }
 
     return groups.map((group, index) => {
       const messageIds = group.messages.map((entry) => toMessageId(entry.id));
       const firstMessageId = messageIds[0] ?? 0;
       const lastMessageId = messageIds[messageIds.length - 1] ?? 0;
       const renderSignature = group.messages
-        .map((entry) => (
-          `${toMessageId(entry.id)}:${entry.createdAt}:${entry.message}:${entry.imageUrl ?? ""}:${reactionSignature(entry.reactions)}`
-        ))
+        .map(getMessageRenderSignature)
         .join("|");
       const previousGroupDayKey = groups[index - 1]?.dayKey ?? null;
 
@@ -1615,7 +1791,7 @@ export const GlobalChatPanel = ({
         }),
       };
     });
-  }, [currentUserId, isEmbedded, sortedMessages]);
+  }, [currentUserId, getMessageDayMeta, getMessageRenderSignature, isEmbedded, sortedMessages]);
 
   const syncComposerHeight = useCallback((target: HTMLTextAreaElement) => {
     const minHeightPx = isEmbedded ? 30 : CHAT_COMPOSER_MIN_HEIGHT_PX;
@@ -1644,6 +1820,22 @@ export const GlobalChatPanel = ({
     syncComposerHeight(input);
   }, [syncComposerHeight]);
 
+  const shouldAutoStickToBottom = useCallback(() => {
+    const scroller = messageListRef.current;
+    if (!scroller) {
+      return shouldStickToBottomRef.current;
+    }
+    const distanceFromBottom = distanceFromBottomPx(scroller);
+    const shouldStick = shouldStickToBottomRef.current
+      ? distanceFromBottom <= CHAT_STICK_TO_BOTTOM_RELEASE_PX
+      : distanceFromBottom <= CHAT_STICK_TO_BOTTOM_ATTACH_PX;
+    shouldStickToBottomRef.current = shouldStick;
+    if (shouldStick) {
+      setShowJumpToLatest((current) => (current ? false : current));
+    }
+    return shouldStick;
+  }, []);
+
   const scrollMessagesToBottom = useCallback((behavior: ScrollBehavior = "auto") => {
     const scroller = messageListRef.current;
     if (!scroller) {
@@ -1670,6 +1862,63 @@ export const GlobalChatPanel = ({
     [syncComposerHeight],
   );
 
+  const getChatRenderProfileSnapshot = useCallback(() => {
+    const stats = chatRenderProfileRef.current;
+    const scrollFrameAvgMs = stats.scrollFrameSamples > 0
+      ? stats.scrollFrameTotalMs / stats.scrollFrameSamples
+      : 0;
+    return {
+      actionBarTransitionAvgMs: stats.actionBarTransitions > 0
+        ? stats.actionBarTransitionTotalMs / stats.actionBarTransitions
+        : 0,
+      actionBarTransitionMaxMs: stats.actionBarTransitionMaxMs,
+      actionBarTransitions: stats.actionBarTransitions,
+      actionBarTransitionsOver50Ms: stats.actionBarTransitionsOverBudget,
+      commitAvgMs: stats.commits > 0 ? stats.commitDurationTotalMs / stats.commits : 0,
+      commitMaxMs: stats.commitDurationMaxMs,
+      commits: stats.commits,
+      commitsOver16Ms: stats.commitsOverBudget,
+      mounts: stats.mounts,
+      scrollDistancePx: Math.round(stats.scrollDistancePx),
+      scrollEventCount: stats.scrollEvents,
+      scrollEstimatedFps: scrollFrameAvgMs > 0 ? 1000 / scrollFrameAvgMs : 0,
+      scrollFrameAvgMs,
+      scrollFrameMaxMs: stats.scrollFrameMaxMs,
+      scrollFramesOver20Ms: stats.scrollFramesOver20Ms,
+      updates: stats.updates,
+    };
+  }, []);
+
+  const onChatProfilerRender = useCallback<ProfilerOnRenderCallback>((_id, phase, actualDuration) => {
+    if (!CHAT_PROFILE_ENABLED) {
+      return;
+    }
+
+    const nextDuration = Number.isFinite(actualDuration) ? Math.max(0, actualDuration) : 0;
+    const stats = chatRenderProfileRef.current;
+    stats.commits += 1;
+    stats.commitDurationTotalMs += nextDuration;
+    stats.commitDurationMaxMs = Math.max(stats.commitDurationMaxMs, nextDuration);
+    if (nextDuration >= CHAT_PROFILE_COMMIT_BUDGET_MS) {
+      stats.commitsOverBudget += 1;
+    }
+    if (phase === "mount") {
+      stats.mounts += 1;
+      return;
+    }
+    stats.updates += 1;
+  }, []);
+
+  const startActionBarTransitionProfile = useCallback((targetMessageId: number | null) => {
+    if (!CHAT_PROFILE_ENABLED) {
+      return;
+    }
+    pendingActionBarProfileRef.current = {
+      targetMessageId,
+      startedAt: performance.now(),
+    };
+  }, []);
+
   const cancelActionBarHide = useCallback(() => {
     if (actionBarHideTimeoutRef.current !== null) {
       window.clearTimeout(actionBarHideTimeoutRef.current);
@@ -1679,21 +1928,81 @@ export const GlobalChatPanel = ({
 
   const showActionBarForMessage = useCallback((messageId: number) => {
     cancelActionBarHide();
-    setHoveredActionBarMessageId(messageId);
+    setHoveredActionBarMessageId((current) => {
+      if (current !== messageId) {
+        startActionBarTransitionProfile(messageId);
+      }
+      return messageId;
+    });
     setHiddenActionBarMessageId((current) => (
       current !== null && current !== messageId ? null : current
     ));
-  }, [cancelActionBarHide]);
+  }, [cancelActionBarHide, startActionBarTransitionProfile]);
 
   const queueHideActionBarForMessage = useCallback((messageId: number) => {
     cancelActionBarHide();
     actionBarHideTimeoutRef.current = window.setTimeout(() => {
       actionBarHideTimeoutRef.current = null;
-      setHoveredActionBarMessageId((current) => (
-        current === messageId ? null : current
-      ));
+      setHoveredActionBarMessageId((current) => {
+        if (current !== messageId) {
+          return current;
+        }
+        startActionBarTransitionProfile(null);
+        return null;
+      });
     }, CHAT_ACTION_BAR_HIDE_DELAY_MS);
-  }, [cancelActionBarHide]);
+  }, [cancelActionBarHide, startActionBarTransitionProfile]);
+
+  useEffect(() => {
+    if (!CHAT_PROFILE_ENABLED) {
+      return;
+    }
+    const pendingProfile = pendingActionBarProfileRef.current;
+    if (!pendingProfile || pendingProfile.targetMessageId !== hoveredActionBarMessageId) {
+      return;
+    }
+
+    const elapsedMs = Math.max(0, performance.now() - pendingProfile.startedAt);
+    pendingActionBarProfileRef.current = null;
+
+    const stats = chatRenderProfileRef.current;
+    stats.actionBarTransitions += 1;
+    stats.actionBarTransitionTotalMs += elapsedMs;
+    stats.actionBarTransitionMaxMs = Math.max(stats.actionBarTransitionMaxMs, elapsedMs);
+    if (elapsedMs >= CHAT_PROFILE_ACTION_BAR_BUDGET_MS) {
+      stats.actionBarTransitionsOverBudget += 1;
+    }
+  }, [hoveredActionBarMessageId]);
+
+  useEffect(() => {
+    if (!CHAT_PROFILE_ENABLED) {
+      return;
+    }
+
+    const chatProfileWindow = window as Window & {
+      __chatProfileSnapshot?: () => ReturnType<typeof getChatRenderProfileSnapshot>;
+    };
+    chatProfileWindow.__chatProfileSnapshot = () => {
+      const snapshot = getChatRenderProfileSnapshot();
+      console.info("[chat-profile:snapshot]", snapshot);
+      return snapshot;
+    };
+
+    const intervalId = window.setInterval(() => {
+      const snapshot = getChatRenderProfileSnapshot();
+      if (snapshot.commits <= 0 && snapshot.actionBarTransitions <= 0) {
+        return;
+      }
+      console.info("[chat-profile:periodic]", snapshot);
+    }, CHAT_PROFILE_LOG_INTERVAL_MS);
+
+    return () => {
+      window.clearInterval(intervalId);
+      if (chatProfileWindow.__chatProfileSnapshot) {
+        delete chatProfileWindow.__chatProfileSnapshot;
+      }
+    };
+  }, [getChatRenderProfileSnapshot]);
 
   const incrementClientMetric = useCallback(
     (name: "realtimeDisconnects" | "fallbackSyncs" | "duplicateDrops", amount = 1) => {
@@ -1891,21 +2200,23 @@ export const GlobalChatPanel = ({
       const normalizedReactions = normalizeMessageReactions(reactions);
       const nextReactionSignature = reactionSignature(normalizedReactions);
       updateChatMessages((currentMessages) => {
-        let changed = false;
-        const nextMessages = currentMessages.map((entry) => {
-          if (toMessageId(entry.id) !== normalizedMessageId) {
-            return entry;
-          }
-          if (reactionSignature(entry.reactions) === nextReactionSignature) {
-            return entry;
-          }
-          changed = true;
-          return {
-            ...entry,
-            reactions: normalizedReactions,
-          };
-        });
-        return changed ? nextMessages : currentMessages;
+        const targetIndex = currentMessages.findIndex(
+          (entry) => toMessageId(entry.id) === normalizedMessageId,
+        );
+        if (targetIndex < 0) {
+          return currentMessages;
+        }
+        const targetMessage = currentMessages[targetIndex];
+        if (reactionSignature(targetMessage.reactions) === nextReactionSignature) {
+          return currentMessages;
+        }
+
+        const nextMessages = [...currentMessages];
+        nextMessages[targetIndex] = {
+          ...targetMessage,
+          reactions: normalizedReactions,
+        };
+        return nextMessages;
       });
     },
     [updateChatMessages],
@@ -1928,26 +2239,31 @@ export const GlobalChatPanel = ({
       }
 
       updateChatMessages((currentMessages) => {
-        let changed = false;
-        const nextMessages = currentMessages.map((entry) => {
-          if (toMessageId(entry.id) !== normalizedMessageId) {
-            return entry;
-          }
-          const nextReactions = upsertReactionUsersForEmoji({
-            reactions: entry.reactions,
-            emoji: normalizedEmoji,
-            users,
-          });
-          if (reactionSignature(entry.reactions) === reactionSignature(nextReactions)) {
-            return entry;
-          }
-          changed = true;
-          return {
-            ...entry,
-            reactions: nextReactions,
-          };
+        const targetIndex = currentMessages.findIndex(
+          (entry) => toMessageId(entry.id) === normalizedMessageId,
+        );
+        if (targetIndex < 0) {
+          return currentMessages;
+        }
+
+        const targetMessage = currentMessages[targetIndex];
+        const nextReactions = upsertReactionUsersForEmoji({
+          reactions: targetMessage.reactions,
+          emoji: normalizedEmoji,
+          users,
         });
-        return changed ? nextMessages : currentMessages;
+        const currentReactionSignature = reactionSignature(targetMessage.reactions);
+        const nextReactionSignature = reactionSignature(nextReactions);
+        if (currentReactionSignature === nextReactionSignature) {
+          return currentMessages;
+        }
+
+        const nextMessages = [...currentMessages];
+        nextMessages[targetIndex] = {
+          ...targetMessage,
+          reactions: nextReactions,
+        };
+        return nextMessages;
       });
     },
     [updateChatMessages],
@@ -1990,23 +2306,26 @@ export const GlobalChatPanel = ({
     }
 
     updateChatMessages((currentMessages) => {
-      let changed = false;
-      const nextMessages = currentMessages.map((entry) => {
+      let nextMessages: GlobalChatMessage[] | null = null;
+      for (let index = 0; index < currentMessages.length; index += 1) {
+        const entry = currentMessages[index];
         const messageId = toMessageId(entry.id);
         const nextReactions = reactionsByMessageId.get(messageId);
         if (!nextReactions) {
-          return entry;
+          continue;
         }
         if (reactionSignature(entry.reactions) === signaturesByMessageId.get(messageId)) {
-          return entry;
+          continue;
         }
-        changed = true;
-        return {
+        if (!nextMessages) {
+          nextMessages = [...currentMessages];
+        }
+        nextMessages[index] = {
           ...entry,
           reactions: nextReactions,
         };
-      });
-      return changed ? nextMessages : currentMessages;
+      }
+      return nextMessages ?? currentMessages;
     });
   }, [updateChatMessages]);
 
@@ -2306,22 +2625,33 @@ export const GlobalChatPanel = ({
   }, [isPanelOpen, scrollMessagesToBottom]);
 
   useEffect(() => {
-    if (!isPanelOpen || !shouldStickToBottomRef.current) {
+    if (!isPanelOpen || !shouldAutoStickToBottom()) {
       return;
     }
 
     scrollMessagesToBottom();
-  }, [isPanelOpen, scrollMessagesToBottom, sortedMessages]);
+  }, [
+    isPanelOpen,
+    latestPersistedMessageId,
+    scrollMessagesToBottom,
+    shouldAutoStickToBottom,
+    sortedMessages.length,
+  ]);
 
   useEffect(() => {
-    if (!isPanelOpen || shouldStickToBottomRef.current || sortedMessages.length === 0) {
+    if (!isPanelOpen || shouldAutoStickToBottom() || latestPersistedMessageId < 1) {
       return;
     }
-    const latestMessage = sortedMessages[sortedMessages.length - 1];
-    if (latestMessage?.userId !== currentUserId) {
+    if (latestPersistedMessageMeta.userId !== currentUserId) {
       setShowJumpToLatest(true);
     }
-  }, [currentUserId, isPanelOpen, sortedMessages]);
+  }, [
+    currentUserId,
+    isPanelOpen,
+    latestPersistedMessageId,
+    latestPersistedMessageMeta.userId,
+    shouldAutoStickToBottom,
+  ]);
 
   useEffect(() => {
     if (!isPanelOpen) {
@@ -2373,7 +2703,7 @@ export const GlobalChatPanel = ({
 
     let frame: number | null = null;
     const pinIfNeeded = () => {
-      if (!shouldStickToBottomRef.current) {
+      if (!shouldAutoStickToBottom()) {
         return;
       }
       if (frame !== null) {
@@ -2396,7 +2726,7 @@ export const GlobalChatPanel = ({
         window.cancelAnimationFrame(frame);
       }
     };
-  }, [isPanelOpen, scrollMessagesToBottom]);
+  }, [isPanelOpen, scrollMessagesToBottom, shouldAutoStickToBottom]);
 
   useEffect(() => {
     if (!isMobileViewport) {
@@ -2414,7 +2744,7 @@ export const GlobalChatPanel = ({
 
     const settleAfterViewportShift = () => {
       applyViewportHeight();
-      if (!isPanelOpen || !shouldStickToBottomRef.current) {
+      if (!isPanelOpen || !shouldAutoStickToBottom()) {
         return;
       }
       window.requestAnimationFrame(() => {
@@ -2431,13 +2761,11 @@ export const GlobalChatPanel = ({
 
     settleAfterViewportShift();
     visualViewport?.addEventListener("resize", settleAfterViewportShift);
-    visualViewport?.addEventListener("scroll", settleAfterViewportShift);
     window.addEventListener("resize", settleAfterViewportShift);
     window.addEventListener("orientationchange", settleAfterViewportShift);
 
     return () => {
       visualViewport?.removeEventListener("resize", settleAfterViewportShift);
-      visualViewport?.removeEventListener("scroll", settleAfterViewportShift);
       window.removeEventListener("resize", settleAfterViewportShift);
       window.removeEventListener("orientationchange", settleAfterViewportShift);
       if (viewportSettleTimeoutRef.current !== null) {
@@ -2446,7 +2774,7 @@ export const GlobalChatPanel = ({
       }
       root.style.removeProperty("--chat-vvh");
     };
-  }, [isMobileViewport, isPanelOpen, scrollMessagesToBottom]);
+  }, [isMobileViewport, isPanelOpen, scrollMessagesToBottom, shouldAutoStickToBottom]);
 
   useEffect(() => {
     if (!isPanelOpen || !isMobileViewport) {
@@ -2860,6 +3188,60 @@ export const GlobalChatPanel = ({
     }
     return next;
   }, [pendingReactionByKey]);
+  const pendingReactionSignatureByMessageId = useMemo(() => {
+    const next = new Map<number, string>();
+    for (const [messageId, pendingSet] of pendingReactionByMessageId.entries()) {
+      if (!pendingSet || pendingSet.size === 0) {
+        continue;
+      }
+      const signature = [...pendingSet].sort().join(",");
+      if (!signature) {
+        continue;
+      }
+      next.set(messageId, signature);
+    }
+    return next;
+  }, [pendingReactionByMessageId]);
+  const groupKeyByMessageId = useMemo(() => {
+    const next = new Map<number, string>();
+    for (const group of groupedMessages) {
+      for (const messageId of group.messageIds) {
+        next.set(messageId, group.groupKey);
+      }
+    }
+    return next;
+  }, [groupedMessages]);
+  const hoveredActionBarGroupKey = useMemo(() => {
+    if (hoveredActionBarMessageId === null) {
+      return null;
+    }
+    return groupKeyByMessageId.get(hoveredActionBarMessageId) ?? null;
+  }, [groupKeyByMessageId, hoveredActionBarMessageId]);
+  const hiddenActionBarGroupKey = useMemo(() => {
+    if (hiddenActionBarMessageId === null) {
+      return null;
+    }
+    return groupKeyByMessageId.get(hiddenActionBarMessageId) ?? null;
+  }, [groupKeyByMessageId, hiddenActionBarMessageId]);
+  const pendingReactionSignatureByGroupKey = useMemo(() => {
+    const next = new Map<string, string>();
+    for (const group of groupedMessages) {
+      let pendingReactionSignature = "";
+      for (const messageId of group.messageIds) {
+        const pendingSignature = pendingReactionSignatureByMessageId.get(messageId);
+        if (!pendingSignature) {
+          continue;
+        }
+        pendingReactionSignature = pendingReactionSignature
+          ? `${pendingReactionSignature}|${messageId}:${pendingSignature}`
+          : `${messageId}:${pendingSignature}`;
+      }
+      if (pendingReactionSignature) {
+        next.set(group.groupKey, pendingReactionSignature);
+      }
+    }
+    return next;
+  }, [groupedMessages, pendingReactionSignatureByMessageId]);
 
   const renderBlocks = useMemo<ChatRenderBlock[]>(() => {
     const nextBlocks: ChatRenderBlock[] = [];
@@ -2892,7 +3274,11 @@ export const GlobalChatPanel = ({
     return nextBlocks;
   }, [groupedMessages, hasOlderMessages, sortedMessages.length]);
 
-  const shouldVirtualizeBlocks = CHAT_ENABLE_VIRTUALIZATION && renderBlocks.length >= CHAT_VIRTUALIZATION_MIN_BLOCK_COUNT;
+  const shouldVirtualizeBlocks = (
+    CHAT_ENABLE_VIRTUALIZATION &&
+    !isMobileViewport &&
+    renderBlocks.length >= CHAT_VIRTUALIZATION_MIN_BLOCK_COUNT
+  );
 
   const syncVirtualViewportState = useCallback((scroller: HTMLDivElement) => {
     const nextTop = scroller.scrollTop;
@@ -2923,9 +3309,28 @@ export const GlobalChatPanel = ({
     if (currentHeight && Math.abs(currentHeight - nextHeight) <= 1) {
       return;
     }
+
+    const previousLayout = virtualBlockLayoutByKeyRef.current[blockKey];
+    const previousHeight = currentHeight ?? previousLayout?.height ?? null;
     blockMeasuredHeightsRef.current[blockKey] = nextHeight;
+
+    if (!shouldVirtualizeBlocks) {
+      setVirtualMeasureVersion((current) => current + 1);
+      return;
+    }
+
+    if (!shouldStickToBottomRef.current && previousLayout && previousHeight && previousHeight > 0) {
+      const heightDelta = nextHeight - previousHeight;
+      if (Math.abs(heightDelta) > 1) {
+        const scroller = messageListRef.current;
+        if (scroller && previousLayout.top < scroller.scrollTop) {
+          scroller.scrollTop += heightDelta;
+        }
+      }
+    }
+
     setVirtualMeasureVersion((current) => current + 1);
-  }, []);
+  }, [shouldVirtualizeBlocks]);
 
   useEffect(() => {
     if (!isPanelOpen) {
@@ -2982,6 +3387,21 @@ export const GlobalChatPanel = ({
     });
   }, [loadingOlder, renderBlocks, shouldVirtualizeBlocks, virtualMeasureVersion]);
 
+  useEffect(() => {
+    if (!shouldVirtualizeBlocks) {
+      virtualBlockLayoutByKeyRef.current = {};
+      return;
+    }
+    const nextLayouts: Record<string, { top: number; height: number }> = {};
+    for (const layout of blockLayouts) {
+      nextLayouts[layout.key] = {
+        top: layout.top,
+        height: layout.height,
+      };
+    }
+    virtualBlockLayoutByKeyRef.current = nextLayouts;
+  }, [blockLayouts, shouldVirtualizeBlocks]);
+
   const totalBlockHeight = shouldVirtualizeBlocks
     ? (blockLayouts[blockLayouts.length - 1]?.bottom ?? 0)
     : 0;
@@ -3008,49 +3428,6 @@ export const GlobalChatPanel = ({
     );
   }, [blockLayouts, shouldVirtualizeBlocks, virtualScrollTop, virtualViewportHeight]);
 
-  const groupRenderStateByKey = useMemo(() => {
-    const byKey = new Map<string, {
-      hiddenActionBarMessageId: number | null;
-      hoveredActionBarMessageId: number | null;
-      pendingReactionSignature: string;
-    }>();
-
-    for (const group of groupedMessages) {
-      const hoveredForGroup = (
-        hoveredActionBarMessageId !== null && group.messageIds.includes(hoveredActionBarMessageId)
-          ? hoveredActionBarMessageId
-          : null
-      );
-      const hiddenForGroup = (
-        hiddenActionBarMessageId !== null && group.messageIds.includes(hiddenActionBarMessageId)
-          ? hiddenActionBarMessageId
-          : null
-      );
-      const pendingReactionSignature = group.messageIds
-        .map((messageId) => {
-          const pendingSet = pendingReactionByMessageId.get(messageId);
-          if (!pendingSet || pendingSet.size === 0) {
-            return "";
-          }
-          return `${messageId}:${[...pendingSet].sort().join(",")}`;
-        })
-        .filter(Boolean)
-        .join("|");
-
-      byKey.set(group.groupKey, {
-        hiddenActionBarMessageId: hiddenForGroup,
-        hoveredActionBarMessageId: hoveredForGroup,
-        pendingReactionSignature,
-      });
-    }
-    return byKey;
-  }, [
-    groupedMessages,
-    hiddenActionBarMessageId,
-    hoveredActionBarMessageId,
-    pendingReactionByMessageId,
-  ]);
-
   const renderBlockContent = useCallback((block: ChatRenderBlock) => {
     if (block.type === "older") {
       return (
@@ -3074,21 +3451,28 @@ export const GlobalChatPanel = ({
       return <p className="text-sm text-slate-300">No messages yet. Start the banter.</p>;
     }
 
-    const uiState = groupRenderStateByKey.get(block.group.groupKey);
+    const groupKey = block.group.groupKey;
+    const hoveredForGroup = hoveredActionBarGroupKey === groupKey
+      ? hoveredActionBarMessageId
+      : null;
+    const hiddenForGroup = hiddenActionBarGroupKey === groupKey
+      ? hiddenActionBarMessageId
+      : null;
+    const pendingReactionSignature = pendingReactionSignatureByGroupKey.get(groupKey) ?? "";
     return (
       <ChatMessageGroupBlock
-        key={block.group.groupKey}
+        key={groupKey}
         currentUserId={currentUserId}
         group={block.group}
         handleCopyMessage={handleCopyMessage}
         handleMoreMessageAction={handleMoreMessageAction}
         handleReplyToMessage={handleReplyToMessage}
-        hiddenActionBarMessageId={uiState?.hiddenActionBarMessageId ?? null}
-        hoveredActionBarMessageId={uiState?.hoveredActionBarMessageId ?? null}
+        hiddenActionBarMessageId={hiddenForGroup}
+        hoveredActionBarMessageId={hoveredForGroup}
         isEmbedded={isEmbedded}
         openImageLightbox={openImageLightbox}
         pendingReactionByMessageId={pendingReactionByMessageId}
-        pendingReactionSignature={uiState?.pendingReactionSignature ?? ""}
+        pendingReactionSignature={pendingReactionSignature}
         previousGroupDayKey={block.previousGroupDayKey}
         queueHideActionBarForMessage={queueHideActionBarForMessage}
         showActionBarForMessage={showActionBarForMessage}
@@ -3097,23 +3481,28 @@ export const GlobalChatPanel = ({
     );
   }, [
     currentUserId,
-    groupRenderStateByKey,
+    hiddenActionBarGroupKey,
+    hiddenActionBarMessageId,
     handleCopyMessage,
     handleMoreMessageAction,
     handleReplyToMessage,
+    hoveredActionBarGroupKey,
+    hoveredActionBarMessageId,
     isEmbedded,
     loadOlderMessages,
     loadingOlder,
     openImageLightbox,
     pendingReactionByMessageId,
+    pendingReactionSignatureByGroupKey,
     queueHideActionBarForMessage,
     showActionBarForMessage,
     toggleMessageReaction,
   ]);
 
   const renderedMessageList = useMemo(
-    () => (
-      <ScrollShadow
+    () => {
+      const messageList = (
+        <ScrollShadow
         ref={messageListRef}
         className={`chat-scrollbar flex-1 min-h-0 overflow-x-hidden overscroll-contain touch-pan-y ${
           isEmbedded
@@ -3124,11 +3513,28 @@ export const GlobalChatPanel = ({
         style={{ WebkitOverflowScrolling: "touch" }}
         onScroll={(event) => {
           const scroller = event.currentTarget;
-          const nearBottom = isNearBottom(scroller);
-          shouldStickToBottomRef.current = nearBottom;
-          if (nearBottom) {
-            setShowJumpToLatest(false);
+          if (CHAT_PROFILE_ENABLED) {
+            const now = performance.now();
+            const stats = chatRenderProfileRef.current;
+            stats.scrollEvents += 1;
+            const lastTop = scrollProfileLastTopRef.current;
+            if (typeof lastTop === "number") {
+              stats.scrollDistancePx += Math.abs(scroller.scrollTop - lastTop);
+            }
+            const lastAt = scrollProfileLastAtRef.current;
+            if (typeof lastAt === "number") {
+              const deltaMs = Math.min(120, Math.max(0, now - lastAt));
+              stats.scrollFrameSamples += 1;
+              stats.scrollFrameTotalMs += deltaMs;
+              stats.scrollFrameMaxMs = Math.max(stats.scrollFrameMaxMs, deltaMs);
+              if (deltaMs >= 20) {
+                stats.scrollFramesOver20Ms += 1;
+              }
+            }
+            scrollProfileLastAtRef.current = now;
+            scrollProfileLastTopRef.current = scroller.scrollTop;
           }
+          shouldAutoStickToBottom();
           if (shouldVirtualizeBlocks) {
             scheduleVirtualViewportStateSync(scroller);
           }
@@ -3165,13 +3571,26 @@ export const GlobalChatPanel = ({
           )}
         </div>
       </ScrollShadow>
-    ),
+      );
+
+      if (!CHAT_PROFILE_ENABLED) {
+        return messageList;
+      }
+
+      return (
+        <Profiler id={isEmbedded ? "chat-embedded" : "chat-floating"} onRender={onChatProfilerRender}>
+          {messageList}
+        </Profiler>
+      );
+    },
     [
       isEmbedded,
       onMeasuredBlockHeight,
+      onChatProfilerRender,
       renderBlocks,
       renderBlockContent,
       scheduleVirtualViewportStateSync,
+      shouldAutoStickToBottom,
       shouldVirtualizeBlocks,
       totalBlockHeight,
       visibleBlockLayouts,
@@ -3205,9 +3624,14 @@ export const GlobalChatPanel = ({
     }
 
     const optimisticMessageId = -Math.max(1, Math.floor(Date.now() + Math.random() * 100000));
-    const previousOwnMessage = [...messagesRef.current]
-      .reverse()
-      .find((entry) => entry.userId === currentUserId && toMessageId(entry.id) > 0);
+    let previousOwnMessage: GlobalChatMessage | null = null;
+    for (let index = messagesRef.current.length - 1; index >= 0; index -= 1) {
+      const entry = messagesRef.current[index];
+      if (entry.userId === currentUserId && toMessageId(entry.id) > 0) {
+        previousOwnMessage = entry;
+        break;
+      }
+    }
     const optimisticMessage = withNormalizedMessageReactions({
       id: optimisticMessageId,
       userId: currentUserId,
@@ -3355,6 +3779,7 @@ export const GlobalChatPanel = ({
       incrementalTrueUpTimeoutRef.current = null;
     }
     cancelActionBarHide();
+    pendingActionBarProfileRef.current = null;
     setPanelOpen(false);
     setShowJumpToLatest(false);
     setReplyContext(null);
@@ -3637,7 +4062,7 @@ export const GlobalChatPanel = ({
                         queueComposerHeightSync(event.currentTarget);
                       }}
                       onFocus={() => {
-                        if (!shouldStickToBottomRef.current) {
+                        if (!shouldAutoStickToBottom()) {
                           return;
                         }
                         window.requestAnimationFrame(() => {

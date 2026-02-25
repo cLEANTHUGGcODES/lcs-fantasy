@@ -1,5 +1,6 @@
 import { requireAuthUser } from "@/lib/draft-auth";
 import { processDueDrafts } from "@/lib/draft-automation";
+import { claimDueProcessingSlot } from "@/lib/draft-due-processing-throttle";
 import { recordDraftObservabilityEvents } from "@/lib/draft-observability";
 import { getDraftDetail, upsertDraftPresence } from "@/lib/draft-data";
 import { RouteServerTimer } from "@/lib/server-timing";
@@ -8,6 +9,8 @@ import { getSupabaseServerClient } from "@/lib/supabase-server";
 type PresenceBody = {
   ready?: boolean;
 };
+
+const PRESENCE_PROCESS_DUE_THROTTLE_MS = 2500;
 
 const parseDraftId = (raw: string): number => {
   const value = Number.parseInt(raw, 10);
@@ -25,6 +28,8 @@ export async function POST(
   let metricUserId: string | null = null;
   let metricDraftId: number | null = null;
   let metricStatusCode = 200;
+  let processDueRequested = false;
+  let processDueExecuted = false;
   const jsonWithTiming = (payload: unknown, status: number) =>
     Response.json(payload, {
       status,
@@ -88,7 +93,16 @@ export async function POST(
       );
     }
 
-    await timer.measure("process_due", () => processDueDrafts({ draftId }));
+    processDueRequested = true;
+    if (
+      claimDueProcessingSlot({
+        key: `presence:${draftId}`,
+        windowMs: PRESENCE_PROCESS_DUE_THROTTLE_MS,
+      })
+    ) {
+      processDueExecuted = true;
+      await timer.measure("process_due", () => processDueDrafts({ draftId }));
+    }
 
     const updatedDraft = await timer.measure("load_draft_detail", () =>
       getDraftDetail({
@@ -115,6 +129,11 @@ export async function POST(
             metadata: {
               statusCode: metricStatusCode,
               draftId: metricDraftId,
+              processDue: {
+                requested: processDueRequested,
+                executed: processDueExecuted,
+                skipped: processDueRequested && !processDueExecuted,
+              },
               stepsMs: Object.fromEntries(
                 timer
                   .getEntries()

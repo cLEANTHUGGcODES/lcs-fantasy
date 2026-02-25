@@ -604,6 +604,7 @@ export default async function Home() {
     getDashboardStandings({
       playerTotals: snapshot.playerTotals,
       games: snapshot.games,
+      snapshotVersion: snapshot.generatedAt,
     }),
     listDraftSummariesForUser({ userId }),
   ]);

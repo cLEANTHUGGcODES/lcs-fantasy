@@ -76,7 +76,24 @@ export type ActiveScoringSettings = {
   source: SettingsSource;
 };
 
-export const getActiveScoringSettings = async (): Promise<ActiveScoringSettings> => {
+const ACTIVE_SCORING_CACHE_TTL_MS = 5_000;
+let cachedActiveScoringSettings:
+  | {
+      value: ActiveScoringSettings;
+      expiresAtMs: number;
+    }
+  | null = null;
+let inFlightActiveScoringSettingsPromise: Promise<ActiveScoringSettings> | null = null;
+
+const cloneActiveScoringSettings = (
+  value: ActiveScoringSettings,
+): ActiveScoringSettings => ({
+  scoring: { ...value.scoring },
+  updatedAt: value.updatedAt,
+  source: value.source,
+});
+
+const loadActiveScoringSettingsFromDatabase = async (): Promise<ActiveScoringSettings> => {
   const supabase = getSupabaseServerClient();
   const { data, error } = await supabase
     .from(SETTINGS_TABLE)
@@ -112,6 +129,30 @@ export const getActiveScoringSettings = async (): Promise<ActiveScoringSettings>
     updatedAt: data.updated_at,
     source: "database",
   };
+};
+
+export const getActiveScoringSettings = async (): Promise<ActiveScoringSettings> => {
+  const nowMs = Date.now();
+  if (cachedActiveScoringSettings && cachedActiveScoringSettings.expiresAtMs > nowMs) {
+    return cloneActiveScoringSettings(cachedActiveScoringSettings.value);
+  }
+
+  if (!inFlightActiveScoringSettingsPromise) {
+    inFlightActiveScoringSettingsPromise = loadActiveScoringSettingsFromDatabase()
+      .then((value) => {
+        cachedActiveScoringSettings = {
+          value,
+          expiresAtMs: Date.now() + ACTIVE_SCORING_CACHE_TTL_MS,
+        };
+        return value;
+      })
+      .finally(() => {
+        inFlightActiveScoringSettingsPromise = null;
+      });
+  }
+
+  const resolved = await inFlightActiveScoringSettingsPromise;
+  return cloneActiveScoringSettings(resolved);
 };
 
 export const validateScoringSettingsInput = (
@@ -204,11 +245,22 @@ export const saveScoringSettings = async ({
     throw new Error(`Unable to save scoring settings: ${error.message}`);
   }
 
-  return {
+  const resolved = {
     scoring: {
       ...fallbackScoring,
       ...parseStoredScoring(data.scoring),
     },
     updatedAt: data.updated_at,
   };
+
+  cachedActiveScoringSettings = {
+    value: {
+      scoring: { ...resolved.scoring },
+      updatedAt: resolved.updatedAt,
+      source: "database",
+    },
+    expiresAtMs: Date.now() + ACTIVE_SCORING_CACHE_TTL_MS,
+  };
+
+  return resolved;
 };

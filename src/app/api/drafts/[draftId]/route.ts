@@ -1,6 +1,7 @@
 import { requireAuthUser } from "@/lib/draft-auth";
 import { isGlobalAdminUser } from "@/lib/admin-access";
 import { processDueDrafts } from "@/lib/draft-automation";
+import { claimDueProcessingSlot } from "@/lib/draft-due-processing-throttle";
 import { recordDraftObservabilityEvents } from "@/lib/draft-observability";
 import { getDraftDetail } from "@/lib/draft-data";
 import { RouteServerTimer } from "@/lib/server-timing";
@@ -22,6 +23,8 @@ const parseProcessDueFlag = (value: string | null): boolean => {
   return normalized === "1" || normalized === "true" || normalized === "yes";
 };
 
+const DRAFT_DETAIL_PROCESS_DUE_THROTTLE_MS = 2500;
+
 export async function GET(
   request: Request,
   { params }: { params: Promise<{ draftId: string }> },
@@ -30,6 +33,8 @@ export async function GET(
   let metricUserId: string | null = null;
   let metricDraftId: number | null = null;
   let metricStatusCode = 200;
+  let processDueRequested = false;
+  let processDueExecuted = false;
   const jsonWithTiming = (payload: unknown, status: number) =>
     Response.json(payload, {
       status,
@@ -43,12 +48,20 @@ export async function GET(
     metricUserId = user.id;
     const requestUrl = new URL(request.url);
     const shouldProcessDue = parseProcessDueFlag(requestUrl.searchParams.get("processDue"));
+    processDueRequested = shouldProcessDue;
     const draftId = await timer.measure(
       "parse_draft_id",
       async () => parseDraftId((await params).draftId),
     );
     metricDraftId = draftId;
-    if (shouldProcessDue) {
+    if (
+      shouldProcessDue &&
+      claimDueProcessingSlot({
+        key: `detail:${draftId}`,
+        windowMs: DRAFT_DETAIL_PROCESS_DUE_THROTTLE_MS,
+      })
+    ) {
+      processDueExecuted = true;
       await timer.measure("process_due", () => processDueDrafts({ draftId }));
     }
     const draft = await timer.measure("load_draft_detail", () =>
@@ -75,6 +88,11 @@ export async function GET(
             metadata: {
               statusCode: metricStatusCode,
               draftId: metricDraftId,
+              processDue: {
+                requested: processDueRequested,
+                executed: processDueExecuted,
+                skipped: processDueRequested && !processDueExecuted,
+              },
               stepsMs: Object.fromEntries(
                 timer
                   .getEntries()

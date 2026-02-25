@@ -2,6 +2,7 @@ import { buildPlayerPoolFromGames } from "@/lib/draft-engine";
 import { requireAuthUser } from "@/lib/draft-auth";
 import { isGlobalAdminUser } from "@/lib/admin-access";
 import { processDueDrafts } from "@/lib/draft-automation";
+import { claimDueProcessingSlot } from "@/lib/draft-due-processing-throttle";
 import { withProjectedAutopickFantasyAverages } from "@/lib/draft-autopick-projections";
 import { listDraftSummaries, listRegisteredUsers } from "@/lib/draft-data";
 import { withResolvedDraftPlayerImages } from "@/lib/draft-player-images";
@@ -22,6 +23,8 @@ type CreateDraftBody = {
   participantUserIds?: string[];
 };
 
+const DRAFT_LIST_PROCESS_DUE_THROTTLE_MS = 2500;
+
 const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
 
@@ -38,7 +41,14 @@ const readOptionalScoring = (payload: unknown): Partial<FantasyScoring> | null =
 export async function GET() {
   try {
     await requireAuthUser();
-    await processDueDrafts();
+    if (
+      claimDueProcessingSlot({
+        key: "draft-list",
+        windowMs: DRAFT_LIST_PROCESS_DUE_THROTTLE_MS,
+      })
+    ) {
+      await processDueDrafts();
+    }
     const drafts = await listDraftSummaries();
     return Response.json({ drafts }, { status: 200 });
   } catch (error) {
