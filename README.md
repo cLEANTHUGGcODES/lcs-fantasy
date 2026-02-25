@@ -35,7 +35,7 @@ src/data/friends-league.json
 supabase/schema.sql        Canonical DB schema (tables, RPCs, RLS, storage policies)
 supabase/migrations/       Incremental SQL changes
 scripts/                   Tooling (launcher, load test, scoring optimizer, font checks)
-tests/                     Manual draft-room audit checklist
+tests/                     E2E smoke tests + manual draft-room audit checklist
 ```
 
 ## Prerequisites
@@ -296,9 +296,39 @@ curl -X POST "http://localhost:3000/api/cron/drafts" \
 | `npm run build` | Production build via launcher. |
 | `npm run start` | Starts production server via launcher. |
 | `npm run lint` | Runs ESLint. |
+| `npm run test:e2e` | Runs Playwright E2E tests (desktop + mobile Chromium projects). |
+| `npm run test:e2e:headed` | Runs E2E tests in headed desktop Chromium. |
+| `npm run test:e2e:debug` | Runs E2E tests with Playwright inspector in desktop Chromium. |
+| `npm run test:e2e:ui` | Opens Playwright UI mode. |
+| `npm run test:e2e:ci` | Runs E2E tests in CI mode (Chromium only). |
+| `npm run test:e2e:report` | Opens the latest Playwright HTML report. |
+| `npm run test:e2e:install` | Installs Chromium for Playwright. |
 | `npm run optimize:scoring` | Searches for improved scoring settings and can apply results. |
 | `npm run loadtest:draftroom -- --draft-id ... --users-file ...` | Synthetic multi-user draft room load test. |
 | `npm run check:fonts` | Enforces League Spartan-only font usage in `src/`. |
+
+## Testing
+
+E2E coverage is wired through Playwright (`playwright.config.ts`) and runs from `tests/e2e/`.
+
+- The suite auto-starts Next.js via `scripts/run-next-with-css-wasm.mjs`.
+- Auto-start uses `NEXT_TEST_WASM=1` to avoid lockfile issues on mounted filesystems (for example WSL on `/mnt/c`).
+- Auto-start also uses `NEXT_DIST_DIR=.next-playwright` so E2E runs do not conflict with your normal `.next` artifacts.
+- On Windows, `pretest:e2e` runs `scripts/ensure-tailwindcss-oxide-win.mjs` to repair missing Tailwind native optional dependencies.
+- Set `PLAYWRIGHT_SKIP_WEBSERVER=1` to run against an already running server.
+- Set `PLAYWRIGHT_BASE_URL` to target a non-default URL (default: `http://127.0.0.1:3000`).
+- The baseline smoke suite is intentionally environment-tolerant:
+  - verifies unauthenticated redirect flow to `/auth`
+  - verifies `/auth` renders either login UI or setup-required state
+  - verifies `/api/snapshot-status` returns JSON with expected shape
+
+Install the browser once on a new machine:
+
+```bash
+npm run test:e2e:install
+```
+
+CI runs the Chromium E2E suite on pushes and pull requests via `.github/workflows/e2e.yml`.
 
 ## Deployment
 
@@ -340,6 +370,17 @@ node .\\scripts\\ensure-lightningcss-win.mjs
 ```
 
 - Then retry `npm run dev`.
+
+### Windows `@tailwindcss/oxide` native binding errors
+
+- The repo auto-runs a Windows repair script in `postinstall`, `dev`, `build`, and `test:e2e`.
+- If you still see `Cannot find native binding` from `@tailwindcss/oxide`, run:
+
+```bash
+node .\scripts\ensure-tailwindcss-oxide-win.mjs
+```
+
+- Then retry `npm run test:e2e` (or `npm run dev`).
 
 ## Notes for Contributors
 
