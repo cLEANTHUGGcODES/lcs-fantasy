@@ -47,7 +47,10 @@ const resolveSeedUserId = async (fallbackUserId: string): Promise<string> => {
   const uniqueCreators = new Set(
     ((data ?? []) as DraftCreatorRow[])
       .map((entry) => entry.created_by_user_id)
-      .filter((entry): entry is string => typeof entry === "string" && entry.length > 0),
+      .filter(
+        (entry): entry is string =>
+          typeof entry === "string" && entry.length > 0,
+      ),
   );
 
   if (uniqueCreators.size === 1) {
@@ -58,7 +61,9 @@ const resolveSeedUserId = async (fallbackUserId: string): Promise<string> => {
   return fallbackUserId;
 };
 
-export const ensureGlobalAdminUserId = async (seedUserId: string): Promise<string> => {
+export const ensureGlobalAdminUserId = async (
+  seedUserId: string,
+): Promise<string> => {
   const existing = await loadAdminRow();
   if (existing?.admin_user_id) {
     return existing.admin_user_id;
@@ -67,16 +72,16 @@ export const ensureGlobalAdminUserId = async (seedUserId: string): Promise<strin
   const resolvedSeedUserId = await resolveSeedUserId(seedUserId);
 
   const supabase = getSupabaseServerClient();
-  const { error: insertError } = await supabase
-    .from(ADMIN_TABLE)
-    .insert({
-      id: ADMIN_ROW_ID,
-      admin_user_id: resolvedSeedUserId,
-      updated_at: new Date().toISOString(),
-    });
+  const { error: insertError } = await supabase.from(ADMIN_TABLE).insert({
+    id: ADMIN_ROW_ID,
+    admin_user_id: resolvedSeedUserId,
+    updated_at: new Date().toISOString(),
+  });
 
   if (insertError && insertError.code !== "23505") {
-    throw new Error(`Unable to initialize admin configuration: ${insertError.message}`);
+    throw new Error(
+      `Unable to initialize admin configuration: ${insertError.message}`,
+    );
   }
 
   const finalized = await loadAdminRow();

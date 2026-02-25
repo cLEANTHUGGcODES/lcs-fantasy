@@ -190,7 +190,10 @@ const dashboardStandingsByCacheKey = new Map<
     expiresAtMs: number;
   }
 >();
-const inFlightDashboardStandingsByCacheKey = new Map<string, Promise<DashboardStandings>>();
+const inFlightDashboardStandingsByCacheKey = new Map<
+  string,
+  Promise<DashboardStandings>
+>();
 
 const normalizeName = (value: string): string => value.trim().toLowerCase();
 const normalizeTeam = (value: string): string => value.trim().toLowerCase();
@@ -338,7 +341,10 @@ const resolveCurrentWeekContext = (
   };
 };
 
-const countFinalizedWeeks = (weekOneStartKey: string, todayKey: string): number => {
+const countFinalizedWeeks = (
+  weekOneStartKey: string,
+  todayKey: string,
+): number => {
   let count = 0;
   let week = 1;
 
@@ -402,7 +408,9 @@ const findEarliestGameDateKey = (games: ParsedGame[]): string | null => {
   return earliest;
 };
 
-const buildRoundRobinRounds = (participantUserIds: string[]): RoundRobinPair[][] => {
+const buildRoundRobinRounds = (
+  participantUserIds: string[],
+): RoundRobinPair[][] => {
   if (participantUserIds.length < 2) {
     return [];
   }
@@ -440,7 +448,9 @@ const buildRoundRobinRounds = (participantUserIds: string[]): RoundRobinPair[][]
   return rounds;
 };
 
-const listRegisteredUserProfiles = async (): Promise<RegisteredUserProfile[]> => {
+const listRegisteredUserProfiles = async (): Promise<
+  RegisteredUserProfile[]
+> => {
   const { supabaseUrl } = getSupabaseAuthEnv();
   const users: User[] = await listAdminAuthUsersCached();
 
@@ -456,30 +466,33 @@ const listRegisteredUserProfiles = async (): Promise<RegisteredUserProfile[]> =>
     .sort((a, b) => a.displayName.localeCompare(b.displayName));
 };
 
-const loadLatestCompletedDraft = async (): Promise<CompletedDraftRow | null> => {
-  const supabase = getSupabaseServerClient();
+const loadLatestCompletedDraft =
+  async (): Promise<CompletedDraftRow | null> => {
+    const supabase = getSupabaseServerClient();
 
-  const { data, error } = await supabase
-    .from("fantasy_drafts")
-    .select("id,name,started_at,scheduled_at")
-    .eq("status", "completed")
-    .order("started_at", { ascending: false, nullsFirst: false })
-    .order("scheduled_at", { ascending: false })
-    .order("id", { ascending: false })
-    .limit(1)
-    .maybeSingle<CompletedDraftRow>();
+    const { data, error } = await supabase
+      .from("fantasy_drafts")
+      .select("id,name,started_at,scheduled_at")
+      .eq("status", "completed")
+      .order("started_at", { ascending: false, nullsFirst: false })
+      .order("scheduled_at", { ascending: false })
+      .order("id", { ascending: false })
+      .limit(1)
+      .maybeSingle<CompletedDraftRow>();
 
-  if (error) {
-    throw new Error(`Unable to load completed draft: ${error.message}`);
-  }
-  return data ?? null;
-};
+    if (error) {
+      throw new Error(`Unable to load completed draft: ${error.message}`);
+    }
+    return data ?? null;
+  };
 
 const loadDraftPicks = async (draftId: number): Promise<DraftPickRow[]> => {
   const supabase = getSupabaseServerClient();
   const { data, error } = await supabase
     .from("fantasy_draft_picks")
-    .select("participant_user_id,team_name,player_team,player_role,team_icon_url")
+    .select(
+      "participant_user_id,team_name,player_team,player_role,team_icon_url",
+    )
     .eq("draft_id", draftId)
     .order("overall_pick", { ascending: true });
 
@@ -567,7 +580,8 @@ const resolveWeeklyFantasyPointsByUser = ({
   picksByUserId: Map<string, DraftPickRow[]>;
 }): WeeklyFantasyPointsResult => {
   const weeklyPlayerTotals = aggregatePlayerTotals(weeklyGames);
-  const { byName, byNameAndTeam } = buildPlayerTotalsLookups(weeklyPlayerTotals);
+  const { byName, byNameAndTeam } =
+    buildPlayerTotalsLookups(weeklyPlayerTotals);
   const pointsByUser = new Map<string, number>();
 
   for (const participant of participantProfiles) {
@@ -641,7 +655,9 @@ const buildHeadToHeadSummary = ({
           return {
             userId: participant.user_id,
             displayName:
-              participant.display_name?.trim() || matchedUser?.displayName || participant.user_id,
+              participant.display_name?.trim() ||
+              matchedUser?.displayName ||
+              participant.user_id,
             teamName: participant.team_name?.trim() || null,
             avatarUrl: matchedUser?.avatarUrl ?? null,
             avatarBorderColor: matchedUser?.avatarBorderColor ?? null,
@@ -673,7 +689,9 @@ const buildHeadToHeadSummary = ({
 
   const draftDate = new Date(completedDraftAt);
   const todayDate = new Date();
-  const normalizedDraftDate = Number.isNaN(draftDate.getTime()) ? todayDate : draftDate;
+  const normalizedDraftDate = Number.isNaN(draftDate.getTime())
+    ? todayDate
+    : draftDate;
   const draftAnchorKey = toDateKeyUtc(normalizedDraftDate);
   const earliestGameDateKey = findEarliestGameDateKey(games);
   const weekAnchorKey =
@@ -683,7 +701,10 @@ const buildHeadToHeadSummary = ({
   // Backfill-friendly anchor: allow prior game windows to be scored if data exists.
   const weekOneStartKey = wednesdayOnOrBefore(weekAnchorKey);
   const todayKey = toDateKeyUtc(todayDate);
-  const currentWeekContext = resolveCurrentWeekContext(weekOneStartKey, todayKey);
+  const currentWeekContext = resolveCurrentWeekContext(
+    weekOneStartKey,
+    todayKey,
+  );
   const finalizedWeekCount = countFinalizedWeeks(weekOneStartKey, todayKey);
   const maxWeekNumberToScore = Math.max(
     currentWeekContext.weekNumber,
@@ -696,7 +717,11 @@ const buildHeadToHeadSummary = ({
   });
 
   const weeklyPointsByWeek = new Map<number, WeeklyFantasyPointsResult>();
-  for (let weekNumber = 1; weekNumber <= maxWeekNumberToScore; weekNumber += 1) {
+  for (
+    let weekNumber = 1;
+    weekNumber <= maxWeekNumberToScore;
+    weekNumber += 1
+  ) {
     const weeklyGames = weeklyGamesByWeekNumber.get(weekNumber) ?? [];
     weeklyPointsByWeek.set(
       weekNumber,
@@ -843,7 +868,11 @@ const buildHeadToHeadSummary = ({
   };
 
   const weeks: HeadToHeadWeekView[] = [];
-  for (let weekNumber = 1; weekNumber <= maxWeekNumberToScore; weekNumber += 1) {
+  for (
+    let weekNumber = 1;
+    weekNumber <= maxWeekNumberToScore;
+    weekNumber += 1
+  ) {
     const weekResult = weeklyPointsByWeek.get(weekNumber);
     const hasWeekGames = weekResult?.hasGames ?? false;
     if (!hasWeekGames && weekNumber !== currentWeekContext.weekNumber) {
@@ -867,10 +896,14 @@ const buildHeadToHeadSummary = ({
       }
 
       const rightProfile =
-        rightUserId !== BYE_USER_ID ? profileByUserId.get(rightUserId) ?? null : null;
+        rightUserId !== BYE_USER_ID
+          ? (profileByUserId.get(rightUserId) ?? null)
+          : null;
       const leftPoints = weekPoints.get(leftUserId) ?? 0;
       const rightPoints =
-        rightProfile && rightUserId !== BYE_USER_ID ? weekPoints.get(rightUserId) ?? 0 : 0;
+        rightProfile && rightUserId !== BYE_USER_ID
+          ? (weekPoints.get(rightUserId) ?? 0)
+          : 0;
       const isTie =
         weekStatus !== "upcoming" &&
         hasWeekGames &&
@@ -909,7 +942,8 @@ const buildHeadToHeadSummary = ({
               roster: rosterByUserId.get(rightProfile.userId) ?? [],
             }
           : null,
-        winnerUserId: winnerUserId && winnerUserId !== BYE_USER_ID ? winnerUserId : null,
+        winnerUserId:
+          winnerUserId && winnerUserId !== BYE_USER_ID ? winnerUserId : null,
         isTie,
       });
     }
@@ -925,7 +959,10 @@ const buildHeadToHeadSummary = ({
   }
 
   if (weeks.length === 0) {
-    const fallbackBounds = getWeekBounds(weekOneStartKey, currentWeekContext.weekNumber);
+    const fallbackBounds = getWeekBounds(
+      weekOneStartKey,
+      currentWeekContext.weekNumber,
+    );
     weeks.push({
       weekNumber: currentWeekContext.weekNumber,
       status: currentWeekContext.status,
@@ -943,7 +980,9 @@ const buildHeadToHeadSummary = ({
     (entry) => entry.weekNumber === selectedWeek.weekNumber,
   );
   const previousWeekNumber =
-    selectedWeekIndex > 0 ? (weeks[selectedWeekIndex - 1]?.weekNumber ?? null) : null;
+    selectedWeekIndex > 0
+      ? (weeks[selectedWeekIndex - 1]?.weekNumber ?? null)
+      : null;
 
   return {
     enabled: true,
@@ -1048,8 +1087,12 @@ export const getDashboardStandings = async ({
         };
       });
 
-      const totalPoints = breakdown.reduce((total, entry) => total + entry.points, 0);
-      const averagePerPick = breakdown.length > 0 ? totalPoints / breakdown.length : 0;
+      const totalPoints = breakdown.reduce(
+        (total, entry) => total + entry.points,
+        0,
+      );
+      const averagePerPick =
+        breakdown.length > 0 ? totalPoints / breakdown.length : 0;
 
       return {
         userId: user.userId,
@@ -1078,7 +1121,8 @@ export const getDashboardStandings = async ({
     return {
       completedDraftId: latestCompletedDraft.id,
       completedDraftName: latestCompletedDraft.name,
-      completedDraftAt: latestCompletedDraft.started_at ?? latestCompletedDraft.scheduled_at,
+      completedDraftAt:
+        latestCompletedDraft.started_at ?? latestCompletedDraft.scheduled_at,
       rows,
       headToHead: buildHeadToHeadSummary({
         completedDraftAt:
