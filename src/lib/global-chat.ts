@@ -1,15 +1,31 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { MAX_CHAT_IMAGE_URL_LENGTH, normalizeChatImageUrl } from "@/lib/chat-image";
+
+import {
+  MAX_CHAT_IMAGE_URL_LENGTH,
+  normalizeChatImageUrl,
+} from "@/lib/chat-image";
 import { resolveAdminAvatarProfiles } from "@/lib/supabase-admin-cache";
 import { getSupabaseServerClient } from "@/lib/supabase-server";
-import type { GlobalChatMessage, GlobalChatReaction } from "@/types/chat";
+
+import type {
+  GlobalChatMessage,
+  GlobalChatReaction,
+} from "@/interfaces/chat.interfaces";
+
+import type {
+  GlobalChatReactionRow,
+  GlobalChatRow,
+  ListGlobalChatMessagesResult,
+  ChatObservabilityEventInput,
+} from "@/types/chat.types";
 
 const GLOBAL_CHAT_TABLE = "fantasy_global_chat_messages";
 const GLOBAL_CHAT_REACTIONS_TABLE = "fantasy_global_chat_reactions";
 const CHAT_OBSERVABILITY_TABLE = "fantasy_chat_observability_events";
 const CHAT_POST_RPC_NAME = "fantasy_chat_post_message";
 const CHAT_CLEANUP_RPC_NAME = "fantasy_cleanup_chat_data";
-const CHAT_OBSERVABILITY_SUMMARY_RPC_NAME = "fantasy_chat_observability_summary";
+const CHAT_OBSERVABILITY_SUMMARY_RPC_NAME =
+  "fantasy_chat_observability_summary";
 const DEFAULT_GLOBAL_CHAT_LIMIT = 120;
 const MAX_GLOBAL_CHAT_LIMIT = 200;
 export const MAX_GLOBAL_CHAT_MESSAGE_LENGTH = 320;
@@ -27,28 +43,10 @@ const GLOBAL_CHAT_SELECT_COLUMNS = [
   "created_at",
 ].join(",");
 
-type GlobalChatRow = {
-  id: number;
-  user_id: string;
-  sender_label: string;
-  sender_avatar_url: string | null;
-  sender_avatar_border_color: string | null;
-  message: string;
-  image_url: string | null;
-  created_at: string;
-};
-
-type GlobalChatReactionRow = {
-  id: number;
-  message_id: number;
-  user_id: string;
-  reactor_label: string;
-  emoji: string;
-  created_at: string;
-};
-
 const asObject = (value: unknown): Record<string, unknown> | null =>
-  typeof value === "object" && value !== null ? (value as Record<string, unknown>) : null;
+  typeof value === "object" && value !== null
+    ? (value as Record<string, unknown>)
+    : null;
 
 const asNumber = (value: unknown): number =>
   typeof value === "number" && Number.isFinite(value)
@@ -61,7 +59,9 @@ const asStringOrNull = (value: unknown): string | null =>
 const asBoolean = (value: unknown): boolean => value === true;
 
 const clampLimit = (value: number | undefined): number => {
-  const numeric = Number.isFinite(value) ? Math.floor(value as number) : DEFAULT_GLOBAL_CHAT_LIMIT;
+  const numeric = Number.isFinite(value)
+    ? Math.floor(value as number)
+    : DEFAULT_GLOBAL_CHAT_LIMIT;
   return Math.max(1, Math.min(numeric, MAX_GLOBAL_CHAT_LIMIT));
 };
 
@@ -74,7 +74,9 @@ const normalizePositiveId = (value: number | undefined): number => {
 
 const normalizeReactionEmoji = (value: string): string => value.trim();
 
-const aggregateReactions = (rows: GlobalChatReactionRow[]): GlobalChatReaction[] => {
+const aggregateReactions = (
+  rows: GlobalChatReactionRow[],
+): GlobalChatReaction[] => {
   const byEmoji = new Map<string, GlobalChatReaction["users"]>();
   for (const row of rows) {
     const emoji = normalizeReactionEmoji(row.emoji);
@@ -102,7 +104,9 @@ const aggregateReactions = (rows: GlobalChatReactionRow[]): GlobalChatReaction[]
   }));
 };
 
-const toReactionMapByMessageId = (rows: GlobalChatReactionRow[]): Map<number, GlobalChatReaction[]> => {
+const toReactionMapByMessageId = (
+  rows: GlobalChatReactionRow[],
+): Map<number, GlobalChatReaction[]> => {
   const rowsByMessageId = new Map<number, GlobalChatReactionRow[]>();
   for (const row of rows) {
     const bucket = rowsByMessageId.get(row.message_id) ?? [];
@@ -139,7 +143,9 @@ const toGlobalChatMessage = (row: GlobalChatRow): GlobalChatMessage => ({
 
 const resolveAvatarProfilesForUsers = async (
   userIds: string[],
-): Promise<Map<string, { avatarUrl: string | null; avatarBorderColor: string | null }>> => {
+): Promise<
+  Map<string, { avatarUrl: string | null; avatarBorderColor: string | null }>
+> => {
   return resolveAdminAvatarProfiles({ userIds });
 };
 
@@ -149,7 +155,9 @@ const hydrateMissingAvatarFields = async (
   const missingUserIds = [
     ...new Set(
       messages
-        .filter((entry) => !entry.senderAvatarUrl || !entry.senderAvatarBorderColor)
+        .filter(
+          (entry) => !entry.senderAvatarUrl || !entry.senderAvatarBorderColor,
+        )
         .map((entry) => entry.userId),
     ),
   ];
@@ -170,7 +178,8 @@ const hydrateMissingAvatarFields = async (
     return {
       ...entry,
       senderAvatarUrl: entry.senderAvatarUrl ?? profile.avatarUrl,
-      senderAvatarBorderColor: entry.senderAvatarBorderColor ?? profile.avatarBorderColor,
+      senderAvatarBorderColor:
+        entry.senderAvatarBorderColor ?? profile.avatarBorderColor,
     };
   });
 };
@@ -197,7 +206,9 @@ const listReactionsForMessageIds = async ({
     throw new Error(`Unable to load global chat reactions: ${error.message}`);
   }
 
-  return toReactionMapByMessageId((data ?? []) as unknown as GlobalChatReactionRow[]);
+  return toReactionMapByMessageId(
+    (data ?? []) as unknown as GlobalChatReactionRow[],
+  );
 };
 
 const toRpcGlobalChatMessage = (value: unknown): GlobalChatMessage | null => {
@@ -246,25 +257,6 @@ export class GlobalChatError extends Error {
   }
 }
 
-export type ListGlobalChatMessagesResult = {
-  messages: GlobalChatMessage[];
-  hasMore: boolean;
-  nextBeforeId: number | null;
-};
-
-export type ChatObservabilityMetricName =
-  | "fetch_latency_ms"
-  | "send_latency_ms"
-  | "realtime_disconnect"
-  | "fallback_sync"
-  | "duplicate_drop";
-
-export type ChatObservabilityEventInput = {
-  metricName: ChatObservabilityMetricName;
-  metricValue: number;
-  metadata?: Record<string, unknown>;
-};
-
 export const normalizeGlobalChatMessage = (value: string): string =>
   value.replace(/\s+/g, " ").trim();
 
@@ -307,9 +299,16 @@ export const toggleGlobalChatReaction = async ({
     throw new GlobalChatError("Authentication required.", "UNAUTHORIZED");
   }
   if (!normalizedReactorLabel) {
-    throw new GlobalChatError("Reaction label is required.", "INVALID_REACTOR_LABEL");
+    throw new GlobalChatError(
+      "Reaction label is required.",
+      "INVALID_REACTOR_LABEL",
+    );
   }
-  if (!normalizedEmoji || normalizedEmoji.length > MAX_GLOBAL_CHAT_REACTION_EMOJI_LENGTH || /\s/.test(normalizedEmoji)) {
+  if (
+    !normalizedEmoji ||
+    normalizedEmoji.length > MAX_GLOBAL_CHAT_REACTION_EMOJI_LENGTH ||
+    /\s/.test(normalizedEmoji)
+  ) {
     throw new GlobalChatError("Reaction emoji is invalid.", "INVALID_EMOJI");
   }
 
@@ -338,7 +337,9 @@ export const toggleGlobalChatReaction = async ({
     throw new Error(`Unable to load reaction: ${existingError.message}`);
   }
 
-  const existingReactionId = asNumber((existingRows?.[0] as { id?: unknown } | undefined)?.id);
+  const existingReactionId = asNumber(
+    (existingRows?.[0] as { id?: unknown } | undefined)?.id,
+  );
   if (existingReactionId > 0) {
     const { error: deleteError } = await supabase
       .from(GLOBAL_CHAT_REACTIONS_TABLE)
@@ -412,7 +413,9 @@ export const listGlobalChatMessages = async ({
   const normalizedBeforeId = normalizePositiveId(beforeId);
   const pageSize = safeLimit + 1;
 
-  let query = supabase.from(GLOBAL_CHAT_TABLE).select(GLOBAL_CHAT_SELECT_COLUMNS);
+  let query = supabase
+    .from(GLOBAL_CHAT_TABLE)
+    .select(GLOBAL_CHAT_SELECT_COLUMNS);
 
   if (normalizedAfterId > 0) {
     query = query
@@ -448,7 +451,10 @@ export const listGlobalChatMessages = async ({
       messageIds: hydratedMessages.map((entry) => entry.id),
     });
     return {
-      messages: attachReactionsToMessages(hydratedMessages, reactionsByMessageId),
+      messages: attachReactionsToMessages(
+        hydratedMessages,
+        reactionsByMessageId,
+      ),
       hasMore,
       nextBeforeId: null,
     };
@@ -461,7 +467,10 @@ export const listGlobalChatMessages = async ({
     supabase,
     messageIds: hydratedMessages.map((entry) => entry.id),
   });
-  const messagesWithReactions = attachReactionsToMessages(hydratedMessages, reactionsByMessageId);
+  const messagesWithReactions = attachReactionsToMessages(
+    hydratedMessages,
+    reactionsByMessageId,
+  );
   return {
     messages: messagesWithReactions,
     hasMore,
@@ -489,11 +498,15 @@ export const submitGlobalChatMessage = async ({
   const normalizedMessage = normalizeGlobalChatMessage(message);
   const normalizedSenderLabel = senderLabel.trim();
   const normalizedImageUrl = normalizeChatImageUrl(imageUrl);
-  const hasRawImageUrl = typeof imageUrl === "string" && imageUrl.trim().length > 0;
+  const hasRawImageUrl =
+    typeof imageUrl === "string" && imageUrl.trim().length > 0;
   const normalizedIdempotencyKey = idempotencyKey?.trim() || null;
 
   if (!normalizedSenderLabel) {
-    throw new GlobalChatError("Chat sender label is required.", "INVALID_SENDER_LABEL");
+    throw new GlobalChatError(
+      "Chat sender label is required.",
+      "INVALID_SENDER_LABEL",
+    );
   }
   if (!normalizedMessage && !normalizedImageUrl) {
     throw new GlobalChatError("Message cannot be empty.", "EMPTY_MESSAGE");
@@ -527,7 +540,8 @@ export const submitGlobalChatMessage = async ({
   const payload = asObject(data);
   const isOk = payload?.ok === true;
   if (!isOk) {
-    const errorMessage = asStringOrNull(payload?.error) ?? "Unable to send chat message.";
+    const errorMessage =
+      asStringOrNull(payload?.error) ?? "Unable to send chat message.";
     const code = asStringOrNull(payload?.code);
     throw new GlobalChatError(errorMessage, code);
   }
@@ -576,7 +590,9 @@ export const recordChatObservabilityEvents = async ({
 
   const { error } = await supabase.from(CHAT_OBSERVABILITY_TABLE).insert(rows);
   if (error) {
-    throw new Error(`Unable to record chat observability event: ${error.message}`);
+    throw new Error(
+      `Unable to record chat observability event: ${error.message}`,
+    );
   }
 };
 
@@ -622,11 +638,16 @@ export const getChatObservabilitySummary = async ({
   const supabase = getSupabaseServerClient();
   const safeWindowMinutes = Math.max(1, Math.floor(windowMinutes));
 
-  const { data, error } = await supabase.rpc(CHAT_OBSERVABILITY_SUMMARY_RPC_NAME, {
-    p_window_minutes: safeWindowMinutes,
-  });
+  const { data, error } = await supabase.rpc(
+    CHAT_OBSERVABILITY_SUMMARY_RPC_NAME,
+    {
+      p_window_minutes: safeWindowMinutes,
+    },
+  );
   if (error) {
-    throw new Error(`Unable to load chat observability summary: ${error.message}`);
+    throw new Error(
+      `Unable to load chat observability summary: ${error.message}`,
+    );
   }
 
   return asObject(data) ?? {};
