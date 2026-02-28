@@ -17,6 +17,11 @@
 
 # next.js
 /.next/
+<<<<<<< Updated upstream
+=======
+/.next-win-dev/
+/.next-win-dev-*/
+>>>>>>> Stashed changes
 /.next-playwright/
 /out/
 

@@ -14,12 +14,23 @@ const isDevCommand = nextArgs[0] === "dev";
 const hasBundlerFlag = nextArgs.some(
   (arg) => arg === "--webpack" || arg === "--turbopack" || arg === "--turbo",
 );
-const forceTurbopack = env.NEXT_DEV_BUNDLER?.toLowerCase() === "turbopack";
+const requestedBundler = env.NEXT_DEV_BUNDLER?.toLowerCase();
+const forceWebpack = requestedBundler === "webpack";
+const forceTurbopack = requestedBundler === "turbopack";
 const debugLauncher = env.NEXT_LAUNCHER_DEBUG === "1";
 
-if (process.platform === "win32" && isDevCommand && !hasBundlerFlag && !forceTurbopack) {
-  // Work around sporadic Turbopack early-exit behavior on Windows.
-  nextArgs.push("--webpack");
+if (process.platform === "win32" && isDevCommand && !hasBundlerFlag) {
+  if (forceWebpack) {
+    nextArgs.push("--webpack");
+  } else if (forceTurbopack) {
+    nextArgs.push("--turbopack");
+  }
+}
+
+if (process.platform === "win32" && isDevCommand) {
+  if (!env.NEXT_DIST_DIR || env.NEXT_DIST_DIR.trim().length === 0) {
+    env.NEXT_DIST_DIR = ".next-win-dev";
+  }
 }
 
 const useNoAddonsFallback =
@@ -73,7 +84,7 @@ if (debugLauncher) {
     console.log(
       `[next-launcher] windows-flags swc_wasm=${env.NEXT_TEST_WASM === "1" ? "on" : "off"} no_addons=${useNoAddonsFallback ? "on" : "off"} css_wasm=${
         env.CSS_TRANSFORMER_WASM === "1" ? "on" : "off"
-      }`,
+      } dist_dir=${env.NEXT_DIST_DIR ?? ".next"}`,
     );
   }
 }

@@ -4,6 +4,7 @@ import {
   isRecoverableSupabaseAuthError,
   isSupabaseAuthCookieName,
 } from "@/lib/supabase-auth-errors";
+import { supabaseFetchWithTimeout } from "@/lib/supabase-timeout-fetch";
 
 export async function middleware(request: NextRequest) {
   let response = NextResponse.next({
@@ -37,6 +38,9 @@ export async function middleware(request: NextRequest) {
           response.cookies.set(name, value, options);
         });
       },
+    },
+    global: {
+      fetch: supabaseFetchWithTimeout,
     },
   });
 
@@ -72,9 +76,8 @@ export async function middleware(request: NextRequest) {
   } catch (error) {
     if (isRecoverableSupabaseAuthError(error)) {
       clearSupabaseAuthCookies();
-    } else {
-      throw error;
     }
+    // Never block page navigation on transient auth upstream failures.
   }
 
   return response;

@@ -135,7 +135,7 @@ const MatchupCard = ({
     : false;
 
   return (
-    <div className="rounded-large border border-default-200/30 bg-content2/35 p-3">
+    <div className="rounded-large border border-default-200/30 bg-content2/35 p-3 [backface-visibility:hidden] [transform-style:preserve-3d] [transform:translateZ(0)] [will-change:transform]">
       <div className="grid grid-cols-[minmax(0,1fr)_auto_auto_auto_minmax(0,1fr)] items-center gap-2 sm:gap-3">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
@@ -390,7 +390,7 @@ export const WeeklyMatchupsPanel = ({
                             delay: delaySeconds,
                             ease: [0.22, 1, 0.36, 1],
                           }}
-                          className="[grid-area:1/1] [backface-visibility:hidden] [transform-style:preserve-3d]"
+                          className="[grid-area:1/1] [backface-visibility:hidden] [transform-style:preserve-3d] [transform:translateZ(0)] [will-change:transform]"
                         >
                           <MatchupCard matchup={outgoingMatchup} />
                         </motion.div>
@@ -409,7 +409,7 @@ export const WeeklyMatchupsPanel = ({
                               delay: delaySeconds,
                               ease: [0.22, 1, 0.36, 1],
                             }}
-                            className="[grid-area:1/1] [backface-visibility:hidden] [transform-style:preserve-3d]"
+                            className="[grid-area:1/1] [backface-visibility:hidden] [transform-style:preserve-3d] [transform:translateZ(0)] [will-change:transform]"
                           >
                             <MatchupCard matchup={incomingMatchup} />
                           </motion.div>
@@ -426,7 +426,16 @@ export const WeeklyMatchupsPanel = ({
             ) : (
               <div className="space-y-2 overflow-hidden [perspective:1200px]">
                 {selectedWeek.matchups.map((matchup) => (
-                  <MatchupCard key={matchup.matchupKey} matchup={matchup} />
+                  <div
+                    key={matchup.matchupKey}
+                    className="[perspective:1200px]"
+                  >
+                    <div className="grid [transform-style:preserve-3d]">
+                      <div className="[grid-area:1/1] [backface-visibility:hidden] [transform-style:preserve-3d] [transform:translateZ(0)] [will-change:transform]">
+                        <MatchupCard matchup={matchup} />
+                      </div>
+                    </div>
+                  </div>
                 ))}
               </div>
             )}

@@ -3,12 +3,21 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+<<<<<<< Updated upstream
     "postinstall": "node ./scripts/ensure-tailwindcss-oxide-win.mjs && node ./scripts/ensure-lightningcss-win.mjs",
     "predev": "node ./scripts/ensure-tailwindcss-oxide-win.mjs && node ./scripts/ensure-lightningcss-win.mjs && node ./scripts/check-lightningcss-win.mjs && powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./cleanup-dev.ps1",
     "prebuild": "node ./scripts/ensure-tailwindcss-oxide-win.mjs && node ./scripts/ensure-lightningcss-win.mjs",
     "dev": "node ./scripts/ensure-tailwindcss-oxide-win.mjs && node ./scripts/ensure-lightningcss-win.mjs && node ./scripts/check-lightningcss-win.mjs && node ./scripts/run-next-with-css-wasm.mjs dev --webpack",
     "build": "node ./scripts/ensure-tailwindcss-oxide-win.mjs && node ./scripts/ensure-lightningcss-win.mjs && node ./scripts/check-lightningcss-win.mjs && node ./scripts/run-next-with-css-wasm.mjs build",
     "start": "node ./scripts/ensure-tailwindcss-oxide-win.mjs && node ./scripts/ensure-lightningcss-win.mjs && node ./scripts/check-lightningcss-win.mjs && node ./scripts/run-next-with-css-wasm.mjs start",
+=======
+    "postinstall": "node ./scripts/ensure-lightningcss-win.mjs",
+    "predev": "node ./scripts/ensure-lightningcss-win.mjs && node ./scripts/check-lightningcss-win.mjs && powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./cleanup-dev.ps1",
+    "prebuild": "node ./scripts/ensure-lightningcss-win.mjs",
+    "dev": "node ./scripts/ensure-lightningcss-win.mjs && node ./scripts/check-lightningcss-win.mjs && node ./scripts/run-next-with-css-wasm.mjs dev",
+    "build": "node ./scripts/ensure-lightningcss-win.mjs && node ./scripts/check-lightningcss-win.mjs && node ./scripts/run-next-with-css-wasm.mjs build",
+    "start": "node ./scripts/ensure-lightningcss-win.mjs && node ./scripts/check-lightningcss-win.mjs && node ./scripts/run-next-with-css-wasm.mjs start",
+>>>>>>> Stashed changes
     "lint": "eslint",
     "pretest:e2e": "node ./scripts/ensure-tailwindcss-oxide-win.mjs",
     "test:e2e": "playwright test",

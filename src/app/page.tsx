@@ -490,7 +490,7 @@ const UserAvatar = ({
           aria-hidden
           className={`pointer-events-none absolute left-1/2 z-[2] -translate-x-1/2 ${crownClassName}`}
         >
-          <Crown className="h-full w-full text-[#C79B3B] drop-shadow-[0_1px_2px_rgba(0,0,0,0.65)]" />
+          <Crown className="h-full w-full fill-[#C79B3B] text-[#C79B3B] drop-shadow-[0_1px_2px_rgba(0,0,0,0.65)]" />
         </span>
       ) : showLastPlaceBadge ? (
         <span

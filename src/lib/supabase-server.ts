@@ -1,4 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
+import { supabaseFetchWithTimeout } from "@/lib/supabase-timeout-fetch";
 
 const requireEnv = (name: string): string => {
   const value = process.env[name];
@@ -16,6 +17,9 @@ const createSupabaseServerClient = (
     auth: {
       persistSession: false,
       autoRefreshToken: false,
+    },
+    global: {
+      fetch: supabaseFetchWithTimeout,
     },
   });
 

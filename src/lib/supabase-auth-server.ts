@@ -1,6 +1,7 @@
 import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
 import { getSupabaseAuthEnv } from "@/lib/supabase-auth-env";
+import { supabaseFetchWithTimeout } from "@/lib/supabase-timeout-fetch";
 
 export const getSupabaseAuthServerClient = async () => {
   const cookieStore = await cookies();
@@ -20,6 +21,9 @@ export const getSupabaseAuthServerClient = async () => {
           // Some server execution contexts (e.g. Server Components) are read-only.
         }
       },
+    },
+    global: {
+      fetch: supabaseFetchWithTimeout,
     },
   });
 };
