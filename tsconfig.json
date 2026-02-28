@@ -36,15 +36,9 @@
     "next.config.ts",
     ".next/types/**/*.ts",
     ".next/dev/types/**/*.ts",
-<<<<<<< Updated upstream
-    "**/*.mts",
-    ".next-playwright/types/**/*.ts",
-    ".next-playwright/dev/types/**/*.ts"
-=======
     ".next-win-dev/types/**/*.ts",
     ".next-win-dev/dev/types/**/*.ts",
     "**/*.mts"
->>>>>>> Stashed changes
   ],
   "exclude": [
     "node_modules",

@@ -7,13 +7,9 @@ const defaultDistDir =
     : ".next";
 
 const nextConfig: NextConfig = {
-<<<<<<< Updated upstream
-  distDir: process.env.NEXT_DIST_DIR || ".next",
-  allowedDevOrigins: ["127.0.0.1"],
-=======
   distDir:
     configuredDistDir && configuredDistDir.length > 0 ? configuredDistDir : defaultDistDir,
->>>>>>> Stashed changes
+  allowedDevOrigins: ["127.0.0.1"],
   turbopack: {
     root: process.cwd(),
   },
