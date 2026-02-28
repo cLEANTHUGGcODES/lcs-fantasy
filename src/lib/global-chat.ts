@@ -24,43 +24,24 @@ import {
   CHAT_CLEANUP_RPC_NAME,
   CHAT_OBSERVABILITY_SUMMARY_RPC_NAME,
   DEFAULT_GLOBAL_CHAT_LIMIT,
-  MAX_GLOBAL_CHAT_LIMIT,
   MAX_GLOBAL_CHAT_MESSAGE_LENGTH,
   MAX_GLOBAL_CHAT_IMAGE_URL_LENGTH,
   MAX_GLOBAL_CHAT_REACTION_EMOJI_LENGTH,
   GLOBAL_CHAT_SELECT_COLUMNS,
 } from "@/lib/constants/chat.constants";
 
-const asObject = (value: unknown): Record<string, unknown> | null =>
-  typeof value === "object" && value !== null
-    ? (value as Record<string, unknown>)
-    : null;
+import {
+  asObject,
+  asNumber,
+  asStringOrNull,
+  asBoolean,
+} from "@/lib/utils/parsing";
 
-const asNumber = (value: unknown): number =>
-  typeof value === "number" && Number.isFinite(value)
-    ? value
-    : Number.parseInt(`${value ?? ""}`, 10) || 0;
-
-const asStringOrNull = (value: unknown): string | null =>
-  typeof value === "string" ? value : null;
-
-const asBoolean = (value: unknown): boolean => value === true;
-
-const clampLimit = (value: number | undefined): number => {
-  const numeric = Number.isFinite(value)
-    ? Math.floor(value as number)
-    : DEFAULT_GLOBAL_CHAT_LIMIT;
-  return Math.max(1, Math.min(numeric, MAX_GLOBAL_CHAT_LIMIT));
-};
-
-const normalizePositiveId = (value: number | undefined): number => {
-  if (!Number.isFinite(value)) {
-    return 0;
-  }
-  return Math.max(0, Math.floor(value as number));
-};
-
-const normalizeReactionEmoji = (value: string): string => value.trim();
+import {
+  clampLimit,
+  normalizePositiveId,
+  normalizeReactionEmoji,
+} from "@/lib/validation/chat.validators";
 
 const aggregateReactions = (
   rows: GlobalChatReactionRow[],
