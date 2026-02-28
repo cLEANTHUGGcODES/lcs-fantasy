@@ -1,9 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-import {
-  MAX_CHAT_IMAGE_URL_LENGTH,
-  normalizeChatImageUrl,
-} from "@/lib/chat-image";
+import { normalizeChatImageUrl } from "@/lib/chat-image";
 import { resolveAdminAvatarProfiles } from "@/lib/supabase-admin-cache";
 import { getSupabaseServerClient } from "@/lib/supabase-server";
 
@@ -19,29 +16,20 @@ import type {
   ChatObservabilityEventInput,
 } from "@/types/chat.types";
 
-const GLOBAL_CHAT_TABLE = "fantasy_global_chat_messages";
-const GLOBAL_CHAT_REACTIONS_TABLE = "fantasy_global_chat_reactions";
-const CHAT_OBSERVABILITY_TABLE = "fantasy_chat_observability_events";
-const CHAT_POST_RPC_NAME = "fantasy_chat_post_message";
-const CHAT_CLEANUP_RPC_NAME = "fantasy_cleanup_chat_data";
-const CHAT_OBSERVABILITY_SUMMARY_RPC_NAME =
-  "fantasy_chat_observability_summary";
-const DEFAULT_GLOBAL_CHAT_LIMIT = 120;
-const MAX_GLOBAL_CHAT_LIMIT = 200;
-export const MAX_GLOBAL_CHAT_MESSAGE_LENGTH = 320;
-export const MAX_GLOBAL_CHAT_IMAGE_URL_LENGTH = MAX_CHAT_IMAGE_URL_LENGTH;
-export const MAX_GLOBAL_CHAT_REACTION_EMOJI_LENGTH = 16;
-
-const GLOBAL_CHAT_SELECT_COLUMNS = [
-  "id",
-  "user_id",
-  "sender_label",
-  "sender_avatar_url",
-  "sender_avatar_border_color",
-  "message",
-  "image_url",
-  "created_at",
-].join(",");
+import {
+  GLOBAL_CHAT_TABLE,
+  GLOBAL_CHAT_REACTIONS_TABLE,
+  CHAT_OBSERVABILITY_TABLE,
+  CHAT_POST_RPC_NAME,
+  CHAT_CLEANUP_RPC_NAME,
+  CHAT_OBSERVABILITY_SUMMARY_RPC_NAME,
+  DEFAULT_GLOBAL_CHAT_LIMIT,
+  MAX_GLOBAL_CHAT_LIMIT,
+  MAX_GLOBAL_CHAT_MESSAGE_LENGTH,
+  MAX_GLOBAL_CHAT_IMAGE_URL_LENGTH,
+  MAX_GLOBAL_CHAT_REACTION_EMOJI_LENGTH,
+  GLOBAL_CHAT_SELECT_COLUMNS,
+} from "@/lib/constants/chat.constants";
 
 const asObject = (value: unknown): Record<string, unknown> | null =>
   typeof value === "object" && value !== null
