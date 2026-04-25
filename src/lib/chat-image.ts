@@ -1,6 +1,10 @@
 export const MAX_CHAT_IMAGE_BYTES = 3 * 1024 * 1024;
 export const MAX_CHAT_IMAGE_URL_LENGTH = 2048;
-export const CHAT_IMAGE_MIME_TYPES = ["image/jpeg", "image/png", "image/webp"] as const;
+export const CHAT_IMAGE_MIME_TYPES = [
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+] as const;
 
 const CHAT_IMAGE_MIME_TYPE_SET = new Set<string>(CHAT_IMAGE_MIME_TYPES);
 
@@ -8,13 +12,14 @@ export const isSupportedChatImageMimeType = (mimeType: string): boolean =>
   CHAT_IMAGE_MIME_TYPE_SET.has(mimeType.trim().toLowerCase());
 
 const extensionFromMimeType = (mimeType: string): string => {
-  if (mimeType === "image/png") {
-    return "png";
+  switch (mimeType) {
+    case "image/png":
+      return "png";
+    case "image/webp":
+      return "webp";
+    default:
+      return "jpg";
   }
-  if (mimeType === "image/webp") {
-    return "webp";
-  }
-  return "jpg";
 };
 
 export const extensionForChatImage = ({
@@ -27,7 +32,12 @@ export const extensionForChatImage = ({
   const allowedExtensions = new Set(["jpg", "jpeg", "png", "webp"]);
   const lastDotIndex = fileName.lastIndexOf(".");
   const rawExtension =
-    lastDotIndex >= 0 ? fileName.slice(lastDotIndex + 1).trim().toLowerCase() : "";
+    lastDotIndex >= 0
+      ? fileName
+          .slice(lastDotIndex + 1)
+          .trim()
+          .toLowerCase()
+      : "";
   const normalizedExtension = rawExtension.replace(/[^a-z0-9]/g, "");
   if (normalizedExtension && allowedExtensions.has(normalizedExtension)) {
     return normalizedExtension;

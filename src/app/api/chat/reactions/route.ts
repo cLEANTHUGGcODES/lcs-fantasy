@@ -1,10 +1,10 @@
 import { requireAuthUser } from "@/lib/draft-auth";
 import {
-  formatChatReactionUserLabel,
   GlobalChatError,
   listGlobalChatReactionsForMessage,
   toggleGlobalChatReaction,
 } from "@/lib/global-chat";
+import { formatChatReactionUserLabel } from "@/lib/utils/chat.formatters";
 import { getSupabaseAuthServerClient } from "@/lib/supabase-auth-server";
 import { getUserDisplayName } from "@/lib/user-profile";
 
@@ -14,9 +14,8 @@ type ToggleReactionBody = {
 };
 
 const parseMessageId = (value: unknown): number => {
-  const numeric = typeof value === "number"
-    ? value
-    : Number.parseInt(`${value ?? ""}`, 10);
+  const numeric =
+    typeof value === "number" ? value : Number.parseInt(`${value ?? ""}`, 10);
   return Number.isFinite(numeric) && numeric > 0 ? Math.floor(numeric) : 0;
 };
 
@@ -35,7 +34,9 @@ export async function POST(request: Request) {
     const emoji = typeof body.emoji === "string" ? body.emoji.trim() : "";
 
     const reactionUserLabelSource = getUserDisplayName(user) ?? user.id;
-    const reactionUserLabel = formatChatReactionUserLabel(reactionUserLabelSource);
+    const reactionUserLabel = formatChatReactionUserLabel(
+      reactionUserLabelSource,
+    );
     const result = await toggleGlobalChatReaction({
       supabase,
       messageId,
@@ -48,16 +49,26 @@ export async function POST(request: Request) {
   } catch (error) {
     if (error instanceof GlobalChatError) {
       if (error.code === "UNAUTHORIZED") {
-        return Response.json({ error: error.message, code: error.code }, { status: 401 });
+        return Response.json(
+          { error: error.message, code: error.code },
+          { status: 401 },
+        );
       }
       if (error.code === "MESSAGE_NOT_FOUND") {
-        return Response.json({ error: error.message, code: error.code }, { status: 404 });
+        return Response.json(
+          { error: error.message, code: error.code },
+          { status: 404 },
+        );
       }
       if (INVALID_REQUEST_CODES.has(error.code ?? "")) {
-        return Response.json({ error: error.message, code: error.code }, { status: 400 });
+        return Response.json(
+          { error: error.message, code: error.code },
+          { status: 400 },
+        );
       }
     }
-    const message = error instanceof Error ? error.message : "Unable to toggle reaction.";
+    const message =
+      error instanceof Error ? error.message : "Unable to toggle reaction.";
     const status = message === "UNAUTHORIZED" ? 401 : 500;
     return Response.json({ error: message }, { status });
   }
@@ -77,13 +88,20 @@ export async function GET(request: Request) {
   } catch (error) {
     if (error instanceof GlobalChatError) {
       if (error.code === "UNAUTHORIZED") {
-        return Response.json({ error: error.message, code: error.code }, { status: 401 });
+        return Response.json(
+          { error: error.message, code: error.code },
+          { status: 401 },
+        );
       }
       if (INVALID_REQUEST_CODES.has(error.code ?? "")) {
-        return Response.json({ error: error.message, code: error.code }, { status: 400 });
+        return Response.json(
+          { error: error.message, code: error.code },
+          { status: 400 },
+        );
       }
     }
-    const message = error instanceof Error ? error.message : "Unable to load reactions.";
+    const message =
+      error instanceof Error ? error.message : "Unable to load reactions.";
     const status = message === "UNAUTHORIZED" ? 401 : 500;
     return Response.json({ error: message }, { status });
   }
